@@ -767,6 +767,20 @@ impl App {
         self.show_navigation();
     }
 
+    /// A platform edit key or Edit menu row (spec 0008, AC-15): the
+    /// focused chrome field takes it, else the page.
+    #[cfg(feature = "chrome")]
+    fn edit(&mut self, event_loop: &ActiveEventLoop, edit: EditKey) {
+        let outcome = self
+            .window
+            .as_ref()
+            .and_then(|app_window| self.chrome.edit(&app_window.window, edit));
+        match outcome {
+            Some(outcome) => self.apply(event_loop, outcome),
+            None => self.page_edit(edit),
+        }
+    }
+
     /// A platform edit key for the page (spec 0008, AC-15): select all
     /// goes as it is; paste carries the clipboard read right now; copy and
     /// cut carry a fresh request id the answer must name within a second.
@@ -1042,14 +1056,7 @@ impl App {
         }
         #[cfg(feature = "chrome")]
         if let Some(edit) = input::edit_key(event, self.modifiers) {
-            let outcome = self
-                .window
-                .as_ref()
-                .and_then(|app_window| self.chrome.edit(&app_window.window, edit));
-            match outcome {
-                Some(outcome) => self.apply(event_loop, outcome),
-                None => self.page_edit(edit),
-            }
+            self.edit(event_loop, edit);
             return;
         }
         // The chrome's shortcuts and focused controls first.
@@ -1142,6 +1149,7 @@ impl App {
             Outcome::Back => self.go(-1, Origin::User(UserInput::Toolbar)),
             Outcome::Forward => self.go(1, Origin::User(UserInput::Toolbar)),
             Outcome::Reload => self.reload(Origin::User(UserInput::Toolbar)),
+            Outcome::Edit(edit) => self.edit(event_loop, edit),
             Outcome::Stop => self.stop_load(),
             Outcome::Load(url) => {
                 info!(%url, "typed load");

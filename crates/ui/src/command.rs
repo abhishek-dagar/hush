@@ -43,6 +43,20 @@ impl FromStr for ZoomStep {
     }
 }
 
+/// A text edit from the Edit menu (spec 0008, AC-15). On macOS the menu
+/// owns Cmd+X, C, V and A, so these are how those keys reach the browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditAction {
+    /// Cut the selection.
+    Cut,
+    /// Copy the selection.
+    Copy,
+    /// Paste the clipboard.
+    Paste,
+    /// Select the whole value.
+    SelectAll,
+}
+
 /// A window action from a caption button or menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowAction {
@@ -98,6 +112,9 @@ pub enum ChromeCommand {
     /// `settings.custom_search`: Enter in the Custom field; the host reads
     /// and checks the field's text (AC-32).
     SaveCustomSearch,
+    /// `edit.cut`, `edit.copy`, `edit.paste`, `edit.select_all`: the Edit
+    /// menu, acting on the focused text field.
+    Edit(EditAction),
 }
 
 impl ChromeCommand {
@@ -124,6 +141,10 @@ impl ChromeCommand {
             Self::SetAddressStyle(style) => ("settings.address_style", Some(style.as_str())),
             Self::SetSearchEngine(kind) => ("settings.search_engine", Some(kind.as_str())),
             Self::SaveCustomSearch => ("settings.custom_search", None),
+            Self::Edit(EditAction::Cut) => ("edit.cut", None),
+            Self::Edit(EditAction::Copy) => ("edit.copy", None),
+            Self::Edit(EditAction::Paste) => ("edit.paste", None),
+            Self::Edit(EditAction::SelectAll) => ("edit.select_all", None),
         }
     }
 
@@ -182,6 +203,10 @@ pub fn parse_command(name: &str, value: Option<&str>) -> Result<ChromeCommand, C
         ("settings.address_style", Some(v)) => ChromeCommand::SetAddressStyle(v.parse()?),
         ("settings.search_engine", Some(v)) => ChromeCommand::SetSearchEngine(v.parse()?),
         ("settings.custom_search", None) => ChromeCommand::SaveCustomSearch,
+        ("edit.cut", None) => ChromeCommand::Edit(EditAction::Cut),
+        ("edit.copy", None) => ChromeCommand::Edit(EditAction::Copy),
+        ("edit.paste", None) => ChromeCommand::Edit(EditAction::Paste),
+        ("edit.select_all", None) => ChromeCommand::Edit(EditAction::SelectAll),
         _ => return Err(ChromeError::UnknownCommand(name.to_owned())),
     };
     Ok(command)
@@ -260,6 +285,10 @@ mod tests {
                 ChromeCommand::AddressGo,
                 ChromeCommand::SetAddressStyle(AddressStyle::Inline),
                 ChromeCommand::SaveCustomSearch,
+                ChromeCommand::Edit(EditAction::Cut),
+                ChromeCommand::Edit(EditAction::Copy),
+                ChromeCommand::Edit(EditAction::Paste),
+                ChromeCommand::Edit(EditAction::SelectAll),
             ])
             .chain(EngineKind::ALL.map(ChromeCommand::SetSearchEngine));
         for command in all {

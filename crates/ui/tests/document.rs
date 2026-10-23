@@ -1034,3 +1034,44 @@ fn the_settings_window_picks_the_address_style_and_the_engine() {
         "the error line"
     );
 }
+
+#[test]
+fn copy_cut_and_paste_work_in_the_inline_address() {
+    // Spec 0008, AC-15
+    let mut doc = load(Os::Mac);
+    doc.set_address_style(ui::AddressStyle::Inline);
+    showing(&mut doc, "https://www.example.com/docs");
+    doc.open_address();
+    let _ = doc.frame();
+    assert!(doc.has_focus(), "the field has focus");
+    let copied = doc.input(InputEvent::Copy { request: 0 }).copied;
+    assert_eq!(copied.as_deref(), Some("https://www.example.com/docs"));
+    let cut = doc.input(InputEvent::Cut { request: 0 }).copied;
+    assert_eq!(cut.as_deref(), Some("https://www.example.com/docs"));
+    let _ = doc.frame();
+    assert_eq!(doc.address().text(), "");
+    doc.input(InputEvent::Paste {
+        text: "rust.org".into(),
+    });
+    let _ = doc.frame();
+    assert_eq!(doc.address().text(), "rust.org");
+}
+
+#[test]
+fn a_click_on_empty_sidebar_space_takes_focus_from_the_inline_address() {
+    // Spec 0008, AC-5
+    let mut doc = load(Os::Mac);
+    doc.set_address_style(ui::AddressStyle::Inline);
+    showing(&mut doc, "https://www.example.com/docs");
+    doc.open_address();
+    let _ = doc.frame();
+    assert!(doc.has_focus());
+    click(&mut doc, PointF { x: 100.0, y: 500.0 });
+    let _ = doc.frame();
+    assert!(!doc.has_focus(), "the field lets go of focus");
+    assert_eq!(
+        doc.address().text(),
+        "www.example.com",
+        "and shows the host again"
+    );
+}

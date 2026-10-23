@@ -24,6 +24,18 @@ pub(crate) enum EditKey {
     Paste,
 }
 
+#[cfg(feature = "chrome")]
+impl From<ui::EditAction> for EditKey {
+    fn from(action: ui::EditAction) -> Self {
+        match action {
+            ui::EditAction::Cut => Self::Cut,
+            ui::EditAction::Copy => Self::Copy,
+            ui::EditAction::Paste => Self::Paste,
+            ui::EditAction::SelectAll => Self::SelectAll,
+        }
+    }
+}
+
 /// The edit key `event` is, if any. Keys go by their physical position, as
 /// the browser's other shortcuts do; repeats count, so a held paste
 /// pastes again.

@@ -3,7 +3,7 @@
 //! its in window app menu from it.
 
 use crate::appearance::Os;
-use crate::command::{ChromeCommand, WindowAction, ZoomStep};
+use crate::command::{ChromeCommand, EditAction, WindowAction, ZoomStep};
 use crate::settings::{AccentSetting, Settings, Theme};
 use crate::theme::Accent;
 
@@ -236,6 +236,15 @@ impl Menu {
     }
 }
 
+/// An Edit menu row that runs `action` on Cmd and `key`.
+fn edit_item(label: &str, action: EditAction, key: char) -> MenuItem {
+    MenuItem::command(
+        label,
+        ChromeCommand::Edit(action),
+        Some(Shortcut::primary(ShortcutKey::Letter(key))),
+    )
+}
+
 /// The app's menu for `os`, with checks from `settings`. `system_accent` is
 /// the preset the OS accent snaps to, shown as "System (Blue)".
 pub fn app_menu(settings: &Settings, system_accent: Accent, os: Os, app_name: &str) -> Menu {
@@ -275,10 +284,13 @@ pub fn app_menu(settings: &Settings, system_accent: Accent, os: Os, app_name: &s
                         MenuItem::Native(NativeItem::Undo),
                         MenuItem::Native(NativeItem::Redo),
                         MenuItem::Separator,
-                        MenuItem::Native(NativeItem::Cut),
-                        MenuItem::Native(NativeItem::Copy),
-                        MenuItem::Native(NativeItem::Paste),
-                        MenuItem::Native(NativeItem::SelectAll),
+                        // The browser's own commands, not AppKit's: the
+                        // menu takes these keys before the window, and no
+                        // AppKit responder edits the engine's fields.
+                        edit_item("Cut", EditAction::Cut, 'x'),
+                        edit_item("Copy", EditAction::Copy, 'c'),
+                        edit_item("Paste", EditAction::Paste, 'v'),
+                        edit_item("Select All", EditAction::SelectAll, 'a'),
                     ],
                 ),
                 MenuItem::submenu("View", view_items(settings, system_accent)),
@@ -395,6 +407,43 @@ mod tests {
         };
         let menu = app_menu(&settings, Accent::Green, Os::Linux, "Browser");
         assert_eq!(checked_labels(&menu.items), ["Dark", "System (Green)"]);
+    }
+
+    #[test]
+    fn mac_edit_rows_are_the_browsers_own_commands() {
+        // Spec 0008, AC-15: AppKit's own Cut, Copy, Paste and Select All
+        // take Cmd+X, C, V and A before the window and edit nothing here.
+        let menu = app_menu(&Settings::default(), Accent::Blue, Os::Mac, "Browser");
+        let edit = menu
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Submenu { label, items } if label == "Edit" => Some(items),
+                _ => None,
+            })
+            .expect("an Edit menu");
+        let rows: Vec<(ChromeCommand, Option<Shortcut>)> = edit
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Command {
+                    command, shortcut, ..
+                } => Some((*command, *shortcut)),
+                _ => None,
+            })
+            .collect();
+        let expected = [
+            (EditAction::Cut, 'x'),
+            (EditAction::Copy, 'c'),
+            (EditAction::Paste, 'v'),
+            (EditAction::SelectAll, 'a'),
+        ]
+        .map(|(action, key)| {
+            (
+                ChromeCommand::Edit(action),
+                Some(Shortcut::primary(ShortcutKey::Letter(key))),
+            )
+        });
+        assert_eq!(rows, expected);
     }
 
     #[test]

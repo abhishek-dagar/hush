@@ -88,6 +88,9 @@ pub(crate) enum Outcome {
     Forward,
     /// The reload button.
     Reload,
+    /// An Edit menu row for the browser window: its focused chrome field,
+    /// else the page (spec 0008, AC-15).
+    Edit(EditKey),
     /// The stop button, which reload turns into while a load runs
     /// (spec 0008, AC-25, AC-26).
     Stop,
@@ -525,13 +528,7 @@ impl ChromeHost {
         if let WindowEvent::KeyboardInput { event, .. } = event
             && let Some(edit) = input::edit_key(event, settings.modifiers())
         {
-            let paste = match edit {
-                EditKey::Paste => self.clipboard.read(),
-                _ => None,
-            };
-            if let Some(copied) = settings.edit(edit, paste) {
-                self.clipboard.write(&copied);
-            }
+            self.settings_edit(edit);
             return Some(Outcome::None);
         }
         Some(match command {
@@ -604,6 +601,20 @@ impl ChromeHost {
         Outcome::None
     }
 
+    /// An edit key or Edit menu row in the settings window's text field.
+    fn settings_edit(&mut self, edit: EditKey) {
+        let Some(settings) = self.settings_window.as_mut() else {
+            return;
+        };
+        let paste = match edit {
+            EditKey::Paste => self.clipboard.read(),
+            _ => None,
+        };
+        if let Some(copied) = settings.edit(edit, paste) {
+            self.clipboard.write(&copied);
+        }
+    }
+
     /// Carries out a chrome command (spec 0003, interface surface).
     pub(crate) fn run(&mut self, window: &Window, command: ChromeCommand) -> Outcome {
         // A menu row closes its menu, with focus back on the menu button.
@@ -633,6 +644,14 @@ impl ChromeHost {
             },
             ChromeCommand::DevOpenFile => self.show_dialog(window, FileDialog::Open),
             ChromeCommand::DevSaveFile => self.show_dialog(window, FileDialog::Save),
+            // The Edit menu acts on the window with focus (spec 0008, AC-15).
+            ChromeCommand::Edit(action)
+                if self.settings_window.as_ref().is_some_and(|s| s.focused()) =>
+            {
+                self.settings_edit(EditKey::from(action));
+                Outcome::None
+            }
+            ChromeCommand::Edit(action) => Outcome::Edit(EditKey::from(action)),
             ChromeCommand::Back => Outcome::Back,
             ChromeCommand::Forward => Outcome::Forward,
             ChromeCommand::Reload => Outcome::Reload,
@@ -869,7 +888,15 @@ impl ChromeHost {
                         }
                         Outcome::None
                     }
-                    Hit::Drag if primary && !self.doc.menu_open() => self.drag(window),
+                    Hit::Drag if primary && !self.doc.menu_open() => {
+                        // A press on empty chrome takes focus from a field,
+                        // as a click on anything unfocusable does (spec
+                        // 0008, AC-5); the window drag starts after.
+                        if self.doc.has_focus() {
+                            self.doc.blur();
+                        }
+                        self.drag(window)
+                    }
                     _ => {
                         self.pointer.pressed_in_chrome |= primary;
                         let outcome = self.doc.input(InputEvent::PointerDown { x, y, button });

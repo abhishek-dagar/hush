@@ -26,7 +26,7 @@ pub use address::{AddressBar, AddressStyle, EngineKind, MAX_ADDRESS_BYTES, Searc
 pub use appearance::{ButtonLayout, CaptionButton, Os, OsAppearance, Side};
 pub use assets::{Asset, ORIGIN, asset};
 pub use color::{Rgba, contrast_ratio};
-pub use command::{ChromeCommand, WindowAction, ZoomStep, parse_command};
+pub use command::{ChromeCommand, EditAction, WindowAction, ZoomStep, parse_command};
 pub use document::{
     CHROME_PAGE, ChromeDocument, ChromeFrame, ChromeOutcome, ChromeSurface, NavView,
 };
