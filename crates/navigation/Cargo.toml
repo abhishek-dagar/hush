@@ -1,0 +1,17 @@
+[package]
+name = "navigation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+icu_properties.workspace = true
+idna.workspace = true
+ipc.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

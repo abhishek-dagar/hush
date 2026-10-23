@@ -1,0 +1,37 @@
+---
+source: crates/page/tests/broken.rs
+expression: page.main_frame().document.dump()
+---
+#document
+  #doctype html
+  html
+    head
+    body
+      p
+        "a "
+        b
+          "b "
+          i
+            "c"
+        i
+          " d"
+        " e"
+      "\n"
+      p
+        a href="1"
+          "one"
+      p
+        a href="1"
+          "two"
+        "three"
+      "\n"
+      b
+      p
+        b
+          "bold paragraph"
+        " after"
+      "\n"
+      h1
+        "heading"
+      h2
+        "other"

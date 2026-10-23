@@ -1,0 +1,40 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+      meta charset="windows-1252"
+      title
+        "BOM"
+    body
+      p
+        "Grüße aus Köln, the BOM wins over the meta."
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>head>meta: display: none
+html>head>title: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>p: display: block; margin: 16px 0px 16px 0px
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x53.52
+    box html>body at=8,16 size=784x21.52
+      box html>body>p at=0,0 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p>#text at=0,0 size=327.82x21.52 baseline=16.93 "Grüße aus Köln, the BOM wins over the meta."
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- text font=0 size=16 #000000ff glyphs=43

@@ -1,0 +1,15 @@
+[package]
+name = "base"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+string_cache.workspace = true
+
+[build-dependencies]
+string_cache_codegen.workspace = true
+
+[lints]
+workspace = true

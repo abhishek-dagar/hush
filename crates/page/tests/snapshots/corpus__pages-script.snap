@@ -1,0 +1,61 @@
+---
+source: crates/page/tests/corpus.rs
+expression: loaded
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+      title
+        "Script edits"
+      "\n"
+      style
+        "#status { color: gray } .done { color: green; font-weight: bold }"
+      "\n"
+    body
+      p id="status"
+        "Loaded"
+      "\n"
+      ul id="list"
+        li
+          "added on DOMContentLoaded"
+      "\n"
+      script
+        "\n  document.addEventListener('DOMContentLoaded', function () {\n    document.getElementById('status').textContent = 'Loaded';\n    var item = document.createElement('li');\n    item.textContent = 'added on DOMContentLoaded';\n    document.getElementById('list').appendChild(item);\n  });\n  setTimeout(function () {\n    var status = document.getElementById('status');\n    status.textContent = 'Timer fired';\n    status.className = 'done';\n    var item = document.createElement('li');\n    item.textContent = 'added by the timer';\n    document.getElementById('list').appendChild(item);\n  }, 100);\n"
+      "\n"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>head>title: display: none
+html>head>style: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>p: display: block; margin: 16px 0px 16px 0px; color: #808080ff
+html>body>ul: display: block; margin: 16px 0px 16px 0px; padding: 0px 0px 0px 40px
+html>body>ul>li: display: list-item
+html>body>script: display: none
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x91.03
+    box html>body at=8,16 size=784x59.03
+      box html>body>p at=0,0 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p>#text at=0,0 size=52.35x21.52 baseline=16.93 "Loaded"
+      box html>body>ul at=0,37.52 size=784x21.52
+        box html>body>ul>li at=40,0 size=744x21.52 overflow=(-18.88,0 762.88x21.52)
+          line at=0,0 size=744x21.52 baseline=16.93
+            text html>body>ul>li>#text at=0,0 size=220.15x21.52 baseline=16.93 "added on DOMContentLoaded"
+          text html>body>ul>li at=-18.88,0 size=10.88x21.52 baseline=16.93 "•"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- text font=0 size=16 #808080ff glyphs=6
+  s1 clip=- text font=0 size=16 #000000ff glyphs=25
+  s1 clip=- text font=0 size=16 #000000ff glyphs=1

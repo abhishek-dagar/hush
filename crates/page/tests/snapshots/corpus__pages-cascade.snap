@@ -1,0 +1,190 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+      title
+        "Cascade and selectors"
+      "\n"
+      link rel="stylesheet" href="cascade.css"
+      "\n"
+      style
+        "\n  p { color: blue }\n  #id { color: green }\n  .later { color: purple }\n  .important { color: orange !important }\n"
+      "\n"
+    body
+      div class="box"
+        "\n  "
+        p
+          "type selector: blue from the inline sheet beats the linked red (same specificity, later)"
+        "\n  "
+        p id="id" class="cls"
+          "id beats class"
+        "\n  "
+        p class="cls later"
+          "two classes in source order: purple"
+        "\n  "
+        p class="important" style="color: black"
+          "important beats the style attribute"
+        "\n  "
+        p style="color: teal"
+          "the style attribute beats the sheets"
+        "\n  "
+        p data-kind="attr"
+          "attribute selector"
+        "\n  "
+        p lang="fr-CA"
+          "attribute prefix and dash match"
+        "\n  "
+        span
+          "a span"
+        " "
+        span class="sib"
+          "adjacent sibling"
+        " "
+        span
+          "general sibling"
+        "\n  "
+        ul
+          li
+            "first"
+          li
+            "middle"
+          li
+            "last"
+        "\n  "
+        p class="not-me"
+          ":not() skips this"
+        "\n  "
+        section
+          div
+            em
+              "descendant"
+          em
+            "child"
+        "\n"
+      "\n"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>head>title: display: none
+html>head>link: display: none
+html>head>style: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>div: display: block
+html>body>div>p[1]: display: block; margin: 4px 0px 4px 0px; padding: 0px 0px 0px 2px; font-weight: 700; color: #0000ffff
+html>body>div>p[2]: display: block; margin: 4px 0px 4px 0px; color: #008000ff
+html>body>div>p[3]: display: block; margin: 4px 0px 4px 0px; padding: 0px 0px 0px 2px; color: #800080ff
+html>body>div>p[4]: display: block; margin: 4px 0px 4px 0px; padding: 0px 0px 0px 2px; color: #ffa500ff
+html>body>div>p[5]: display: block; margin: 4px 0px 4px 0px; padding: 0px 0px 0px 2px; color: #008080ff
+html>body>div>p[6]: display: block; margin: 4px 0px 4px 0px; padding: 0px 0px 0px 2px; color: #0000ffff; background-color: #ddddffff
+html>body>div>p[7]: display: block; margin: 4px 0px 4px 0px; padding: 0px 0px 0px 2px; font-style: italic; color: #0000ffff
+html>body>div>span[1]: 
+html>body>div>span[2]: color: #000080ff
+html>body>div>span[3]: text-decoration-line: underline
+html>body>div>ul: display: block; margin: 16px 0px 16px 0px; padding: 0px 0px 0px 40px
+html>body>div>ul>li[1]: display: list-item; color: #008000ff
+html>body>div>ul>li[2]: display: list-item
+html>body>div>ul>li[3]: display: list-item; color: #800000ff
+html>body>div>p[8]: display: block; margin: 4px 0px 4px 0px; color: #0000ffff
+html>body>div>section: display: block
+html>body>div>section>div: display: block
+html>body>div>section>div>em: font-style: italic; color: #808000ff
+html>body>div>section>em: font-size: 20px; font-style: italic; color: #808000ff
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x386.6
+    box html>body at=8,8 size=784x370.6
+      box html>body>div at=0,0 size=784x370.6
+        box html>body>div>p[1] at=0,0 size=784x21.52
+          line at=2,0 size=782x21.52 baseline=16.93
+            text html>body>div>p[1]>#text at=0,0 size=596.8x21.52 baseline=16.93 "type selector: blue from the inline sheet beats the linked red (same specificity, later)"
+        box html>body>div>p[2] at=0,25.52 size=784x21.52
+          line at=0,0 size=784x21.52 baseline=16.93
+            text html>body>div>p[2]>#text at=0,0 size=95.82x21.52 baseline=16.93 "id beats class"
+        box html>body>div>p[3] at=0,51.03 size=784x21.52
+          line at=2,0 size=782x21.52 baseline=16.93
+            text html>body>div>p[3]>#text at=0,0 size=250.35x21.52 baseline=16.93 "two classes in source order: purple"
+        box html>body>div>p[4] at=0,76.55 size=784x21.52
+          line at=2,0 size=782x21.52 baseline=16.93
+            text html>body>div>p[4]>#text at=0,0 size=245.1x21.52 baseline=16.93 "important beats the style attribute"
+        box html>body>div>p[5] at=0,102.07 size=784x21.52
+          line at=2,0 size=782x21.52 baseline=16.93
+            text html>body>div>p[5]>#text at=0,0 size=250.28x21.52 baseline=16.93 "the style attribute beats the sheets"
+        box html>body>div>p[6] at=0,127.58 size=784x21.52
+          line at=2,0 size=782x21.52 baseline=16.93
+            text html>body>div>p[6]>#text at=0,0 size=123.75x21.52 baseline=16.93 "attribute selector"
+        box html>body>div>p[7] at=0,153.1 size=784x21.52
+          line at=2,0 size=782x21.52 baseline=16.93
+            text html>body>div>p[7]>#text at=0,0 size=221.55x21.52 baseline=16.93 "attribute prefix and dash match"
+        box (anonymous) at=0,178.62 size=784x21.52
+          line at=0,0 size=784x21.52 baseline=16.93
+            box html>body>div>span[1] at=0,0 size=45.87x21.52 inline
+              text html>body>div>span[1]>#text at=0,0 size=45.87x21.52 baseline=16.93 "a span"
+            text html>body>div>#text[9] at=45.87,0 size=4.37x21.52 baseline=16.93 " "
+            box html>body>div>span[2] at=50.23,0 size=108.78x21.52 inline
+              text html>body>div>span[2]>#text at=0,0 size=108.78x21.52 baseline=16.93 "adjacent sibling"
+            text html>body>div>#text[10] at=159.02,0 size=4.37x21.52 baseline=16.93 " "
+            box html>body>div>span[3] at=163.38,0 size=101.73x21.52 inline
+              text html>body>div>span[3]>#text at=0,0 size=101.73x21.52 baseline=16.93 "general sibling"
+        box html>body>div>ul at=0,216.13 size=784x64.55
+          box html>body>div>ul>li[1] at=40,0 size=744x21.52 overflow=(-18.88,0 762.88x21.52)
+            line at=0,0 size=744x21.52 baseline=16.93
+              text html>body>div>ul>li[1]>#text at=0,0 size=29.58x21.52 baseline=16.93 "first"
+            text html>body>div>ul>li[1] at=-18.88,0 size=10.88x21.52 baseline=16.93 "•"
+          box html>body>div>ul>li[2] at=40,21.52 size=744x21.52 overflow=(-18.88,0 762.88x21.52)
+            line at=0,0 size=744x21.52 baseline=16.93
+              text html>body>div>ul>li[2]>#text at=0,0 size=46.77x21.52 baseline=16.93 "middle"
+            text html>body>div>ul>li[2] at=-18.88,0 size=10.88x21.52 baseline=16.93 "•"
+          box html>body>div>ul>li[3] at=40,43.03 size=744x21.52 overflow=(-18.88,0 762.88x21.52)
+            line at=0,0 size=744x21.52 baseline=16.93
+              text html>body>div>ul>li[3]>#text at=0,0 size=26.2x21.52 baseline=16.93 "last"
+            text html>body>div>ul>li[3] at=-18.88,0 size=10.88x21.52 baseline=16.93 "•"
+        box html>body>div>p[8] at=0,296.68 size=784x21.52
+          line at=0,0 size=784x21.52 baseline=16.93
+            text html>body>div>p[8]>#text at=0,0 size=110.82x21.52 baseline=16.93 ":not() skips this"
+        box html>body>div>section at=0,322.2 size=784x48.4
+          box html>body>div>section>div at=0,0 size=784x21.52
+            line at=0,0 size=784x21.52 baseline=16.93
+              box html>body>div>section>div>em at=0,0 size=82.17x21.52 inline
+                text html>body>div>section>div>em>#text at=0,0 size=82.17x21.52 baseline=16.93 "descendant"
+          box (anonymous) at=0,21.52 size=784x26.88
+            line at=0,0 size=784x26.88 baseline=21.17
+              box html>body>div>section>em at=0,0 size=40.55x26.88 inline
+                text html>body>div>section>em>#text at=0,0 size=40.55x26.88 baseline=21.17 "child"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- rect (8,135.58 784x21.52) #ddddffff
+  s1 clip=- text font=0 size=16 #0000ffff glyphs=88
+  s1 clip=- text font=0 size=16 #008000ff glyphs=14
+  s1 clip=- text font=0 size=16 #800080ff glyphs=35
+  s1 clip=- text font=0 size=16 #ffa500ff glyphs=35
+  s1 clip=- text font=0 size=16 #008080ff glyphs=36
+  s1 clip=- text font=0 size=16 #0000ffff glyphs=18
+  s1 clip=- text font=0 size=16 #0000ffff glyphs=31
+  s1 clip=- text font=0 size=16 #000000ff glyphs=6
+  s1 clip=- text font=0 size=16 #000000ff glyphs=1
+  s1 clip=- text font=0 size=16 #000080ff glyphs=16
+  s1 clip=- text font=0 size=16 #000000ff glyphs=1
+  s1 clip=- text font=0 size=16 #000000ff glyphs=15
+  s1 clip=- rect (171.38,205.8 101.73x1) #000000ff
+  s1 clip=- text font=0 size=16 #008000ff glyphs=5
+  s1 clip=- text font=0 size=16 #008000ff glyphs=1
+  s1 clip=- text font=0 size=16 #000000ff glyphs=6
+  s1 clip=- text font=0 size=16 #000000ff glyphs=1
+  s1 clip=- text font=0 size=16 #800000ff glyphs=4
+  s1 clip=- text font=0 size=16 #800000ff glyphs=1
+  s1 clip=- text font=0 size=16 #0000ffff glyphs=17
+  s1 clip=- text font=0 size=16 #808000ff glyphs=10
+  s1 clip=- text font=0 size=20 #808000ff glyphs=5

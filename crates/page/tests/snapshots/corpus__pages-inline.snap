@@ -1,0 +1,211 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+      title
+        "Inline formatting"
+      "\n"
+      style
+        "\n  body { margin: 8px; width: 300px; font-family: serif; font-size: 16px }\n  .big { font-size: 28px }\n  .small { font-size: 10px }\n  .box { background: #fe8; border: 2px solid #c80; padding: 0 4px }\n  .ib { display: inline-block; width: 60px; height: 30px; background: #8cf; vertical-align: middle }\n  .pre { white-space: pre; font-family: monospace }\n  .nowrap { white-space: nowrap }\n  .center { text-align: center }\n  .right { text-align: right }\n  .indent { text-indent: 20px }\n  u { text-decoration: underline }\n"
+      "\n"
+    body
+      p
+        "Words wrap at spaces across "
+        span class="big"
+          "larger"
+        " and "
+        span class="small"
+          "smaller"
+        " text, and the line box grows to hold the tallest."
+      "\n"
+      p
+        "An "
+        span class="box"
+          "inline box with a border and padding that splits across lines"
+        " keeps its edges on the first and last fragment."
+      "\n"
+      p
+        "Before "
+        span class="ib"
+        " an inline block sits on the baseline."
+      "\n"
+      p class="pre"
+        "pre  keeps   spaces\nand newlines"
+      "\n"
+      p class="nowrap"
+        "nowrap text runs past the edge of its narrow container without wrapping at all"
+      "\n"
+      p class="center"
+        "centered line"
+      "\n"
+      p class="right"
+        "right aligned"
+      "\n"
+      p class="indent"
+        "The first line is indented, the rest are not, when the paragraph wraps onto more lines."
+      "\n"
+      p
+        u
+          "underlined"
+        ", "
+        b
+          "bold"
+        ", "
+        i
+          "italic"
+        " and "
+        sub
+          "sub"
+        sup
+          "sup"
+        "."
+      "\n"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>head>title: display: none
+html>head>style: display: none
+html>body: display: block; width: 300px; margin: 8px 8px 8px 8px; font-family: serif
+html>body>p[1]: display: block; margin: 16px 0px 16px 0px; font-family: serif
+html>body>p[1]>span[1]: font-family: serif; font-size: 28px
+html>body>p[1]>span[2]: font-family: serif; font-size: 10px
+html>body>p[2]: display: block; margin: 16px 0px 16px 0px; font-family: serif
+html>body>p[2]>span: padding: 0px 4px 0px 4px; border-top: 2px solid #cc8800ff; border-right: 2px solid #cc8800ff; border-bottom: 2px solid #cc8800ff; border-left: 2px solid #cc8800ff; font-family: serif; background-color: #ffee88ff
+html>body>p[3]: display: block; margin: 16px 0px 16px 0px; font-family: serif
+html>body>p[3]>span: display: inline-block; width: 60px; height: 30px; font-family: serif; background-color: #88ccffff
+html>body>p[4]: display: block; margin: 16px 0px 16px 0px; font-family: monospace; white-space: pre
+html>body>p[5]: display: block; margin: 16px 0px 16px 0px; font-family: serif; white-space: nowrap
+html>body>p[6]: display: block; margin: 16px 0px 16px 0px; font-family: serif; text-align: center
+html>body>p[7]: display: block; margin: 16px 0px 16px 0px; font-family: serif; text-align: right
+html>body>p[8]: display: block; margin: 16px 0px 16px 0px; font-family: serif
+html>body>p[9]: display: block; margin: 16px 0px 16px 0px; font-family: serif
+html>body>p[9]>u: font-family: serif; text-decoration-line: underline
+html>body>p[9]>b: font-family: serif; font-weight: 700
+html>body>p[9]>i: font-family: serif; font-style: italic
+html>body>p[9]>sub: font-family: serif; font-size: 13.33px
+html>body>p[9]>sup: font-family: serif; font-size: 13.33px
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x554.95
+    box html>body at=8,16 size=300x522.95 overflow=(0,0 560.18x522.95)
+      box html>body>p[1] at=0,0 size=300x80.65
+        line at=0,0 size=300x37.62 baseline=29.62
+          text html>body>p[1]>#text[1] at=0,12.68 size=215.97x21.52 baseline=16.93 "Words wrap at spaces across "
+          box html>body>p[1]>span[1] at=215.97,0 size=72.85x37.62 inline
+            text html>body>p[1]>span[1]>#text at=0,0 size=72.85x37.62 baseline=29.62 "larger"
+          text html>body>p[1]>#text[2] at=288.82,12.68 size=4.37x21.52 baseline=16.93 " "
+        line at=0,37.62 size=300x21.52 baseline=16.93
+          text html>body>p[1]>#text[2] at=0,0 size=30.2x21.52 baseline=16.93 "and "
+          box html>body>p[1]>span[2] at=30.2,6.35 size=32.13x13.45 inline
+            text html>body>p[1]>span[2]>#text at=0,0 size=32.13x13.45 baseline=10.58 "smaller"
+          text html>body>p[1]>#text[3] at=62.33,0 size=228.08x21.52 baseline=16.93 " text, and the line box grows to "
+        line at=0,59.13 size=300x21.52 baseline=16.93
+          text html>body>p[1]>#text[3] at=0,0 size=111.87x21.52 baseline=16.93 "hold the tallest."
+      box html>body>p[2] at=0,96.65 size=300x64.55 overflow=(0,-2 300x66.55)
+        line at=0,0 size=300x21.52 baseline=16.93
+          text html>body>p[2]>#text[1] at=0,0 size=23.5x21.52 baseline=16.93 "An "
+          box html>body>p[2]>span at=23.5,-2 size=267.83x25.52 inline no-end
+            text html>body>p[2]>span>#text at=6,2 size=261.83x21.52 baseline=16.93 "inline box with a border and padding "
+        line at=0,21.52 size=300x21.52 baseline=16.93
+          box html>body>p[2]>span at=0,-2 size=165.37x25.52 inline no-start
+            text html>body>p[2]>span>#text at=0,2 size=159.37x21.52 baseline=16.93 "that splits across lines"
+          text html>body>p[2]>#text[2] at=165.37,0 size=119.23x21.52 baseline=16.93 " keeps its edges "
+        line at=0,43.03 size=300x21.52 baseline=16.93
+          text html>body>p[2]>#text[2] at=0,0 size=213.23x21.52 baseline=16.93 "on the first and last fragment."
+      box html>body>p[3] at=0,177.2 size=300x56.1 overflow=(0,0 300.02x56.1)
+        line at=0,0 size=300.02x34.58 baseline=30
+          text html>body>p[3]>#text[1] at=0,13.07 size=52.52x21.52 baseline=16.93 "Before "
+          box html>body>p[3]>span at=52.52,0 size=60x30
+          text html>body>p[3]>#text[2] at=112.52,13.07 size=187.5x21.52 baseline=16.93 " an inline block sits on the "
+        line at=0,34.58 size=300x21.52 baseline=16.93
+          text html>body>p[3]>#text[2] at=0,0 size=62.03x21.52 baseline=16.93 "baseline."
+      box html>body>p[4] at=0,249.3 size=300x43.03
+        line at=0,0 size=300x21.52 baseline=16.93
+          text html>body>p[4]>#text at=0,0 size=136.02x21.52 baseline=16.93 "pre  keeps   spaces"
+        line at=0,21.52 size=300x21.52 baseline=16.93
+          text html>body>p[4]>#text at=0,0 size=92.92x21.52 baseline=16.93 "and newlines"
+      box html>body>p[5] at=0,308.33 size=300x21.52 overflow=(0,0 560.18x21.52)
+        line at=0,0 size=560.18x21.52 baseline=16.93
+          text html>body>p[5]>#text at=0,0 size=560.18x21.52 baseline=16.93 "nowrap text runs past the edge of its narrow container without wrapping at all"
+      box html>body>p[6] at=0,345.85 size=300x21.52
+        line at=0,0 size=300x21.52 baseline=16.93
+          text html>body>p[6]>#text at=104.03,0 size=91.93x21.52 baseline=16.93 "centered line"
+      box html>body>p[7] at=0,383.37 size=300x21.52
+        line at=0,0 size=300x21.52 baseline=16.93
+          text html>body>p[7]>#text at=212.67,0 size=87.33x21.52 baseline=16.93 "right aligned"
+      box html>body>p[8] at=0,420.88 size=300x64.55
+        line at=0,0 size=300x21.52 baseline=16.93
+          text html>body>p[8]>#text at=0,0 size=299.9x21.52 baseline=16.93 "The first line is indented, the rest are not, "
+        line at=0,21.52 size=300x21.52 baseline=16.93
+          text html>body>p[8]>#text at=0,0 size=272.42x21.52 baseline=16.93 "when the paragraph wraps onto more "
+        line at=0,43.03 size=300x21.52 baseline=16.93
+          text html>body>p[8]>#text at=0,0 size=36.97x21.52 baseline=16.93 "lines."
+      box html>body>p[9] at=0,501.43 size=300x21.52
+        line at=0,0 size=300x21.52 baseline=16.93
+          box html>body>p[9]>u at=0,0 size=74.72x21.52 inline
+            text html>body>p[9]>u>#text at=0,0 size=74.72x21.52 baseline=16.93 "underlined"
+          text html>body>p[9]>#text[1] at=74.72,0 size=8.82x21.52 baseline=16.93 ", "
+          box html>body>p[9]>b at=83.53,0 size=31.37x21.52 inline
+            text html>body>p[9]>b>#text at=0,0 size=31.37x21.52 baseline=16.93 "bold"
+          text html>body>p[9]>#text[2] at=114.9,0 size=8.82x21.52 baseline=16.93 ", "
+          box html>body>p[9]>i at=123.72,0 size=32.18x21.52 inline
+            text html>body>p[9]>i>#text at=0,0 size=32.18x21.52 baseline=16.93 "italic"
+          text html>body>p[9]>#text[3] at=155.9,0 size=34.57x21.52 baseline=16.93 " and "
+          box html>body>p[9]>sub at=190.47,2.83 size=20.95x17.92 inline
+            text html>body>p[9]>sub>#text at=0,0 size=20.95x17.92 baseline=14.1 "sub"
+          box html>body>p[9]>sup at=211.42,2.83 size=21.15x17.92 inline
+            text html>body>p[9]>sup>#text at=0,0 size=21.15x17.92 baseline=14.1 "sup"
+          text html>body>p[9]>#text[4] at=232.57,0 size=4.45x21.52 baseline=16.93 "."
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- text font=0 size=16 #000000ff glyphs=28
+  s1 clip=- text font=0 size=28 #000000ff glyphs=6
+  s1 clip=- text font=0 size=16 #000000ff glyphs=1
+  s1 clip=- text font=0 size=16 #000000ff glyphs=4
+  s1 clip=- text font=0 size=10 #000000ff glyphs=7
+  s1 clip=- text font=0 size=16 #000000ff glyphs=33
+  s1 clip=- text font=0 size=16 #000000ff glyphs=17
+  s1 clip=- text font=0 size=16 #000000ff glyphs=3
+  s1 clip=- rect (31.5,110.65 267.83x25.52) #ffee88ff
+  s1 clip=- border (31.5,110.65 267.83x25.52) widths=2 0 2 2 colors=#cc8800ff #cc8800ff #cc8800ff #cc8800ff styles=solid none solid solid
+  s1 clip=- text font=0 size=16 #000000ff glyphs=37
+  s1 clip=- rect (8,132.17 165.37x25.52) #ffee88ff
+  s1 clip=- border (8,132.17 165.37x25.52) widths=2 2 2 0 colors=#cc8800ff #cc8800ff #cc8800ff #cc8800ff styles=solid solid solid none
+  s1 clip=- text font=0 size=16 #000000ff glyphs=24
+  s1 clip=- text font=0 size=16 #000000ff glyphs=17
+  s1 clip=- text font=0 size=16 #000000ff glyphs=31
+  s1 clip=- text font=0 size=16 #000000ff glyphs=7
+  s1 clip=- rect (60.52,193.2 60x30) #88ccffff
+  s1 clip=- text font=0 size=16 #000000ff glyphs=29
+  s1 clip=- text font=0 size=16 #000000ff glyphs=9
+  s1 clip=- text font=0 size=16 #000000ff glyphs=19
+  s1 clip=- text font=0 size=16 #000000ff glyphs=12
+  s1 clip=- text font=0 size=16 #000000ff glyphs=78
+  s1 clip=- text font=0 size=16 #000000ff glyphs=13
+  s1 clip=- text font=0 size=16 #000000ff glyphs=13
+  s1 clip=- text font=0 size=16 #000000ff glyphs=46
+  s1 clip=- text font=0 size=16 #000000ff glyphs=35
+  s1 clip=- text font=0 size=16 #000000ff glyphs=6
+  s1 clip=- text font=0 size=16 #000000ff glyphs=10
+  s1 clip=- rect (8,536.62 74.72x1) #000000ff
+  s1 clip=- text font=0 size=16 #000000ff glyphs=2
+  s1 clip=- text font=0 size=16 #000000ff glyphs=4
+  s1 clip=- text font=0 size=16 #000000ff glyphs=2
+  s1 clip=- text font=0 size=16 #000000ff glyphs=6
+  s1 clip=- text font=0 size=16 #000000ff glyphs=5
+  s1 clip=- text font=0 size=13.33 #000000ff glyphs=3
+  s1 clip=- text font=0 size=13.33 #000000ff glyphs=3
+  s1 clip=- text font=0 size=16 #000000ff glyphs=1

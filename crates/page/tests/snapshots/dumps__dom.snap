@@ -1,0 +1,20 @@
+---
+source: crates/page/tests/dumps.rs
+expression: dom
+---
+#document
+  html
+    body
+      header
+      main
+        section
+        section
+        section
+        aside
+          div
+          div
+          div
+          div
+          div
+          div
+      footer

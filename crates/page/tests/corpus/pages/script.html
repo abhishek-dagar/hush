@@ -1,0 +1,21 @@
+<!doctype html>
+<title>Script edits</title>
+<style>#status { color: gray } .done { color: green; font-weight: bold }</style>
+<p id=status>Waiting</p>
+<ul id=list></ul>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('status').textContent = 'Loaded';
+    var item = document.createElement('li');
+    item.textContent = 'added on DOMContentLoaded';
+    document.getElementById('list').appendChild(item);
+  });
+  setTimeout(function () {
+    var status = document.getElementById('status');
+    status.textContent = 'Timer fired';
+    status.className = 'done';
+    var item = document.createElement('li');
+    item.textContent = 'added by the timer';
+    document.getElementById('list').appendChild(item);
+  }, 100);
+</script>

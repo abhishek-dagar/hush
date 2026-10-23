@@ -1,0 +1,52 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+      title
+        "png"
+      "\n"
+      style
+        "body { margin: 8px } img { display: block; margin-bottom: 4px } .bg { width: 8px; height: 4px; background-image: url(two.png) }"
+      "\n"
+    body
+      img src="two.png" alt="png picture"
+      "\n"
+      img src="two.png" width="16" height="8" alt="png scaled"
+      "\n"
+      div class="bg"
+      "\n"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>head>title: display: none
+html>head>style: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>img[1]: display: block; margin: 0px 0px 4px 0px
+html>body>img[2]: display: block; margin: 0px 0px 4px 0px
+html>body>div: display: block; width: 8px; height: 4px; background-image: url(http://corpus.test/pages/two.png)
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x38
+    box html>body at=8,8 size=784x22
+      box html>body>img[1] at=0,0 size=4x2
+      box html>body>img[2] at=0,6 size=16x8
+      box html>body>div at=0,18 size=8x4
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+  c0 parent=- spatial=s1 rect=(8,26 8x4)
+items
+  s1 clip=- image key=0 (8,8 4x2)
+  s1 clip=- image key=0 (8,14 16x8)
+  s1 clip=c0 image key=0 (8,26 4x2)

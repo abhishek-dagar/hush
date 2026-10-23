@@ -1,0 +1,11 @@
+---
+source: crates/page/tests/broken.rs
+expression: page.main_frame().document.dump()
+---
+#document
+  #doctype html
+  html
+    head
+      title
+        "Unclosed\n<body>\n<div><p>First paragraph\n<p>Second <b>bold <i>both\n<ul><li>one<li>two\n<div>never closed"
+    body

@@ -1,0 +1,11 @@
+# Tree construction runs that fail on purpose (spec 0004, AC-16).
+# One run per line: <file>:<case number>:<on|off> <reason>. The suite fails
+# when a listed run passes, so take a line off once it is fixed.
+webkit02.dat:45:off option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have
+webkit02.dat:45:on option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have
+webkit02.dat:46:off option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have
+webkit02.dat:46:on option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have
+webkit02.dat:47:off option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have
+webkit02.dat:47:on option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have
+webkit02.dat:48:off option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have
+webkit02.dat:48:on option content is copied into <selectedcontent> by the DOM's option steps, which slice 1 does not have

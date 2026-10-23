@@ -1,0 +1,29 @@
+---
+source: crates/page/tests/dumps.rs
+expression: list
+---
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+  s2 parent=1 scroll-frame port=(66,370 668x128) content=668x272 offset=0,0 generation=0
+clips
+  c0 parent=- spatial=s1 rect=(66,370 668x128)
+items
+  s1 clip=- rect (0,0 800x600) #f4f1eaff
+  s1 clip=- rect (24,24 752x64) #1f3a5fff
+  s1 clip=- rect (40,104 720x420) #ffffffff
+  s1 clip=- rect (56,128 680x72) #e06c4fff
+  s1 clip=- rect (124.8,208 611.2x72) #f2b134ff
+  s1 clip=- rect (193.6,288 542.4x72) #3f8f6bff
+  s1 clip=- rect (64,368 672x132) #faf8f4ff
+  s1 clip=- border (64,368 672x132) widths=2 2 2 2 colors=#1f3a5fff #1f3a5fff #1f3a5fff #1f3a5fff styles=solid solid solid solid
+  s2 clip=c0 rect (8,8 652x40) #c8c8e8ff
+  s2 clip=c0 rect (8,52 652x40) #b4b4e8ff
+  s2 clip=c0 rect (8,96 652x40) #a0a0e8ff
+  s2 clip=c0 rect (8,140 652x40) #8c8ce8ff
+  s2 clip=c0 rect (8,184 652x40) #7878e8ff
+  s2 clip=c0 rect (8,228 652x40) #6464e8ff
+  s1 clip=- push-stacking-context opacity=0.8 blend=Normal
+    s1 clip=- rect (24,540 752x32) #6b6b6bff
+  s0 clip=- pop-stacking-context

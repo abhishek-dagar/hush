@@ -1,0 +1,20 @@
+---
+source: crates/page/tests/dumps.rs
+expression: fragments
+---
+fragments viewport=800x600
+  box html at=0,0 size=800x596
+    box html>body at=0,0 size=800x596
+      box html>body>header at=24,24 size=752x64
+      box html>body>main at=40,104 size=720x420
+        box html>body>main>section[1] at=16,24 size=680x72
+        box html>body>main>section[2] at=84.8,104 size=611.2x72
+        box html>body>main>section[3] at=153.6,184 size=542.4x72
+        box html>body>main>aside at=24,264 size=672x132 overflow=(2,2 668x272) scroll-container
+          box html>body>main>aside>div[1] at=10,10 size=652x40
+          box html>body>main>aside>div[2] at=10,54 size=652x40
+          box html>body>main>aside>div[3] at=10,98 size=652x40
+          box html>body>main>aside>div[4] at=10,142 size=652x40
+          box html>body>main>aside>div[5] at=10,186 size=652x40
+          box html>body>main>aside>div[6] at=10,230 size=652x40
+      box html>body>footer at=24,540 size=752x32

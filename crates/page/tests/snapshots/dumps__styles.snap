@@ -1,0 +1,19 @@
+---
+source: crates/page/tests/dumps.rs
+expression: styles
+---
+html: display: block
+html>body: display: block; padding: 24px 24px 24px 24px; background-color: #f4f1eaff
+html>body>header: display: block; height: 64px; background-color: #1f3a5fff
+html>body>main: display: block; margin: 16px 16px 16px 16px; padding: 16px 16px 16px 16px; background-color: #ffffffff
+html>body>main>section[1]: display: block; height: 72px; margin: 8px 8px 8px 0px; background-color: #e06c4fff
+html>body>main>section[2]: display: block; height: 72px; margin: 8px 8px 8px 10%; background-color: #f2b134ff
+html>body>main>section[3]: display: block; height: 72px; margin: 8px 8px 8px 20%; background-color: #3f8f6bff
+html>body>main>aside: display: block; overflow-y: auto; height: 120px; margin: 8px 8px 8px 8px; padding: 4px 4px 4px 4px; border-top: 2px solid #1f3a5fff; border-right: 2px solid #1f3a5fff; border-bottom: 2px solid #1f3a5fff; border-left: 2px solid #1f3a5fff; background-color: #faf8f4ff
+html>body>main>aside>div[1]: display: block; height: 40px; margin: 4px 4px 4px 4px; background-color: #c8c8e8ff
+html>body>main>aside>div[2]: display: block; height: 40px; margin: 4px 4px 4px 4px; background-color: #b4b4e8ff
+html>body>main>aside>div[3]: display: block; height: 40px; margin: 4px 4px 4px 4px; background-color: #a0a0e8ff
+html>body>main>aside>div[4]: display: block; height: 40px; margin: 4px 4px 4px 4px; background-color: #8c8ce8ff
+html>body>main>aside>div[5]: display: block; height: 40px; margin: 4px 4px 4px 4px; background-color: #7878e8ff
+html>body>main>aside>div[6]: display: block; height: 40px; margin: 4px 4px 4px 4px; background-color: #6464e8ff
+html>body>footer: display: block; height: 32px; background-color: #6b6b6bff; opacity: 0.8

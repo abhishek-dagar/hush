@@ -1,0 +1,543 @@
+/*
+ * Base chrome controls (spec 0003, Standard definition). Rules for every
+ * file here: tokens only (no literal colors or px), only the chrome CSS
+ * profile, and state from ARIA attributes, never state classes.
+ * Each :hover, :active and :focus-visible rule has a [data-preview] twin
+ * so gallery.html can show those states without a pointer.
+ * crates/ui/tests/css_profile.rs enforces all three.
+ */
+
+@font-face {
+  font-family: ChromeIcons;
+  src: url(icons.ttf);
+}
+
+/* Base */
+
+html {
+  font-family: var(--font-family);
+  line-height: var(--line-height);
+  color: var(--text-primary);
+  background-color: var(--surface-chrome);
+  user-select: none;
+  cursor: default;
+}
+
+body {
+  margin: 0;
+  font-size: var(--text-body);
+}
+
+.icon {
+  display: inline-block;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  font-family: ChromeIcons;
+  font-size: var(--icon-size);
+  font-weight: var(--weight-regular);
+  line-height: 1;
+  text-align: center;
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Button, primary button, icon button */
+
+.button,
+.icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  max-width: 100%;
+  margin: 0;
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-m);
+  color: var(--text-primary);
+  background-color: var(--surface-raised);
+  font-family: var(--font-family);
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  line-height: var(--line-height);
+}
+
+.button:hover,
+.icon-button:hover,
+.button[data-preview="hover"],
+.icon-button[data-preview="hover"] {
+  background-color: var(--fill-hover);
+}
+
+.button:active,
+.icon-button:active,
+.button[data-preview="active"],
+.icon-button[data-preview="active"] {
+  background-color: var(--fill-pressed);
+}
+
+.button-primary {
+  border-color: var(--accent);
+  color: var(--on-accent);
+  background-color: var(--accent);
+  font-weight: var(--weight-strong);
+}
+
+.button-primary:hover,
+.button-primary:active,
+.button-primary[data-preview="hover"],
+.button-primary[data-preview="active"] {
+  border-color: var(--accent-strong);
+  background-color: var(--accent-strong);
+}
+
+.icon-button {
+  width: var(--icon-button);
+  min-width: var(--icon-button);
+  height: var(--icon-button);
+  min-height: var(--icon-button);
+  padding: 0;
+  border-color: transparent;
+  color: var(--text-secondary);
+  background-color: transparent;
+}
+
+.icon-button:hover,
+.icon-button:active,
+.icon-button[data-preview="hover"],
+.icon-button[data-preview="active"] {
+  color: var(--text-primary);
+}
+
+/* Text field */
+
+.text-field {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--control-height);
+  margin: 0;
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-m);
+  color: var(--text-primary);
+  background-color: var(--surface-raised);
+  font-family: var(--font-family);
+  font-size: var(--text-body);
+  line-height: var(--line-height);
+}
+
+.text-field::placeholder {
+  color: var(--text-secondary);
+}
+
+/* Tabs: horizontal by default, vertical with aria-orientation. */
+
+.tablist {
+  display: flex;
+  flex-direction: row;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tablist[aria-orientation="vertical"] {
+  flex-direction: column;
+}
+
+.tablist > [role="tab"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 0;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: var(--sidebar-width);
+  min-height: var(--control-height);
+  margin: 0;
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-m);
+  color: var(--text-secondary);
+  background-color: transparent;
+  font-family: var(--font-family);
+  font-size: var(--text-body);
+  text-align: left;
+}
+
+.tablist[aria-orientation="vertical"] > [role="tab"] {
+  flex: none;
+  max-width: none;
+}
+
+.tablist > [role="tab"] > .label {
+  flex: 1 1 0;
+}
+
+.tablist > [role="tab"]:hover,
+.tablist > [role="tab"][data-preview="hover"] {
+  background-color: var(--fill-hover);
+}
+
+.tablist > [role="tab"][aria-selected="true"] {
+  color: var(--text-primary);
+  background-color: var(--surface-raised);
+}
+
+/* List rows */
+
+.listbox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-1);
+}
+
+.listbox > [role="option"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-m);
+  color: var(--text-primary);
+}
+
+.listbox > [role="option"]:hover,
+.listbox > [role="option"][data-preview="hover"] {
+  background-color: var(--fill-hover);
+}
+
+.listbox > [role="option"][aria-selected="true"] {
+  color: var(--on-accent);
+  background-color: var(--accent);
+}
+
+/* Popover panel, dialog sheet, menu */
+
+.popover,
+.sheet,
+.menu {
+  box-sizing: border-box;
+  border: var(--border-width) solid var(--border-subtle);
+  color: var(--text-primary);
+  background-color: var(--surface-raised);
+}
+
+.popover {
+  width: var(--popover-width);
+  max-width: 100%;
+  padding: var(--space-3);
+  border-radius: var(--radius-l);
+}
+
+.scrim {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--scrim);
+}
+
+.sheet {
+  width: var(--sheet-width);
+  max-width: 100%;
+  padding: var(--space-6);
+  border-radius: var(--radius-xl);
+}
+
+.sheet-title {
+  margin: 0 0 var(--space-4) 0;
+  font-size: var(--text-title);
+  font-weight: var(--weight-strong);
+}
+
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+}
+
+.menu {
+  display: flex;
+  flex-direction: column;
+  min-width: var(--menu-width);
+  max-width: 100%;
+  padding: var(--space-1);
+  border-radius: var(--radius-l);
+}
+
+.menu > [role="menuitem"],
+.menu > [role="menuitemradio"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-s);
+  color: var(--text-primary);
+}
+
+.menu > [role="menuitem"] > .label,
+.menu > [role="menuitemradio"] > .label {
+  flex: 1 1 0;
+}
+
+.menu > [role="menuitem"]:hover,
+.menu > [role="menuitemradio"]:hover,
+.menu > [role="menuitem"][data-preview="hover"],
+.menu > [role="menuitemradio"][data-preview="hover"] {
+  background-color: var(--fill-hover);
+}
+
+.menu > [role="menuitemradio"] > .check {
+  visibility: hidden;
+}
+
+.menu > [role="menuitemradio"][aria-checked="true"] > .check {
+  visibility: visible;
+}
+
+.menu .shortcut {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+
+.menu > [role="separator"] {
+  height: var(--border-width);
+  margin: var(--space-1) var(--space-2);
+  background-color: var(--border-subtle);
+}
+
+/* Toggle (switch) */
+
+.switch {
+  position: relative;
+  box-sizing: border-box;
+  width: var(--switch-width);
+  min-width: var(--switch-width);
+  height: var(--switch-height);
+  margin: 0;
+  padding: 0;
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--switch-height);
+  background-color: var(--surface-raised);
+}
+
+.switch > .switch-knob {
+  position: absolute;
+  top: var(--switch-inset);
+  left: var(--switch-inset);
+  width: var(--switch-knob);
+  height: var(--switch-knob);
+  border-radius: 50%;
+  background-color: var(--border-strong);
+}
+
+.switch[aria-checked="true"] {
+  border-color: var(--accent);
+  background-color: var(--accent);
+}
+
+.switch[aria-checked="true"] > .switch-knob {
+  left: auto;
+  right: var(--switch-inset);
+  background-color: var(--on-accent);
+}
+
+/* Checkbox */
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: var(--checkbox-size);
+  min-width: var(--checkbox-size);
+  height: var(--checkbox-size);
+  margin: 0;
+  padding: 0;
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius-s);
+  color: var(--on-accent);
+  background-color: var(--surface-raised);
+}
+
+.checkbox > .icon {
+  visibility: hidden;
+}
+
+.checkbox[aria-checked="true"] {
+  border-color: var(--accent);
+  background-color: var(--accent);
+}
+
+.checkbox[aria-checked="true"] > .icon {
+  visibility: visible;
+}
+
+/* Radio groups: segmented control and accent swatches */
+
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: var(--space-1);
+  border-radius: var(--radius-m);
+  background-color: var(--fill-hover);
+}
+
+.segmented > [role="radio"] {
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  margin: 0;
+  padding: 0 var(--space-3);
+  border: none;
+  border-radius: var(--radius-m);
+  color: var(--text-secondary);
+  background-color: transparent;
+  font-family: var(--font-family);
+  font-size: var(--text-body);
+}
+
+.segmented > [role="radio"]:hover,
+.segmented > [role="radio"][data-preview="hover"] {
+  background-color: var(--fill-hover);
+}
+
+.segmented > [role="radio"][aria-checked="true"] {
+  color: var(--text-primary);
+  background-color: var(--surface-raised);
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.swatches > [role="radio"] {
+  box-sizing: border-box;
+  width: var(--swatch-size);
+  height: var(--swatch-size);
+  margin: 0;
+  padding: 0;
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: 50%;
+  background-color: var(--accent);
+}
+
+.swatches > [role="radio"][aria-checked="true"] {
+  outline: var(--focus-width) solid var(--text-primary);
+  outline-offset: var(--focus-offset);
+}
+
+/* Pressed, for the controls above that have no fill of their own. */
+
+.tablist > [role="tab"]:active,
+.listbox > [role="option"]:active,
+.menu > [role="menuitem"]:active,
+.menu > [role="menuitemradio"]:active,
+.segmented > [role="radio"]:active,
+.tablist > [role="tab"][data-preview="active"],
+.listbox > [role="option"][data-preview="active"],
+.menu > [role="menuitem"][data-preview="active"],
+.menu > [role="menuitemradio"][data-preview="active"],
+.segmented > [role="radio"][data-preview="active"] {
+  background-color: var(--fill-pressed);
+}
+
+/* Progress bar: determinate with aria-valuenow (Rust sets the fill width). */
+
+.progress {
+  position: relative;
+  overflow: hidden;
+  height: var(--progress-height);
+  border-radius: var(--progress-height);
+  background-color: var(--border-subtle);
+}
+
+.progress > .progress-fill {
+  height: 100%;
+  border-radius: var(--progress-height);
+  background-color: var(--accent);
+}
+
+/* Disabled: native :disabled or aria-disabled, every control. */
+
+:disabled,
+[aria-disabled="true"] {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.button:disabled,
+.button[aria-disabled="true"],
+.icon-button:disabled,
+.icon-button[aria-disabled="true"] {
+  border-color: var(--border-subtle);
+  color: var(--text-disabled);
+  background-color: transparent;
+}
+
+.tablist > [role="tab"][aria-disabled="true"],
+.listbox > [role="option"][aria-disabled="true"],
+.menu > [role="menuitem"][aria-disabled="true"],
+.menu > [role="menuitemradio"][aria-disabled="true"],
+.segmented > [role="radio"]:disabled {
+  color: var(--text-disabled);
+  background-color: transparent;
+}
+
+.switch:disabled,
+.checkbox:disabled {
+  border-color: var(--border-subtle);
+  background-color: transparent;
+}
+
+.switch:disabled > .switch-knob {
+  background-color: var(--border-subtle);
+}
+
+/* Focus: one ring for every control, keyboard focus only. */
+
+.button:focus-visible,
+.icon-button:focus-visible,
+.text-field:focus-visible,
+.switch:focus-visible,
+.checkbox:focus-visible,
+.tablist > [role="tab"]:focus-visible,
+.listbox > [role="option"]:focus-visible,
+.menu > [role="menuitem"]:focus-visible,
+.menu > [role="menuitemradio"]:focus-visible,
+.segmented > [role="radio"]:focus-visible,
+.swatches > [role="radio"]:focus-visible,
+.button[data-preview="focus"],
+.icon-button[data-preview="focus"],
+.text-field[data-preview="focus"],
+.switch[data-preview="focus"],
+.checkbox[data-preview="focus"],
+.tablist > [role="tab"][data-preview="focus"],
+.listbox > [role="option"][data-preview="focus"],
+.menu > [role="menuitem"][data-preview="focus"],
+.menu > [role="menuitemradio"][data-preview="focus"],
+.segmented > [role="radio"][data-preview="focus"],
+.swatches > [role="radio"][data-preview="focus"] {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}

@@ -1,0 +1,131 @@
+/* The user agent style sheet (spec 0004, child 0003, Sources).
+ *
+ * Written from the HTML standard's Rendering section and cut to slice 1's
+ * properties. Table parts are blocks until table layout arrives
+ * (feature 11), so their content still reads in order. `noscript` is
+ * hidden because scripting is on; SVG and MathML are parsed but not drawn
+ * in slice 1. */
+
+[hidden], area, base, basefont, datalist, head, link, meta, noembed,
+noframes, noscript, param, rp, script, style, template, title, svg, math {
+  display: none;
+}
+
+html, address, blockquote, body, center, dialog, div, figure, figcaption,
+footer, form, header, hr, legend, listing, main, p, plaintext, pre, search,
+xmp, details, summary, article, aside, h1, h2, h3, h4, h5, h6, hgroup, nav,
+section, dir, dd, dl, dt, menu, ol, ul, fieldset, optgroup, frameset, frame,
+table, caption, colgroup, col, thead, tbody, tfoot, tr, td, th {
+  display: block;
+}
+
+li { display: list-item; }
+dialog:not([open]) { display: none; }
+
+body { margin: 8px; }
+
+p, blockquote, figure, listing, plaintext, pre, xmp, dl, dir, menu, ol, ul {
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+blockquote, figure { margin-left: 40px; margin-right: 40px; }
+dd { margin-left: 40px; }
+dir, menu, ol, ul { padding-left: 40px; }
+
+/* Nested lists lose their vertical margins and change markers. */
+dir dir, dir dl, dir menu, dir ol, dir ul,
+dl dir, dl dl, dl menu, dl ol, dl ul,
+menu dir, menu dl, menu menu, menu ol, menu ul,
+ol dir, ol dl, ol menu, ol ol, ol ul,
+ul dir, ul dl, ul menu, ul ol, ul ul {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+ol { list-style-type: decimal; }
+dir ul, menu ul, ol ul, ul ul { list-style-type: circle; }
+dir dir ul, dir menu ul, dir ol ul, dir ul ul,
+menu dir ul, menu menu ul, menu ol ul, menu ul ul,
+ol dir ul, ol menu ul, ol ol ul, ol ul ul,
+ul dir ul, ul menu ul, ul ol ul, ul ul ul {
+  list-style-type: square;
+}
+
+h1 { margin-top: 0.67em; margin-bottom: 0.67em; font-size: 2em; }
+h2 { margin-top: 0.83em; margin-bottom: 0.83em; font-size: 1.5em; }
+h3 { margin-top: 1em; margin-bottom: 1em; font-size: 1.17em; }
+h4 { margin-top: 1.33em; margin-bottom: 1.33em; font-size: 1em; }
+h5 { margin-top: 1.67em; margin-bottom: 1.67em; font-size: 0.83em; }
+h6 { margin-top: 2.33em; margin-bottom: 2.33em; font-size: 0.67em; }
+h1, h2, h3, h4, h5, h6 { font-weight: bold; }
+
+hr {
+  color: gray;
+  border-style: inset;
+  border-width: 1px;
+  margin: 0.5em auto;
+}
+
+fieldset {
+  margin-left: 2px;
+  margin-right: 2px;
+  border: 2px groove #c0c0c0;
+  padding: 0.35em 0.75em 0.625em;
+}
+
+address, cite, dfn, em, i, var { font-style: italic; }
+b, strong, th { font-weight: bolder; }
+code, kbd, listing, plaintext, pre, samp, tt, xmp { font-family: monospace; }
+pre, listing, plaintext, xmp { white-space: pre; }
+nobr { white-space: nowrap; }
+big { font-size: larger; }
+small, sub, sup { font-size: smaller; }
+u, ins { text-decoration: underline; }
+mark { background-color: yellow; color: black; }
+center, caption, th { text-align: center; }
+
+a:link { color: #0000ee; text-decoration: underline; }
+
+/* Links, controls and focus (spec 0006, AC-17, AC-18). Flat controls in
+ * the spirit of mainstream browsers: a light fill, a thin gray border, a
+ * small radius. A text field shows one line, clipped. Its width comes from
+ * layout (20 times the `0` advance), not from here. */
+a[href] { cursor: pointer; }
+
+button, input {
+  display: inline-block;
+  color: black;
+  background-color: #efefef;
+  border: 1px solid #767676;
+  border-radius: 2px;
+  padding: 1px 6px;
+  font-family: sans-serif;
+  font-size: 13.333px;
+  text-align: center;
+  user-select: none;
+}
+
+input {
+  background-color: white;
+  padding: 1px 2px;
+  text-align: left;
+  white-space: pre;
+  overflow: hidden;
+  cursor: text;
+  user-select: auto;
+}
+
+input[type=submit i], input[type=reset i], input[type=button i] {
+  background-color: #efefef;
+  padding: 1px 6px;
+  text-align: center;
+  cursor: default;
+  user-select: none;
+}
+
+input[type=hidden i] { display: none; }
+
+input::placeholder { color: #757575; }
+
+:focus-visible { outline: 2px solid #101010; outline-offset: 1px; }

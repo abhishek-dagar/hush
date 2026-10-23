@@ -1,0 +1,240 @@
+/*
+ * The Zen frame (spec 0003, frame anatomy): the caption row, the sidebar
+ * and the page card, plus the Linux app menu overlay. Tokens only; the
+ * root's data-os picks the window buttons.
+ */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+.frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  height: 100%;
+  background-color: var(--surface-chrome);
+}
+
+/* Caption row */
+
+.caption {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+  box-sizing: border-box;
+  min-height: var(--caption-height);
+  padding: 0 var(--space-1);
+}
+
+.caption-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.caption-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: none;
+  color: var(--text-primary);
+  background-color: transparent;
+}
+
+.caption-button[hidden] {
+  display: none;
+}
+
+.caption-button:hover {
+  background-color: var(--fill-hover);
+}
+
+.caption-button:active {
+  background-color: var(--fill-pressed);
+}
+
+.caption-button:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+/* macOS keeps the native traffic lights and the native menu bar. */
+
+[data-os="macos"] .caption {
+  padding-left: var(--caption-inset-start);
+}
+
+[data-os="macos"] .caption-menu,
+[data-os="macos"] .caption-buttons {
+  display: none;
+}
+
+/* Windows: three flush buttons top right, glyphs from the OS icon font. */
+
+[data-os="windows"] .caption {
+  padding-right: 0;
+}
+
+[data-os="windows"] .caption-buttons {
+  align-self: flex-start;
+  gap: 0;
+}
+
+[data-os="windows"] .caption-button {
+  width: var(--caption-button-width);
+  height: var(--caption-height);
+  border-radius: 0;
+}
+
+[data-os="windows"] .caption-button > .icon {
+  display: none;
+}
+
+.caption-glyph {
+  font-family: var(--caption-glyph-font);
+  font-size: var(--caption-glyph-size);
+  line-height: 1;
+}
+
+/* Linux: round buttons, on the side and in the order the desktop gives. */
+
+[data-os="linux"] .caption-button {
+  width: var(--caption-button-size);
+  height: var(--caption-button-size);
+  border-radius: var(--caption-button-radius);
+  background-color: var(--fill-hover);
+}
+
+[data-os="linux"] .caption-button:hover {
+  background-color: var(--fill-pressed);
+}
+
+[data-os="linux"] .caption-button > .caption-glyph {
+  display: none;
+}
+
+.frame[data-side="left"] .caption-buttons {
+  order: -1;
+  margin-left: 0;
+}
+
+.frame[data-side="left"] .caption-menu {
+  margin-left: auto;
+}
+
+/* Sidebar and page card */
+
+.frame-body {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.frame-sidebar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  width: var(--sidebar-width);
+  padding: 0 var(--space-2) var(--space-2) var(--space-2);
+}
+
+/* Navigation (spec 0008, AC-1): the back, forward and reload row, then
+   the address showing the security icon and the display host. */
+
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.address {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-m);
+  color: var(--text-primary);
+  background-color: var(--surface-raised);
+}
+
+.address > .icon {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.address > .label {
+  flex: 1 1 0;
+}
+
+.address > [hidden] {
+  display: none;
+}
+
+.address-placeholder {
+  color: var(--text-secondary);
+}
+
+[data-tabs="horizontal"] .frame-sidebar {
+  display: none;
+}
+
+.page-slot {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 var(--page-inset) var(--page-inset) 0;
+  border-radius: var(--radius-l);
+  background-color: var(--surface-page);
+}
+
+[data-tabs="horizontal"] .page-slot {
+  margin-left: var(--page-inset);
+}
+
+/* The Linux app menu, under the menu button. */
+
+.app-menu {
+  position: absolute;
+  top: var(--caption-height);
+  left: var(--space-1);
+  z-index: 1;
+}
+
+.app-menu[hidden] {
+  display: none;
+}
+
+.frame[data-side="left"] .app-menu {
+  right: var(--space-1);
+  left: auto;
+}
+
+.menu-heading {
+  padding: var(--space-1) var(--space-2) 0 var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-strong);
+}
+
+.menu > [role="menuitem"]:focus-visible,
+.menu > [role="menuitemradio"]:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: 0;
+}

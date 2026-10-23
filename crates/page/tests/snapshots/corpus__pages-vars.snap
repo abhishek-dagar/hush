@@ -1,0 +1,87 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+      title
+        "Custom properties"
+      "\n"
+      style
+        "\n  :root { --accent: #c33; --gap: 8px; --pad: calc(var(--gap) * 2) }\n  body { margin: var(--gap) }\n  .card { --accent: #36c; border: 2px solid var(--accent); padding: var(--gap) }\n  .title { color: var(--accent) }\n  .fallback { color: var(--missing, #393) }\n  .cycle { --a: var(--b); --b: var(--a); color: var(--a, red) }\n  .invalid { --size: nope; margin-left: var(--size) }\n  .inherited { color: var(--accent) }\n"
+      "\n"
+    body
+      p class="title"
+        "root accent"
+      "\n"
+      div class="card"
+        p class="title"
+          "card accent overrides"
+        p class="inherited"
+          "inherits the card's value"
+      "\n"
+      p class="fallback"
+        "fallback used"
+      "\n"
+      p class="cycle"
+        "a cycle is invalid at computed value time"
+      "\n"
+      p class="invalid"
+        "an invalid value falls back to the initial margin"
+      "\n"
+
+== computed style ==
+html: display: block; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>head: display: none; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>head>title: display: none; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>head>style: display: none; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body: display: block; margin: 8px 8px 8px 8px; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body>p[1]: display: block; margin: 16px 0px 16px 0px; color: #cc3333ff; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body>div: display: block; padding: 8px 8px 8px 8px; border-top: 2px solid #3366ccff; border-right: 2px solid #3366ccff; border-bottom: 2px solid #3366ccff; border-left: 2px solid #3366ccff; --accent: #36c; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body>div>p[1]: display: block; margin: 16px 0px 16px 0px; color: #3366ccff; --accent: #36c; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body>div>p[2]: display: block; margin: 16px 0px 16px 0px; color: #3366ccff; --accent: #36c; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body>p[2]: display: block; margin: 16px 0px 16px 0px; color: #339933ff; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body>p[3]: display: block; margin: 16px 0px 16px 0px; color: #ff0000ff; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2)
+html>body>p[4]: display: block; margin: 16px 0px 16px 0px; --accent: #c33; --gap: 8px; --pad: calc(/**/8px/**/ * 2); --size: nope
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x293.1
+    box html>body at=8,16 size=784x261.1
+      box html>body>p[1] at=0,0 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[1]>#text at=0,0 size=81.13x21.52 baseline=16.93 "root accent"
+      box html>body>div at=0,37.52 size=784x111.03
+        box html>body>div>p[1] at=10,26 size=764x21.52
+          line at=0,0 size=764x21.52 baseline=16.93
+            text html>body>div>p[1]>#text at=0,0 size=152.23x21.52 baseline=16.93 "card accent overrides"
+        box html>body>div>p[2] at=10,63.52 size=764x21.52
+          line at=0,0 size=764x21.52 baseline=16.93
+            text html>body>div>p[2]>#text at=0,0 size=166.8x21.52 baseline=16.93 "inherits the card's value"
+      box html>body>p[2] at=0,164.55 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[2]>#text at=0,0 size=92.65x21.52 baseline=16.93 "fallback used"
+      box html>body>p[3] at=0,202.07 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[3]>#text at=0,0 size=280.88x21.52 baseline=16.93 "a cycle is invalid at computed value time"
+      box html>body>p[4] at=0,239.58 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[4]>#text at=0,0 size=317.1x21.52 baseline=16.93 "an invalid value falls back to the initial margin"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- border (8,53.52 784x111.03) widths=2 2 2 2 colors=#3366ccff #3366ccff #3366ccff #3366ccff styles=solid solid solid solid
+  s1 clip=- text font=0 size=16 #cc3333ff glyphs=11
+  s1 clip=- text font=0 size=16 #3366ccff glyphs=21
+  s1 clip=- text font=0 size=16 #3366ccff glyphs=25
+  s1 clip=- text font=0 size=16 #339933ff glyphs=13
+  s1 clip=- text font=0 size=16 #ff0000ff glyphs=41
+  s1 clip=- text font=0 size=16 #000000ff glyphs=49

@@ -1,0 +1,15 @@
+p { color: red; margin: 4px 0 }
+.cls { color: brown }
+.box > p:first-child { font-weight: bold }
+[data-kind=attr] { background: #ddf }
+[lang|=fr] { font-style: italic }
+span + .sib { color: navy }
+.sib ~ span { text-decoration: underline }
+li:first-child { color: green }
+li:last-child { color: maroon }
+/* Not in slice 1 (spec 0004, child 0003, Selectors): the rule is dropped. */
+li:nth-child(2) { color: gray }
+p:not(.not-me):not(#id) { padding-left: 2px }
+p.not-me { padding-left: 0 }
+section em { color: olive }
+section > em { font-size: 20px }

@@ -1,0 +1,25 @@
+<!doctype html>
+<title>Inline formatting</title>
+<style>
+  body { margin: 8px; width: 300px; font-family: serif; font-size: 16px }
+  .big { font-size: 28px }
+  .small { font-size: 10px }
+  .box { background: #fe8; border: 2px solid #c80; padding: 0 4px }
+  .ib { display: inline-block; width: 60px; height: 30px; background: #8cf; vertical-align: middle }
+  .pre { white-space: pre; font-family: monospace }
+  .nowrap { white-space: nowrap }
+  .center { text-align: center }
+  .right { text-align: right }
+  .indent { text-indent: 20px }
+  u { text-decoration: underline }
+</style>
+<p>Words wrap at spaces across <span class=big>larger</span> and <span class=small>smaller</span> text, and the line box grows to hold the tallest.</p>
+<p>An <span class=box>inline box with a border and padding that splits across lines</span> keeps its edges on the first and last fragment.</p>
+<p>Before <span class=ib></span> an inline block sits on the baseline.</p>
+<p class=pre>pre  keeps   spaces
+and newlines</p>
+<p class=nowrap>nowrap text runs past the edge of its narrow container without wrapping at all</p>
+<p class=center>centered line</p>
+<p class=right>right aligned</p>
+<p class=indent>The first line is indented, the rest are not, when the paragraph wraps onto more lines.</p>
+<p><u>underlined</u>, <b>bold</b>, <i>italic</i> and <sub>sub</sub><sup>sup</sup>.</p>

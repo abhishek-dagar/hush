@@ -1,0 +1,35 @@
+[package]
+name = "page"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base.workspace = true
+css.workspace = true
+dom.workspace = true
+# Script text in the charset its response names (spec 0004, child 0006);
+# already in the content process through `html`.
+encoding_rs.workspace = true
+html.workspace = true
+image.workspace = true
+layout.workspace = true
+paint.workspace = true
+display-list.workspace = true
+ipc.workspace = true
+postcard.workspace = true
+script.workspace = true
+script-quickjs.workspace = true
+text.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Resolving `<link href>` against the document URL; already in the binary
+# through `net`.
+url.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+insta.workspace = true

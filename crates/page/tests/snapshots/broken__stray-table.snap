@@ -1,0 +1,22 @@
+---
+source: crates/page/tests/broken.rs
+expression: page.main_frame().document.dump()
+---
+#document
+  #doctype html
+  html
+    head
+    body
+      "stray textmore stray"
+      b
+        "bold"
+      p
+        "para in table"
+      table
+        tbody
+          tr
+            td
+              "cell"
+              div
+                "block"
+      "\ncell outside\nafter"

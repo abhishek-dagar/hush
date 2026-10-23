@@ -1,0 +1,68 @@
+/*
+ * The settings window (spec 0003, build plan task 18), on top of the
+ * frame's caption row. Same profile rules as every chrome stylesheet.
+ * The window is as tall as .settings-body, so nothing here fills height.
+ */
+
+.settings-title {
+  flex: 1 1 0;
+  padding: 0 var(--space-2);
+  font-weight: var(--weight-strong);
+}
+
+.frame[data-side="left"] .settings-title {
+  text-align: right;
+}
+
+.settings-body {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-4) var(--space-6) var(--space-6) var(--space-6);
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-heading {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--weight-strong);
+}
+
+.settings-hint {
+  max-width: 100%;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+
+/* The System swatch shows the snapped preset with a monitor glyph. */
+
+.swatches > #accent-system {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--on-accent);
+}
+
+/* Interface size: smaller, the value, bigger, reset. */
+
+.stepper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stepper-value {
+  min-width: var(--stepper-value-width);
+  text-align: center;
+}

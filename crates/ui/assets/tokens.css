@@ -1,0 +1,177 @@
+/*
+ * Browser chrome design tokens (spec 0003). The only file that holds color
+ * literals and raw sizes; every other chrome stylesheet uses var().
+ *
+ * The light and dark blocks hold the eight accent presets; data-accent
+ * only points --accent at one of them, so an element inherits the right
+ * shade from whatever theme is above it. Every theme block defines every
+ * other color token, so a block never leaks a value from another mode.
+ * High contrast keeps each preset's value: every one already reaches 4.5:1
+ * on the high contrast surfaces.
+ *
+ * crates/ui/tests/contrast.rs checks every documented pair against
+ * WCAG AA for each theme, contrast and accent. docs/design.md explains each
+ * token.
+ */
+
+/* Light, and everything that does not change with the theme. */
+:root, [data-theme="light"] {
+  --surface-chrome: #EDEDEF;
+  --surface-page: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --fill-hover: rgba(0, 0, 0, 0.06);
+  --fill-pressed: rgba(0, 0, 0, 0.10);
+  --text-primary: #1D1D1F;
+  --text-secondary: #5B5B60;
+  --text-disabled: #A1A1A6;
+  --border-subtle: #D8D8DC;
+  --border-strong: #85858B;
+  --scrim: rgba(0, 0, 0, 0.32);
+  --on-accent: #FFFFFF;
+  --blue: #0A64D6;
+  --blue-strong: #0855B6;
+  --purple: #7A3EC8;
+  --purple-strong: #6835AA;
+  --pink: #C2185B;
+  --pink-strong: #A5144D;
+  --red: #C62828;
+  --red-strong: #A82222;
+  --orange: #B45309;
+  --orange-strong: #994708;
+  --yellow: #8A6A00;
+  --yellow-strong: #755A00;
+  --green: #1E7B34;
+  --green-strong: #1A692C;
+  --graphite: #5E5E63;
+  --graphite-strong: #505054;
+
+  --font-family: system-ui;
+  --weight-regular: 400;
+  --weight-strong: 600;
+  --line-height: 1.3;
+  --text-caption: 0.85rem;
+  --text-body: 1rem;
+  --text-title: 1.15rem;
+  --text-large: 1.5rem;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  --radius-s: 4px;
+  --radius-m: 6px;
+  --radius-l: 8px;
+  --radius-xl: 12px;
+
+  --control-height: 32px;
+  --icon-button: 28px;
+  --icon-size: 16px;
+  --page-inset: 8px;
+  --sidebar-width: 240px;
+  --focus-width: 2px;
+  --focus-offset: 2px;
+  --focus-ring: var(--accent);
+  --border-width: 1px;
+  --checkbox-size: 16px;
+  --switch-width: 32px;
+  --switch-height: 18px;
+  --switch-knob: 14px;
+  --switch-inset: 2px;
+  --swatch-size: 20px;
+  --progress-height: 4px;
+  --menu-width: 200px;
+  --popover-width: 280px;
+  --sheet-width: 480px;
+  --stepper-value-width: 56px;
+
+  --caption-height: 32px;
+  --caption-inset-start: 78px;
+  --caption-button-width: 46px;
+  --caption-button-size: 28px;
+  --caption-button-radius: 14px;
+  --caption-glyph-size: 10px;
+  --caption-glyph-font: Segoe Fluent Icons, Segoe MDL2 Assets;
+  --resize-border: 6px;
+
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-theme="dark"] {
+  --surface-chrome: #1C1C1E;
+  --surface-page: #121212;
+  --surface-raised: #2C2C2E;
+  --fill-hover: rgba(255, 255, 255, 0.08);
+  --fill-pressed: rgba(255, 255, 255, 0.14);
+  --text-primary: #F5F5F7;
+  --text-secondary: #BABABF;
+  --text-disabled: #5E5E63;
+  --border-subtle: #3A3A3C;
+  --border-strong: #75757B;
+  --scrim: rgba(0, 0, 0, 0.56);
+  --on-accent: #000000;
+  --blue: #3D8BFF;
+  --blue-strong: #5A9CFF;
+  --purple: #B58CFF;
+  --purple-strong: #C09DFF;
+  --pink: #FF7EB6;
+  --pink-strong: #FF91C1;
+  --red: #FF7B72;
+  --red-strong: #FF8F87;
+  --orange: #FFA348;
+  --orange-strong: #FFB163;
+  --yellow: #E8C547;
+  --yellow-strong: #EBCE63;
+  --green: #5BD178;
+  --green-strong: #74D88C;
+  --graphite: #A1A1A6;
+  --graphite-strong: #AFAFB3;
+}
+
+/* High contrast, light. Applies whenever the OS asks for more contrast. */
+[data-contrast="more"] {
+  --surface-chrome: #FFFFFF;
+  --surface-page: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --fill-hover: rgba(0, 0, 0, 0.12);
+  --fill-pressed: rgba(0, 0, 0, 0.20);
+  --text-primary: #000000;
+  --text-secondary: #000000;
+  --text-disabled: #5E5E63;
+  --border-subtle: #000000;
+  --border-strong: #000000;
+  --scrim: rgba(0, 0, 0, 0.56);
+  --focus-width: 3px;
+}
+
+[data-theme="dark"][data-contrast="more"] {
+  --surface-chrome: #000000;
+  --surface-page: #000000;
+  --surface-raised: #000000;
+  --fill-hover: rgba(255, 255, 255, 0.18);
+  --fill-pressed: rgba(255, 255, 255, 0.28);
+  --text-primary: #FFFFFF;
+  --text-secondary: #FFFFFF;
+  --text-disabled: #A1A1A6;
+  --border-subtle: #FFFFFF;
+  --border-strong: #FFFFFF;
+  --scrim: rgba(0, 0, 0, 0.72);
+}
+
+[data-motion="reduce"] {
+  --duration-fast: 0ms;
+  --duration-normal: 0ms;
+}
+
+/* Which preset --accent shows. */
+[data-accent="blue"] { --accent: var(--blue); --accent-strong: var(--blue-strong); }
+[data-accent="purple"] { --accent: var(--purple); --accent-strong: var(--purple-strong); }
+[data-accent="pink"] { --accent: var(--pink); --accent-strong: var(--pink-strong); }
+[data-accent="red"] { --accent: var(--red); --accent-strong: var(--red-strong); }
+[data-accent="orange"] { --accent: var(--orange); --accent-strong: var(--orange-strong); }
+[data-accent="yellow"] { --accent: var(--yellow); --accent-strong: var(--yellow-strong); }
+[data-accent="green"] { --accent: var(--green); --accent-strong: var(--green-strong); }
+[data-accent="graphite"] { --accent: var(--graphite); --accent-strong: var(--graphite-strong); }

@@ -1,0 +1,13 @@
+---
+source: crates/page/tests/broken.rs
+expression: page.main_frame().document.dump()
+---
+#document
+  #doctype html
+  html
+    head
+      style
+        "p { color: red }"
+    body
+      p class="lead"
+        "This file stops partway through "

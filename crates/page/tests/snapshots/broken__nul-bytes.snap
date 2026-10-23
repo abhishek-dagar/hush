@@ -1,0 +1,20 @@
+---
+source: crates/page/tests/broken.rs
+expression: page.main_frame().document.dump()
+---
+#document
+  #doctype html
+  html
+    head
+    body
+      p
+        "beforeafter"
+      "\n"
+      p title="a�b"
+        "attr"
+      "\n"
+      svg
+        "�"
+      textarea
+        "t�x"
+      <!-- c� -->

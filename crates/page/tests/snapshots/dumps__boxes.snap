@@ -1,0 +1,19 @@
+---
+source: crates/page/tests/dumps.rs
+expression: boxes
+---
+block html
+  block html>body
+    block html>body>header
+    block html>body>main
+      block html>body>main>section[1]
+      block html>body>main>section[2]
+      block html>body>main>section[3]
+      block html>body>main>aside
+        block html>body>main>aside>div[1]
+        block html>body>main>aside>div[2]
+        block html>body>main>aside>div[3]
+        block html>body>main>aside>div[4]
+        block html>body>main>aside>div[5]
+        block html>body>main>aside>div[6]
+    block html>body>footer

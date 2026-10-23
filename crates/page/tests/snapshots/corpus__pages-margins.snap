@@ -1,0 +1,108 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+      title
+        "Margin collapsing"
+      "\n"
+      style
+        "\n  body { margin: 0; font-family: sans-serif; font-size: 16px; line-height: 20px }\n  div, p { background: #eef }\n  .a { margin: 20px 0 }\n  .b { margin: 30px 0 }\n  .parent { margin-top: 10px; background: #fee }\n  .child { margin-top: 25px }\n  .border { border-top: 1px solid black; margin-top: 10px }\n  .border .child { margin-top: 15px }\n  .empty { margin: 12px 0 18px }\n  .neg { margin-top: -8px }\n  .pad { padding-top: 1px; margin-top: 10px }\n  .pad .child { margin-top: 40px }\n"
+      "\n"
+    body
+      p class="a"
+        "siblings: max(20, 30) between"
+      "\n"
+      p class="b"
+        "second sibling"
+      "\n"
+      div class="parent"
+        p class="child"
+          "child margin collapses through the parent"
+      "\n"
+      div class="border"
+        p class="child"
+          "a border stops it"
+      "\n"
+      div class="empty"
+      "\n"
+      p class="neg"
+        "an empty block's margins collapse through it, then a negative one"
+      "\n"
+      div class="pad"
+        p class="child"
+          "padding stops it too"
+      "\n"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>head>title: display: none
+html>head>style: display: none
+html>body: display: block; font-family: sans-serif; line-height: 20px
+html>body>p[1]: display: block; margin: 20px 0px 20px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>p[2]: display: block; margin: 30px 0px 30px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>div[1]: display: block; margin: 10px 0px 0px 0px; font-family: sans-serif; line-height: 20px; background-color: #ffeeeeff
+html>body>div[1]>p: display: block; margin: 25px 0px 16px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>div[2]: display: block; margin: 10px 0px 0px 0px; border-top: 1px solid #000000ff; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>div[2]>p: display: block; margin: 15px 0px 16px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>div[3]: display: block; margin: 12px 0px 18px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>p[3]: display: block; margin: -8px 0px 16px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>div[4]: display: block; margin: 10px 0px 0px 0px; padding: 1px 0px 0px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+html>body>div[4]>p: display: block; margin: 40px 0px 16px 0px; font-family: sans-serif; line-height: 20px; background-color: #eeeeffff
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x315
+    box html>body at=0,20 size=800x279 overflow=(0,-0.77 800x280.52)
+      box html>body>p[1] at=0,0 size=800x20 overflow=(0,-0.77 800x21.52)
+        line at=0,0 size=800x20 baseline=16.17
+          text html>body>p[1]>#text at=0,-0.77 size=217.6x21.52 baseline=16.93 "siblings: max(20, 30) between"
+      box html>body>p[2] at=0,50 size=800x20 overflow=(0,-0.77 800x21.52)
+        line at=0,0 size=800x20 baseline=16.17
+          text html>body>p[2]>#text at=0,-0.77 size=100.13x21.52 baseline=16.93 "second sibling"
+      box html>body>div[1] at=0,100 size=800x20 overflow=(0,-0.77 800x21.52)
+        box html>body>div[1]>p at=0,0 size=800x20 overflow=(0,-0.77 800x21.52)
+          line at=0,0 size=800x20 baseline=16.17
+            text html>body>div[1]>p>#text at=0,-0.77 size=292.32x21.52 baseline=16.93 "child margin collapses through the parent"
+      box html>body>div[2] at=0,136 size=800x36 overflow=(0,0 800x36.75)
+        box html>body>div[2]>p at=0,16 size=800x20 overflow=(0,-0.77 800x21.52)
+          line at=0,0 size=800x20 baseline=16.17
+            text html>body>div[2]>p>#text at=0,-0.77 size=118.7x21.52 baseline=16.93 "a border stops it"
+      box html>body>div[3] at=0,188 size=800x0
+      box html>body>p[3] at=0,182 size=800x20 overflow=(0,-0.77 800x21.52)
+        line at=0,0 size=800x20 baseline=16.17
+          text html>body>p[3]>#text at=0,-0.77 size=460.93x21.52 baseline=16.93 "an empty block's margins collapse through it, then a negative one"
+      box html>body>div[4] at=0,218 size=800x61 overflow=(0,0 800x61.75)
+        box html>body>div[4]>p at=0,41 size=800x20 overflow=(0,-0.77 800x21.52)
+          line at=0,0 size=800x20 baseline=16.17
+            text html>body>div[4]>p>#text at=0,-0.77 size=143.25x21.52 baseline=16.93 "padding stops it too"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- rect (0,20 800x20) #eeeeffff
+  s1 clip=- rect (0,70 800x20) #eeeeffff
+  s1 clip=- rect (0,120 800x20) #ffeeeeff
+  s1 clip=- rect (0,120 800x20) #eeeeffff
+  s1 clip=- rect (0,156 800x36) #eeeeffff
+  s1 clip=- border (0,156 800x36) widths=1 0 0 0 colors=#000000ff #000000ff #000000ff #000000ff styles=solid none none none
+  s1 clip=- rect (0,172 800x20) #eeeeffff
+  s1 clip=- rect (0,208 800x0) #eeeeffff
+  s1 clip=- rect (0,202 800x20) #eeeeffff
+  s1 clip=- rect (0,238 800x61) #eeeeffff
+  s1 clip=- rect (0,279 800x20) #eeeeffff
+  s1 clip=- text font=0 size=16 #000000ff glyphs=29
+  s1 clip=- text font=0 size=16 #000000ff glyphs=14
+  s1 clip=- text font=0 size=16 #000000ff glyphs=41
+  s1 clip=- text font=0 size=16 #000000ff glyphs=17
+  s1 clip=- text font=0 size=16 #000000ff glyphs=65
+  s1 clip=- text font=0 size=16 #000000ff glyphs=20

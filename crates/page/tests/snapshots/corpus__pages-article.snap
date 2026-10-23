@@ -1,0 +1,264 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html lang="en"
+    head
+      "\n"
+      meta charset="utf-8"
+      "\n"
+      title
+        "A plain article"
+      "\n"
+      link rel="stylesheet" href="article.css"
+      "\n"
+    "\n"
+    body
+      "\n"
+      header
+        p class="kicker"
+          "Field notes"
+        h1
+          "Why small browsers matter"
+        "\n"
+        p class="byline"
+          "By A. Writer, "
+          time
+            "21 October"
+      "\n"
+      article
+        "\n"
+        p
+          "A browser is mostly a "
+          em
+            "reading"
+          " machine. Most of what people open is text: news, documentation,\nrecipes and long essays. If a small engine gets "
+          strong
+            "that"
+          " right, it is already useful."
+        "\n"
+        h2
+          "What it takes"
+        "\n"
+        p
+          "Reading needs a parser that forgives broken markup, a cascade that applies styles in the\nright order, and "
+          a href="#layout"
+            "flow layout"
+          " that wraps lines where people expect."
+        "\n"
+        ul
+          "\n"
+          li
+            "Parse the page as it streams in."
+          "\n"
+          li
+            "Style it with the cascade."
+          "\n"
+          li
+            "Lay out blocks and lines, then paint."
+          "\n"
+        "\n"
+        blockquote
+          p
+            "Simple things should be simple."
+        "\n"
+        h2 id="layout"
+          "Layout"
+        "\n"
+        p
+          "Blocks stack down the page; their vertical margins collapse. Inside a block, text and inline\nboxes fill "
+          code
+            "line boxes"
+          " from left to right."
+        "\n"
+        ol
+          li
+            "First"
+          li
+            "Second"
+        "\n"
+        p
+          img src="two.png" alt="two colour bars" width="40" height="20"
+          " A picture sits on the line like a word."
+        "\n"
+        hr
+        "\n"
+        p class="footnote"
+          "Thanks for reading."
+        "\n"
+      "\n\n\n"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>head>meta: display: none
+html>head>title: display: none
+html>head>link: display: none
+html>body: display: block; max-width: 640px; margin: 0px auto 0px auto; padding: 24px 24px 24px 24px; font-family: serif; color: #222222ff; background-color: #fdfcf8ff
+html>body>header: display: block; margin: 0px 0px 16px 0px; border-bottom: 1px solid #ccccccff; font-family: serif; color: #222222ff
+html>body>header>p[1]: display: block; font-family: serif; font-size: 12px; color: #aa3333ff
+html>body>header>h1: display: block; margin: 4px 0px 8px 0px; font-family: serif; font-size: 32px; font-weight: 700; color: #222222ff; line-height: 1.2
+html>body>header>p[2]: display: block; margin: 14px 0px 14px 0px; font-family: serif; font-size: 14px; color: #666666ff
+html>body>header>p[2]>time: font-family: serif; font-size: 14px; color: #666666ff
+html>body>article: display: block; font-family: serif; color: #222222ff
+html>body>article>p[1]: display: block; margin: 16px 0px 16px 0px; font-family: serif; color: #222222ff
+html>body>article>p[1]>em: font-family: serif; font-style: italic; color: #222222ff
+html>body>article>p[1]>strong: font-family: serif; font-weight: 700; color: #222222ff
+html>body>article>h2[1]: display: block; margin: 19.92px 0px 19.92px 0px; font-family: serif; font-size: 24px; font-weight: 700; color: #222222ff
+html>body>article>p[2]: display: block; margin: 16px 0px 16px 0px; font-family: serif; color: #222222ff
+html>body>article>p[2]>a: font-family: serif; color: #1a4f8bff; text-decoration-line: underline
+html>body>article>ul: display: block; margin: 16px 0px 16px 0px; padding: 0px 0px 0px 40px; font-family: serif; color: #222222ff
+html>body>article>ul>li[1]: display: list-item; font-family: serif; color: #222222ff
+html>body>article>ul>li[2]: display: list-item; font-family: serif; color: #222222ff
+html>body>article>ul>li[3]: display: list-item; font-family: serif; color: #222222ff
+html>body>article>blockquote: display: block; margin: 16px 0px 16px 0px; padding: 0px 0px 0px 16px; border-left: 4px solid #ddddddff; font-family: serif; color: #555555ff
+html>body>article>blockquote>p: display: block; margin: 16px 0px 16px 0px; font-family: serif; color: #555555ff
+html>body>article>h2[2]: display: block; margin: 19.92px 0px 19.92px 0px; font-family: serif; font-size: 24px; font-weight: 700; color: #222222ff
+html>body>article>p[3]: display: block; margin: 16px 0px 16px 0px; font-family: serif; color: #222222ff
+html>body>article>p[3]>code: padding: 0px 2px 0px 2px; font-family: monospace; font-size: 13px; color: #222222ff; background-color: #eeeeeeff
+html>body>article>ol: display: block; margin: 16px 0px 16px 0px; padding: 0px 0px 0px 40px; font-family: serif; color: #222222ff; list-style-type: decimal
+html>body>article>ol>li[1]: display: list-item; font-family: serif; color: #222222ff; list-style-type: decimal
+html>body>article>ol>li[2]: display: list-item; font-family: serif; color: #222222ff; list-style-type: decimal
+html>body>article>p[4]: display: block; margin: 16px 0px 16px 0px; font-family: serif; color: #222222ff
+html>body>article>p[4]>img: font-family: serif; color: #222222ff
+html>body>article>hr: display: block; margin: 8px auto 8px auto; border-top: 1px solid #000000ff; border-right: 1px solid #000000ff; border-bottom: 1px solid #000000ff; border-left: 1px solid #000000ff; font-family: serif; color: #808080ff
+html>body>article>p[5]: display: block; margin: 12px 0px 12px 0px; font-family: serif; font-size: 12px; color: #777777ff
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x740.98
+    box html>body at=56,0 size=688x740.98
+      box html>body>header at=24,24 size=640x106.35
+        box html>body>header>p[1] at=0,0 size=640x16.13
+          line at=0,0 size=640x16.13 baseline=12.7
+            text html>body>header>p[1]>#text at=0,0 size=58.98x16.13 baseline=12.7 "Field notes"
+        box html>body>header>h1 at=0,20.13 size=640x38.4 overflow=(0,-2.3 640x43)
+          line at=0,0 size=640x38.4 baseline=31.55
+            text html>body>header>h1>#text at=0,-2.3 size=395.12x43 baseline=33.85 "Why small browsers matter"
+        box html>body>header>p[2] at=0,72.53 size=640x18.82
+          line at=0,0 size=640x18.82 baseline=14.82
+            text html>body>header>p[2]>#text at=0,0 size=84.83x18.82 baseline=14.82 "By A. Writer, "
+            box html>body>header>p[2]>time at=84.83,0 size=73.38x18.82 inline
+              text html>body>header>p[2]>time>#text at=0,0 size=73.38x18.82 baseline=14.82 "21 October"
+      box html>body>article at=24,146.35 size=640x558.63
+        box html>body>article>p[1] at=0,0 size=640x64.55
+          line at=0,0 size=640x21.52 baseline=16.93
+            text html>body>article>p[1]>#text[1] at=0,0 size=159.17x21.52 baseline=16.93 "A browser is mostly a "
+            box html>body>article>p[1]>em at=159.17,0 size=52.35x21.52 inline
+              text html>body>article>p[1]>em>#text at=0,0 size=52.35x21.52 baseline=16.93 "reading"
+            text html>body>article>p[1]>#text[2] at=211.52,0 size=362.77x21.52 baseline=16.93 " machine. Most of what people open is text: news, "
+          line at=0,21.52 size=640x21.52 baseline=16.93
+            text html>body>article>p[1]>#text[2] at=0,0 size=446.3x21.52 baseline=16.93 "documentation, recipes and long essays. If a small engine gets "
+            box html>body>article>p[1]>strong at=446.3,0 size=28.57x21.52 inline
+              text html>body>article>p[1]>strong>#text at=0,0 size=28.57x21.52 baseline=16.93 "that"
+            text html>body>article>p[1]>#text[3] at=474.87,0 size=131.42x21.52 baseline=16.93 " right, it is already "
+          line at=0,43.03 size=640x21.52 baseline=16.93
+            text html>body>article>p[1]>#text[3] at=0,0 size=47.58x21.52 baseline=16.93 "useful."
+        box html>body>article>h2[1] at=0,84.47 size=640x32.27
+          line at=0,0 size=640x32.27 baseline=25.4
+            text html>body>article>h2[1]>#text at=0,0 size=142.52x32.27 baseline=25.4 "What it takes"
+        box html>body>article>p[2] at=0,136.65 size=640x43.03
+          line at=0,0 size=640x21.52 baseline=16.93
+            text html>body>article>p[2]>#text[1] at=0,0 size=629.92x21.52 baseline=16.93 "Reading needs a parser that forgives broken markup, a cascade that applies styles in the "
+          line at=0,21.52 size=640x21.52 baseline=16.93
+            text html>body>article>p[2]>#text[1] at=0,0 size=115.23x21.52 baseline=16.93 "right order, and "
+            box html>body>article>p[2]>a at=115.23,0 size=80.48x21.52 inline
+              text html>body>article>p[2]>a>#text at=0,0 size=80.48x21.52 baseline=16.93 "flow layout"
+            text html>body>article>p[2]>#text[2] at=195.72,0 size=276.17x21.52 baseline=16.93 " that wraps lines where people expect."
+        box html>body>article>ul at=0,195.68 size=640x64.55
+          box html>body>article>ul>li[1] at=40,0 size=600x21.52 overflow=(-18.88,0 618.88x21.52)
+            line at=0,0 size=600x21.52 baseline=16.93
+              text html>body>article>ul>li[1]>#text at=0,0 size=222.38x21.52 baseline=16.93 "Parse the page as it streams in."
+            text html>body>article>ul>li[1] at=-18.88,0 size=10.88x21.52 baseline=16.93 "•"
+          box html>body>article>ul>li[2] at=40,21.52 size=600x21.52 overflow=(-18.88,0 618.88x21.52)
+            line at=0,0 size=600x21.52 baseline=16.93
+              text html>body>article>ul>li[2]>#text at=0,0 size=177.68x21.52 baseline=16.93 "Style it with the cascade."
+            text html>body>article>ul>li[2] at=-18.88,0 size=10.88x21.52 baseline=16.93 "•"
+          box html>body>article>ul>li[3] at=40,43.03 size=600x21.52 overflow=(-18.88,0 618.88x21.52)
+            line at=0,0 size=600x21.52 baseline=16.93
+              text html>body>article>ul>li[3]>#text at=0,0 size=254.05x21.52 baseline=16.93 "Lay out blocks and lines, then paint."
+            text html>body>article>ul>li[3] at=-18.88,0 size=10.88x21.52 baseline=16.93 "•"
+        box html>body>article>blockquote at=0,276.23 size=640x21.52
+          box html>body>article>blockquote>p at=20,0 size=620x21.52
+            line at=0,0 size=620x21.52 baseline=16.93
+              text html>body>article>blockquote>p>#text at=0,0 size=221.75x21.52 baseline=16.93 "Simple things should be simple."
+        box html>body>article>h2[2] at=0,317.67 size=640x32.27
+          line at=0,0 size=640x32.27 baseline=25.4
+            text html>body>article>h2[2]>#text at=0,0 size=72.27x32.27 baseline=25.4 "Layout"
+        box html>body>article>p[3] at=0,369.85 size=640x43.03
+          line at=0,0 size=640x21.52 baseline=16.93
+            text html>body>article>p[3]>#text[1] at=0,0 size=637.17x21.52 baseline=16.93 "Blocks stack down the page; their vertical margins collapse. Inside a block, text and inline "
+          line at=0,21.52 size=640x21.52 baseline=16.93
+            text html>body>article>p[3]>#text[1] at=0,0 size=68.77x21.52 baseline=16.93 "boxes fill "
+            box html>body>article>p[3]>code at=68.77,3.18 size=62.02x17.47 inline
+              text html>body>article>p[3]>code>#text at=2,0 size=58.02x17.47 baseline=13.75 "line boxes"
+            text html>body>article>p[3]>#text[2] at=130.78,0 size=128.43x21.52 baseline=16.93 " from left to right."
+        box html>body>article>ol at=0,428.88 size=640x43.03
+          box html>body>article>ol>li[1] at=40,0 size=600x21.52 overflow=(-22.6,0 622.6x21.52)
+            line at=0,0 size=600x21.52 baseline=16.93
+              text html>body>article>ol>li[1]>#text at=0,0 size=32.45x21.52 baseline=16.93 "First"
+            text html>body>article>ol>li[1] at=-22.6,0 size=14.6x21.52 baseline=16.93 "1."
+          box html>body>article>ol>li[2] at=40,21.52 size=600x21.52 overflow=(-22.6,0 622.6x21.52)
+            line at=0,0 size=600x21.52 baseline=16.93
+              text html>body>article>ol>li[2]>#text at=0,0 size=52.5x21.52 baseline=16.93 "Second"
+            text html>body>article>ol>li[2] at=-22.6,0 size=14.6x21.52 baseline=16.93 "2."
+        box html>body>article>p[4] at=0,487.92 size=640x24.58
+          line at=0,0 size=640x24.58 baseline=20
+            box html>body>article>p[4]>img at=0,0 size=40x20
+            text html>body>article>p[4]>#text at=40,3.07 size=263.03x21.52 baseline=16.93 " A picture sits on the line like a word."
+        box html>body>article>hr at=0,528.5 size=640x2
+        box html>body>article>p[5] at=0,542.5 size=640x16.13
+          line at=0,0 size=640x16.13 baseline=12.7
+            text html>body>article>p[5]>#text at=0,0 size=102.93x16.13 baseline=12.7 "Thanks for reading."
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x740.98 offset=0,0 generation=0
+clips
+items
+  s1 clip=- rect (0,0 800x740.98) #fdfcf8ff
+  s1 clip=- border (80,24 640x106.35) widths=0 0 1 0 colors=#000000ff #000000ff #ccccccff #000000ff styles=none none solid none
+  s1 clip=- border (80,422.58 640x21.52) widths=0 0 0 4 colors=#000000ff #000000ff #000000ff #ddddddff styles=none none none solid
+  s1 clip=- border (80,674.85 640x2) widths=1 1 1 1 colors=#000000ff #000000ff #000000ff #000000ff styles=solid solid solid solid
+  s1 clip=- text font=0 size=12 #aa3333ff glyphs=11
+  s1 clip=- text font=0 size=32 #222222ff glyphs=25
+  s1 clip=- text font=0 size=14 #666666ff glyphs=14
+  s1 clip=- text font=0 size=14 #666666ff glyphs=10
+  s1 clip=- text font=0 size=16 #222222ff glyphs=22
+  s1 clip=- text font=0 size=16 #222222ff glyphs=7
+  s1 clip=- text font=0 size=16 #222222ff glyphs=50
+  s1 clip=- text font=0 size=16 #222222ff glyphs=63
+  s1 clip=- text font=0 size=16 #222222ff glyphs=4
+  s1 clip=- text font=0 size=16 #222222ff glyphs=22
+  s1 clip=- text font=0 size=16 #222222ff glyphs=7
+  s1 clip=- text font=0 size=24 #222222ff glyphs=13
+  s1 clip=- text font=0 size=16 #222222ff glyphs=89
+  s1 clip=- text font=0 size=16 #222222ff glyphs=17
+  s1 clip=- text font=0 size=16 #1a4f8bff glyphs=11
+  s1 clip=- rect (195.23,323.7 80.48x1) #1a4f8bff
+  s1 clip=- text font=0 size=16 #222222ff glyphs=38
+  s1 clip=- text font=0 size=16 #222222ff glyphs=32
+  s1 clip=- text font=0 size=16 #222222ff glyphs=1
+  s1 clip=- text font=0 size=16 #222222ff glyphs=26
+  s1 clip=- text font=0 size=16 #222222ff glyphs=1
+  s1 clip=- text font=0 size=16 #222222ff glyphs=37
+  s1 clip=- text font=0 size=16 #222222ff glyphs=1
+  s1 clip=- text font=0 size=16 #555555ff glyphs=31
+  s1 clip=- text font=0 size=24 #222222ff glyphs=6
+  s1 clip=- text font=0 size=16 #222222ff glyphs=93
+  s1 clip=- text font=0 size=16 #222222ff glyphs=11
+  s1 clip=- rect (148.77,540.9 62.02x17.47) #eeeeeeff
+  s1 clip=- text font=0 size=13 #222222ff glyphs=10
+  s1 clip=- text font=0 size=16 #222222ff glyphs=20
+  s1 clip=- text font=0 size=16 #222222ff glyphs=5
+  s1 clip=- text font=0 size=16 #222222ff glyphs=2
+  s1 clip=- text font=0 size=16 #222222ff glyphs=6
+  s1 clip=- text font=0 size=16 #222222ff glyphs=2
+  s1 clip=- image key=0 (80,634.27 40x20)
+  s1 clip=- text font=0 size=16 #222222ff glyphs=40
+  s1 clip=- text font=0 size=12 #777777ff glyphs=19

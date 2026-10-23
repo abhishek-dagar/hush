@@ -1,0 +1,122 @@
+<!doctype html>
+<!--
+  The browser window's chrome document (spec 0003, frame anatomy). The
+  browser process renders it with the engine, scripts off, from assets
+  embedded in the binary. Rust writes the root attributes and font size,
+  and changes state through ARIA attributes and text on elements found by
+  id; it never injects markup. The Linux app menu is built into #app-menu
+  from the menu model when it opens.
+-->
+<html lang="en" data-tabs="vertical">
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="controls.css" />
+    <link rel="stylesheet" href="frame.css" />
+  </head>
+  <body>
+    <div class="frame" id="frame" data-side="right" data-drag-region>
+      <div class="caption" data-drag-region>
+        <button
+          class="icon-button caption-menu"
+          id="app-menu-button"
+          aria-label="Menu"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          data-command="menu.app"
+        >
+          <span class="icon" aria-hidden="true">&#xE00B;</span>
+        </button>
+        <div class="caption-buttons" id="caption-buttons">
+          <button
+            class="caption-button"
+            id="caption-minimize"
+            tabindex="-1"
+            aria-label="Minimize"
+            data-command="window.minimize"
+          >
+            <span class="caption-glyph" aria-hidden="true">&#xE921;</span
+            ><span class="icon" aria-hidden="true">&#xE010;</span>
+          </button>
+          <button
+            class="caption-button"
+            id="caption-maximize"
+            tabindex="-1"
+            aria-label="Maximize"
+            data-command="window.maximize"
+          >
+            <span
+              class="caption-glyph"
+              id="caption-maximize-glyph"
+              aria-hidden="true"
+              >&#xE922;</span
+            ><span class="icon" aria-hidden="true">&#xE011;</span>
+          </button>
+          <button
+            class="caption-button"
+            id="caption-close"
+            tabindex="-1"
+            aria-label="Close"
+            data-command="window.close"
+          >
+            <span class="caption-glyph" aria-hidden="true">&#xE8BB;</span
+            ><span class="icon" aria-hidden="true">&#xE004;</span>
+          </button>
+        </div>
+      </div>
+      <div class="frame-body">
+        <nav class="frame-sidebar" aria-label="Sidebar" data-drag-region>
+          <!--
+            Navigation (spec 0008, AC-1): back, forward and reload, then the
+            address. Rust sets aria-disabled on back and forward, and the
+            address icon and host text.
+          -->
+          <div class="nav-row" data-drag-region>
+            <button
+              class="icon-button"
+              id="nav-back"
+              aria-label="Back"
+              aria-disabled="true"
+              data-command="nav.back"
+            >
+              <span class="icon" aria-hidden="true">&#xE000;</span>
+            </button>
+            <button
+              class="icon-button"
+              id="nav-forward"
+              aria-label="Forward"
+              aria-disabled="true"
+              data-command="nav.forward"
+            >
+              <span class="icon" aria-hidden="true">&#xE001;</span>
+            </button>
+            <button
+              class="icon-button"
+              id="nav-reload"
+              aria-label="Reload"
+              data-command="nav.reload"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="address" id="address">
+            <span class="icon" id="address-icon" aria-hidden="true">&#xE017;</span>
+            <span class="label" id="address-host" hidden></span>
+            <span class="label address-placeholder" id="address-placeholder"
+              >Search or enter address</span
+            >
+          </div>
+        </nav>
+        <main class="page-slot" id="page-slot"></main>
+      </div>
+      <div
+        class="menu app-menu"
+        id="app-menu"
+        role="menu"
+        aria-label="Menu"
+        hidden
+      ></div>
+    </div>
+  </body>
+</html>

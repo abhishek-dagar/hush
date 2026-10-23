@@ -1,0 +1,56 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+    body
+      p
+        "beforeafter"
+      "\n"
+      p title="a�b"
+        "attr"
+      "\n"
+      svg
+        "�"
+      textarea
+        "t�x"
+      <!-- c� -->
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>p[1]: display: block; margin: 16px 0px 16px 0px
+html>body>p[2]: display: block; margin: 16px 0px 16px 0px
+html>body>svg: display: none
+html>body>textarea: 
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x120.55
+    box html>body at=8,16 size=784x96.55
+      box html>body>p[1] at=0,0 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[1]>#text at=0,0 size=81.5x21.52 baseline=16.93 "beforeafter"
+      box html>body>p[2] at=0,37.52 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[2]>#text at=0,0 size=26.5x21.52 baseline=16.93 "attr"
+      box (anonymous) at=0,75.03 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          box html>body>textarea at=0,0 size=20.2x21.52 inline
+            text html>body>textarea>#text at=0,0 size=20.2x21.52 baseline=16.93 "t�x"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- text font=0 size=16 #000000ff glyphs=11
+  s1 clip=- text font=0 size=16 #000000ff glyphs=4
+  s1 clip=- text font=0 size=16 #000000ff glyphs=3

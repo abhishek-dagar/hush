@@ -1,0 +1,113 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+    body
+      p
+        "a "
+        b
+          "b "
+          i
+            "c"
+        i
+          " d"
+        " e"
+      "\n"
+      p
+        a href="1"
+          "one"
+      p
+        a href="1"
+          "two"
+        "three"
+      "\n"
+      b
+      p
+        b
+          "bold paragraph"
+        " after"
+      "\n"
+      h1
+        "heading"
+      h2
+        "other"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>p[1]: display: block; margin: 16px 0px 16px 0px
+html>body>p[1]>b: font-weight: 700
+html>body>p[1]>b>i: font-weight: 700; font-style: italic
+html>body>p[1]>i: font-style: italic
+html>body>p[2]: display: block; margin: 16px 0px 16px 0px
+html>body>p[2]>a: color: #0000eeff; text-decoration-line: underline
+html>body>p[3]: display: block; margin: 16px 0px 16px 0px
+html>body>p[3]>a: color: #0000eeff; text-decoration-line: underline
+html>body>b: font-weight: 700
+html>body>p[4]: display: block; margin: 16px 0px 16px 0px
+html>body>p[4]>b: font-weight: 700
+html>body>h1: display: block; margin: 21.43px 0px 21.43px 0px; font-size: 32px; font-weight: 700
+html>body>h2: display: block; margin: 19.92px 0px 19.92px 0px; font-size: 24px; font-weight: 700
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x288.12
+    box html>body at=8,16 size=784x252.2
+      box html>body>p[1] at=0,0 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[1]>#text[1] at=0,0 size=12.22x21.52 baseline=16.93 "a "
+          box html>body>p[1]>b at=12.22,0 size=20.68x21.52 inline
+            text html>body>p[1]>b>#text at=0,0 size=13.22x21.52 baseline=16.93 "b "
+            box html>body>p[1]>b>i at=13.22,0 size=7.47x21.52 inline
+              text html>body>p[1]>b>i>#text at=0,0 size=7.47x21.52 baseline=16.93 "c"
+          box html>body>p[1]>i at=32.9,0 size=13.58x21.52 inline
+            text html>body>p[1]>i>#text at=0,0 size=13.58x21.52 baseline=16.93 " d"
+          text html>body>p[1]>#text[2] at=46.48,0 size=12.73x21.52 baseline=16.93 " e"
+      box html>body>p[2] at=0,37.52 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          box html>body>p[2]>a at=0,0 size=26.23x21.52 inline
+            text html>body>p[2]>a>#text at=0,0 size=26.23x21.52 baseline=16.93 "one"
+      box html>body>p[3] at=0,75.03 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          box html>body>p[3]>a at=0,0 size=28.37x21.52 inline
+            text html>body>p[3]>a>#text at=0,0 size=28.37x21.52 baseline=16.93 "two"
+          text html>body>p[3]>#text at=28.37,0 size=37.5x21.52 baseline=16.93 "three"
+      box html>body>p[4] at=0,112.55 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          box html>body>p[4]>b at=0,0 size=106.93x21.52 inline
+            text html>body>p[4]>b>#text at=0,0 size=106.93x21.52 baseline=16.93 "bold paragraph"
+          text html>body>p[4]>#text at=106.93,0 size=38.98x21.52 baseline=16.93 " after"
+      box html>body>h1 at=0,155.5 size=784x43
+        line at=0,0 size=784x43 baseline=33.85
+          text html>body>h1>#text at=0,0 size=108.87x43 baseline=33.85 "heading"
+      box html>body>h2 at=0,219.93 size=784x32.27
+        line at=0,0 size=784x32.27 baseline=25.4
+          text html>body>h2>#text at=0,0 size=57.35x32.27 baseline=25.4 "other"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- text font=0 size=16 #000000ff glyphs=2
+  s1 clip=- text font=0 size=16 #000000ff glyphs=2
+  s1 clip=- text font=0 size=16 #000000ff glyphs=1
+  s1 clip=- text font=0 size=16 #000000ff glyphs=2
+  s1 clip=- text font=0 size=16 #000000ff glyphs=2
+  s1 clip=- text font=0 size=16 #0000eeff glyphs=3
+  s1 clip=- rect (8,72.7 26.23x1) #0000eeff
+  s1 clip=- text font=0 size=16 #0000eeff glyphs=3
+  s1 clip=- rect (8,110.22 28.37x1) #0000eeff
+  s1 clip=- text font=0 size=16 #000000ff glyphs=5
+  s1 clip=- text font=0 size=16 #000000ff glyphs=14
+  s1 clip=- text font=0 size=16 #000000ff glyphs=6
+  s1 clip=- text font=0 size=32 #000000ff glyphs=7
+  s1 clip=- text font=0 size=24 #000000ff glyphs=5

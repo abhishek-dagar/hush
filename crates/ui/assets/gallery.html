@@ -1,0 +1,2210 @@
+<!doctype html>
+<!--
+  Every base chrome control in every state, in light, dark and high
+  contrast (spec 0003, build plan task 10). Opens as a static file in any
+  browser for design review, and in a dev build the browser shows it
+  with `--chrome-gallery`, where the Developer section's buttons open the
+  native file dialogs (AC-10). data-preview forces
+  hover, pressed and focus for the picture; real controls never carry it.
+-->
+<html
+  lang="en"
+  data-os="macos"
+  data-theme="light"
+  data-contrast="normal"
+  data-motion="full"
+  data-accent="blue"
+  data-tabs="vertical"
+>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chrome gallery</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="controls.css" />
+    <link rel="stylesheet" href="gallery.css" />
+  </head>
+  <body>
+    <main class="gallery">
+      <section
+        class="gallery-mode"
+        id="mode-light-normal"
+        data-theme="light"
+        data-contrast="normal"
+        data-motion="full"
+        data-accent="blue"
+        aria-label="Light"
+      >
+        <h2 class="gallery-title">Light</h2>
+        <h3 class="gallery-heading">Button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button" data-preview="hover">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button" data-preview="active">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button" data-preview="focus">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button" disabled>Button</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Primary button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button button-primary">Save</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button button-primary" data-preview="hover">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button button-primary" data-preview="active">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button button-primary" data-preview="focus">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button button-primary" disabled>Save</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icon button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="icon-button" aria-label="Reload">
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="hover"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="active"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="icon-button" aria-label="Forward" disabled>
+              <span class="icon" aria-hidden="true">&#xE001;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Text field</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              placeholder="Search or enter address"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Filled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              value="example.com/a/very/long/path/that/keeps/going"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              data-preview="focus"
+              value="example.com"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              disabled
+              value="example.com"
+            />
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, vertical</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="tablist"
+              role="tablist"
+              aria-orientation="vertical"
+              aria-label="Tabs"
+            >
+              <button role="tab" aria-selected="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label"
+                  >Selected tab with a very long title that truncates</span
+                ></button
+              ><button role="tab" aria-selected="false">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Rest</span></button
+              ><button role="tab" aria-selected="false" data-preview="hover">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Hover</span></button
+              ><button role="tab" aria-selected="false" data-preview="focus">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Focus visible</span></button
+              ><button role="tab" aria-selected="false" aria-disabled="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Disabled</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, horizontal</h3>
+        <div class="gallery-row">
+          <div
+            class="tablist"
+            role="tablist"
+            aria-orientation="horizontal"
+            aria-label="Tabs"
+          >
+            <button role="tab" aria-selected="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label"
+                >Selected tab with a very long title that truncates</span
+              ></button
+            ><button role="tab" aria-selected="false">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Rest</span></button
+            ><button role="tab" aria-selected="false" data-preview="hover">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Hover</span></button
+            ><button role="tab" aria-selected="false" data-preview="focus">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Focus visible</span></button
+            ><button role="tab" aria-selected="false" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Disabled</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">List rows</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow gallery-surface">
+            <div class="listbox" role="listbox" aria-label="Results">
+              <div role="option" aria-selected="true">
+                <span class="label">Selected row</span>
+              </div>
+              <div role="option" aria-selected="false">
+                <span class="label">Rest</span>
+              </div>
+              <div role="option" aria-selected="false" data-preview="hover">
+                <span class="label">Hover</span>
+              </div>
+              <div
+                role="option"
+                aria-selected="false"
+                data-preview="focus"
+                tabindex="0"
+              >
+                <span class="label">Focus visible</span>
+              </div>
+              <div role="option" aria-selected="false" aria-disabled="true">
+                <span class="label">Disabled</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Toggle</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Off</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Off"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">On</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="On"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Checkbox</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Unchecked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Unchecked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Checked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Checked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Segmented control</h3>
+        <div class="gallery-row">
+          <div class="segmented" role="radiogroup" aria-label="Theme">
+            <button
+              role="radio"
+              aria-checked="true"
+              data-command="appearance.theme"
+              data-value="system"
+            >
+              System</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="light"
+              data-preview="hover"
+            >
+              Light</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="dark"
+              data-preview="focus"
+            >
+              Dark
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Accent swatches</h3>
+        <div class="gallery-row">
+          <div class="swatches" role="radiogroup" aria-label="Accent">
+            <button
+              role="radio"
+              aria-checked="true"
+              aria-label="Blue"
+              data-accent="blue"
+              data-command="appearance.accent"
+              data-value="blue"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Purple"
+              data-accent="purple"
+              data-command="appearance.accent"
+              data-value="purple"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Pink"
+              data-accent="pink"
+              data-command="appearance.accent"
+              data-value="pink"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Red"
+              data-accent="red"
+              data-command="appearance.accent"
+              data-value="red"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Orange"
+              data-accent="orange"
+              data-command="appearance.accent"
+              data-value="orange"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Yellow"
+              data-accent="yellow"
+              data-command="appearance.accent"
+              data-value="yellow"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Green"
+              data-accent="green"
+              data-command="appearance.accent"
+              data-value="green"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Graphite"
+              data-accent="graphite"
+              data-command="appearance.accent"
+              data-value="graphite"
+            ></button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Progress bar</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="progress"
+              role="progressbar"
+              aria-label="Download"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="40"
+            >
+              <div class="progress-fill gallery-progress-40"></div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Menu (Linux overlay)</h3>
+        <div class="gallery-row">
+          <div class="menu" role="menu" aria-label="Appearance">
+            <div role="menuitemradio" aria-checked="true">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">System</span>
+            </div>
+            <div role="menuitemradio" aria-checked="false" data-preview="hover">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Light</span>
+            </div>
+            <div
+              role="menuitemradio"
+              aria-checked="false"
+              data-preview="focus"
+              tabindex="0"
+            >
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Dark</span>
+            </div>
+            <div role="separator"></div>
+            <div role="menuitem">
+              <span class="icon" aria-hidden="true">&#xE014;</span
+              ><span class="label">Settings…</span
+              ><span class="shortcut">Ctrl+,</span>
+            </div>
+            <div role="menuitem" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE00A;</span
+              ><span class="label">Disabled item</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Popover panel</h3>
+        <div class="gallery-row">
+          <div class="popover" role="dialog" aria-label="Site information">
+            <div class="gallery-row">
+              <span class="icon" aria-hidden="true">&#xE007;</span
+              ><span class="label">Connection is secure</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Dialog sheet</h3>
+        <div class="gallery-row">
+          <div class="gallery-sheet-host gallery-narrow">
+            <div class="scrim">
+              <div
+                class="sheet"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="sheet-light-normal"
+              >
+                <h2 class="sheet-title" id="sheet-light-normal">
+                  Leave this page?
+                </h2>
+                <span>Changes you made may not be saved.</span>
+                <div class="sheet-actions">
+                  <button class="button">Stay</button
+                  ><button class="button button-primary">Leave</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icons (icons.ttf)</h3>
+        <div class="gallery-row">
+          <div class="gallery-row" aria-label="All icons">
+            <span class="icon" aria-hidden="true">&#xE000;</span
+            ><span class="icon" aria-hidden="true">&#xE001;</span
+            ><span class="icon" aria-hidden="true">&#xE002;</span
+            ><span class="icon" aria-hidden="true">&#xE003;</span
+            ><span class="icon" aria-hidden="true">&#xE004;</span
+            ><span class="icon" aria-hidden="true">&#xE005;</span
+            ><span class="icon" aria-hidden="true">&#xE006;</span
+            ><span class="icon" aria-hidden="true">&#xE007;</span
+            ><span class="icon" aria-hidden="true">&#xE008;</span
+            ><span class="icon" aria-hidden="true">&#xE009;</span
+            ><span class="icon" aria-hidden="true">&#xE00A;</span
+            ><span class="icon" aria-hidden="true">&#xE00B;</span
+            ><span class="icon" aria-hidden="true">&#xE00C;</span
+            ><span class="icon" aria-hidden="true">&#xE00D;</span
+            ><span class="icon" aria-hidden="true">&#xE00E;</span
+            ><span class="icon" aria-hidden="true">&#xE00F;</span
+            ><span class="icon" aria-hidden="true">&#xE010;</span
+            ><span class="icon" aria-hidden="true">&#xE011;</span
+            ><span class="icon" aria-hidden="true">&#xE012;</span
+            ><span class="icon" aria-hidden="true">&#xE013;</span
+            ><span class="icon" aria-hidden="true">&#xE014;</span
+            ><span class="icon" aria-hidden="true">&#xE015;</span
+            ><span class="icon" aria-hidden="true">&#xE016;</span
+            ><span class="icon" aria-hidden="true">&#xE017;</span
+            ><span class="icon" aria-hidden="true">&#xE018;</span
+            ><span class="icon" aria-hidden="true">&#xE019;</span
+            ><span class="icon" aria-hidden="true">&#xE01A;</span>
+          </div>
+        </div>
+      </section>
+      <section
+        class="gallery-mode"
+        id="mode-dark-normal"
+        data-theme="dark"
+        data-contrast="normal"
+        data-motion="full"
+        data-accent="blue"
+        aria-label="Dark"
+      >
+        <h2 class="gallery-title">Dark</h2>
+        <h3 class="gallery-heading">Button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button" data-preview="hover">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button" data-preview="active">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button" data-preview="focus">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button" disabled>Button</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Primary button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button button-primary">Save</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button button-primary" data-preview="hover">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button button-primary" data-preview="active">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button button-primary" data-preview="focus">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button button-primary" disabled>Save</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icon button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="icon-button" aria-label="Reload">
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="hover"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="active"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="icon-button" aria-label="Forward" disabled>
+              <span class="icon" aria-hidden="true">&#xE001;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Text field</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              placeholder="Search or enter address"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Filled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              value="example.com/a/very/long/path/that/keeps/going"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              data-preview="focus"
+              value="example.com"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              disabled
+              value="example.com"
+            />
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, vertical</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="tablist"
+              role="tablist"
+              aria-orientation="vertical"
+              aria-label="Tabs"
+            >
+              <button role="tab" aria-selected="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label"
+                  >Selected tab with a very long title that truncates</span
+                ></button
+              ><button role="tab" aria-selected="false">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Rest</span></button
+              ><button role="tab" aria-selected="false" data-preview="hover">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Hover</span></button
+              ><button role="tab" aria-selected="false" data-preview="focus">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Focus visible</span></button
+              ><button role="tab" aria-selected="false" aria-disabled="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Disabled</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, horizontal</h3>
+        <div class="gallery-row">
+          <div
+            class="tablist"
+            role="tablist"
+            aria-orientation="horizontal"
+            aria-label="Tabs"
+          >
+            <button role="tab" aria-selected="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label"
+                >Selected tab with a very long title that truncates</span
+              ></button
+            ><button role="tab" aria-selected="false">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Rest</span></button
+            ><button role="tab" aria-selected="false" data-preview="hover">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Hover</span></button
+            ><button role="tab" aria-selected="false" data-preview="focus">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Focus visible</span></button
+            ><button role="tab" aria-selected="false" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Disabled</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">List rows</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow gallery-surface">
+            <div class="listbox" role="listbox" aria-label="Results">
+              <div role="option" aria-selected="true">
+                <span class="label">Selected row</span>
+              </div>
+              <div role="option" aria-selected="false">
+                <span class="label">Rest</span>
+              </div>
+              <div role="option" aria-selected="false" data-preview="hover">
+                <span class="label">Hover</span>
+              </div>
+              <div
+                role="option"
+                aria-selected="false"
+                data-preview="focus"
+                tabindex="0"
+              >
+                <span class="label">Focus visible</span>
+              </div>
+              <div role="option" aria-selected="false" aria-disabled="true">
+                <span class="label">Disabled</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Toggle</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Off</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Off"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">On</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="On"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Checkbox</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Unchecked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Unchecked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Checked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Checked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Segmented control</h3>
+        <div class="gallery-row">
+          <div class="segmented" role="radiogroup" aria-label="Theme">
+            <button
+              role="radio"
+              aria-checked="true"
+              data-command="appearance.theme"
+              data-value="system"
+            >
+              System</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="light"
+              data-preview="hover"
+            >
+              Light</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="dark"
+              data-preview="focus"
+            >
+              Dark
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Accent swatches</h3>
+        <div class="gallery-row">
+          <div class="swatches" role="radiogroup" aria-label="Accent">
+            <button
+              role="radio"
+              aria-checked="true"
+              aria-label="Blue"
+              data-accent="blue"
+              data-command="appearance.accent"
+              data-value="blue"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Purple"
+              data-accent="purple"
+              data-command="appearance.accent"
+              data-value="purple"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Pink"
+              data-accent="pink"
+              data-command="appearance.accent"
+              data-value="pink"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Red"
+              data-accent="red"
+              data-command="appearance.accent"
+              data-value="red"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Orange"
+              data-accent="orange"
+              data-command="appearance.accent"
+              data-value="orange"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Yellow"
+              data-accent="yellow"
+              data-command="appearance.accent"
+              data-value="yellow"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Green"
+              data-accent="green"
+              data-command="appearance.accent"
+              data-value="green"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Graphite"
+              data-accent="graphite"
+              data-command="appearance.accent"
+              data-value="graphite"
+            ></button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Progress bar</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="progress"
+              role="progressbar"
+              aria-label="Download"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="40"
+            >
+              <div class="progress-fill gallery-progress-40"></div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Menu (Linux overlay)</h3>
+        <div class="gallery-row">
+          <div class="menu" role="menu" aria-label="Appearance">
+            <div role="menuitemradio" aria-checked="true">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">System</span>
+            </div>
+            <div role="menuitemradio" aria-checked="false" data-preview="hover">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Light</span>
+            </div>
+            <div
+              role="menuitemradio"
+              aria-checked="false"
+              data-preview="focus"
+              tabindex="0"
+            >
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Dark</span>
+            </div>
+            <div role="separator"></div>
+            <div role="menuitem">
+              <span class="icon" aria-hidden="true">&#xE014;</span
+              ><span class="label">Settings…</span
+              ><span class="shortcut">Ctrl+,</span>
+            </div>
+            <div role="menuitem" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE00A;</span
+              ><span class="label">Disabled item</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Popover panel</h3>
+        <div class="gallery-row">
+          <div class="popover" role="dialog" aria-label="Site information">
+            <div class="gallery-row">
+              <span class="icon" aria-hidden="true">&#xE007;</span
+              ><span class="label">Connection is secure</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Dialog sheet</h3>
+        <div class="gallery-row">
+          <div class="gallery-sheet-host gallery-narrow">
+            <div class="scrim">
+              <div
+                class="sheet"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="sheet-dark-normal"
+              >
+                <h2 class="sheet-title" id="sheet-dark-normal">
+                  Leave this page?
+                </h2>
+                <span>Changes you made may not be saved.</span>
+                <div class="sheet-actions">
+                  <button class="button">Stay</button
+                  ><button class="button button-primary">Leave</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icons (icons.ttf)</h3>
+        <div class="gallery-row">
+          <div class="gallery-row" aria-label="All icons">
+            <span class="icon" aria-hidden="true">&#xE000;</span
+            ><span class="icon" aria-hidden="true">&#xE001;</span
+            ><span class="icon" aria-hidden="true">&#xE002;</span
+            ><span class="icon" aria-hidden="true">&#xE003;</span
+            ><span class="icon" aria-hidden="true">&#xE004;</span
+            ><span class="icon" aria-hidden="true">&#xE005;</span
+            ><span class="icon" aria-hidden="true">&#xE006;</span
+            ><span class="icon" aria-hidden="true">&#xE007;</span
+            ><span class="icon" aria-hidden="true">&#xE008;</span
+            ><span class="icon" aria-hidden="true">&#xE009;</span
+            ><span class="icon" aria-hidden="true">&#xE00A;</span
+            ><span class="icon" aria-hidden="true">&#xE00B;</span
+            ><span class="icon" aria-hidden="true">&#xE00C;</span
+            ><span class="icon" aria-hidden="true">&#xE00D;</span
+            ><span class="icon" aria-hidden="true">&#xE00E;</span
+            ><span class="icon" aria-hidden="true">&#xE00F;</span
+            ><span class="icon" aria-hidden="true">&#xE010;</span
+            ><span class="icon" aria-hidden="true">&#xE011;</span
+            ><span class="icon" aria-hidden="true">&#xE012;</span
+            ><span class="icon" aria-hidden="true">&#xE013;</span
+            ><span class="icon" aria-hidden="true">&#xE014;</span
+            ><span class="icon" aria-hidden="true">&#xE015;</span
+            ><span class="icon" aria-hidden="true">&#xE016;</span
+            ><span class="icon" aria-hidden="true">&#xE017;</span
+            ><span class="icon" aria-hidden="true">&#xE018;</span
+            ><span class="icon" aria-hidden="true">&#xE019;</span
+            ><span class="icon" aria-hidden="true">&#xE01A;</span>
+          </div>
+        </div>
+      </section>
+      <section
+        class="gallery-mode"
+        id="mode-light-more"
+        data-theme="light"
+        data-contrast="more"
+        data-motion="full"
+        data-accent="blue"
+        aria-label="High contrast, light"
+      >
+        <h2 class="gallery-title">High contrast, light</h2>
+        <h3 class="gallery-heading">Button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button" data-preview="hover">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button" data-preview="active">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button" data-preview="focus">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button" disabled>Button</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Primary button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button button-primary">Save</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button button-primary" data-preview="hover">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button button-primary" data-preview="active">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button button-primary" data-preview="focus">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button button-primary" disabled>Save</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icon button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="icon-button" aria-label="Reload">
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="hover"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="active"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="icon-button" aria-label="Forward" disabled>
+              <span class="icon" aria-hidden="true">&#xE001;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Text field</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              placeholder="Search or enter address"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Filled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              value="example.com/a/very/long/path/that/keeps/going"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              data-preview="focus"
+              value="example.com"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              disabled
+              value="example.com"
+            />
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, vertical</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="tablist"
+              role="tablist"
+              aria-orientation="vertical"
+              aria-label="Tabs"
+            >
+              <button role="tab" aria-selected="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label"
+                  >Selected tab with a very long title that truncates</span
+                ></button
+              ><button role="tab" aria-selected="false">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Rest</span></button
+              ><button role="tab" aria-selected="false" data-preview="hover">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Hover</span></button
+              ><button role="tab" aria-selected="false" data-preview="focus">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Focus visible</span></button
+              ><button role="tab" aria-selected="false" aria-disabled="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Disabled</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, horizontal</h3>
+        <div class="gallery-row">
+          <div
+            class="tablist"
+            role="tablist"
+            aria-orientation="horizontal"
+            aria-label="Tabs"
+          >
+            <button role="tab" aria-selected="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label"
+                >Selected tab with a very long title that truncates</span
+              ></button
+            ><button role="tab" aria-selected="false">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Rest</span></button
+            ><button role="tab" aria-selected="false" data-preview="hover">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Hover</span></button
+            ><button role="tab" aria-selected="false" data-preview="focus">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Focus visible</span></button
+            ><button role="tab" aria-selected="false" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Disabled</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">List rows</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow gallery-surface">
+            <div class="listbox" role="listbox" aria-label="Results">
+              <div role="option" aria-selected="true">
+                <span class="label">Selected row</span>
+              </div>
+              <div role="option" aria-selected="false">
+                <span class="label">Rest</span>
+              </div>
+              <div role="option" aria-selected="false" data-preview="hover">
+                <span class="label">Hover</span>
+              </div>
+              <div
+                role="option"
+                aria-selected="false"
+                data-preview="focus"
+                tabindex="0"
+              >
+                <span class="label">Focus visible</span>
+              </div>
+              <div role="option" aria-selected="false" aria-disabled="true">
+                <span class="label">Disabled</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Toggle</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Off</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Off"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">On</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="On"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Checkbox</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Unchecked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Unchecked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Checked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Checked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Segmented control</h3>
+        <div class="gallery-row">
+          <div class="segmented" role="radiogroup" aria-label="Theme">
+            <button
+              role="radio"
+              aria-checked="true"
+              data-command="appearance.theme"
+              data-value="system"
+            >
+              System</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="light"
+              data-preview="hover"
+            >
+              Light</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="dark"
+              data-preview="focus"
+            >
+              Dark
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Accent swatches</h3>
+        <div class="gallery-row">
+          <div class="swatches" role="radiogroup" aria-label="Accent">
+            <button
+              role="radio"
+              aria-checked="true"
+              aria-label="Blue"
+              data-accent="blue"
+              data-command="appearance.accent"
+              data-value="blue"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Purple"
+              data-accent="purple"
+              data-command="appearance.accent"
+              data-value="purple"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Pink"
+              data-accent="pink"
+              data-command="appearance.accent"
+              data-value="pink"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Red"
+              data-accent="red"
+              data-command="appearance.accent"
+              data-value="red"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Orange"
+              data-accent="orange"
+              data-command="appearance.accent"
+              data-value="orange"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Yellow"
+              data-accent="yellow"
+              data-command="appearance.accent"
+              data-value="yellow"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Green"
+              data-accent="green"
+              data-command="appearance.accent"
+              data-value="green"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Graphite"
+              data-accent="graphite"
+              data-command="appearance.accent"
+              data-value="graphite"
+            ></button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Progress bar</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="progress"
+              role="progressbar"
+              aria-label="Download"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="40"
+            >
+              <div class="progress-fill gallery-progress-40"></div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Menu (Linux overlay)</h3>
+        <div class="gallery-row">
+          <div class="menu" role="menu" aria-label="Appearance">
+            <div role="menuitemradio" aria-checked="true">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">System</span>
+            </div>
+            <div role="menuitemradio" aria-checked="false" data-preview="hover">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Light</span>
+            </div>
+            <div
+              role="menuitemradio"
+              aria-checked="false"
+              data-preview="focus"
+              tabindex="0"
+            >
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Dark</span>
+            </div>
+            <div role="separator"></div>
+            <div role="menuitem">
+              <span class="icon" aria-hidden="true">&#xE014;</span
+              ><span class="label">Settings…</span
+              ><span class="shortcut">Ctrl+,</span>
+            </div>
+            <div role="menuitem" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE00A;</span
+              ><span class="label">Disabled item</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Popover panel</h3>
+        <div class="gallery-row">
+          <div class="popover" role="dialog" aria-label="Site information">
+            <div class="gallery-row">
+              <span class="icon" aria-hidden="true">&#xE007;</span
+              ><span class="label">Connection is secure</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Dialog sheet</h3>
+        <div class="gallery-row">
+          <div class="gallery-sheet-host gallery-narrow">
+            <div class="scrim">
+              <div
+                class="sheet"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="sheet-light-more"
+              >
+                <h2 class="sheet-title" id="sheet-light-more">
+                  Leave this page?
+                </h2>
+                <span>Changes you made may not be saved.</span>
+                <div class="sheet-actions">
+                  <button class="button">Stay</button
+                  ><button class="button button-primary">Leave</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icons (icons.ttf)</h3>
+        <div class="gallery-row">
+          <div class="gallery-row" aria-label="All icons">
+            <span class="icon" aria-hidden="true">&#xE000;</span
+            ><span class="icon" aria-hidden="true">&#xE001;</span
+            ><span class="icon" aria-hidden="true">&#xE002;</span
+            ><span class="icon" aria-hidden="true">&#xE003;</span
+            ><span class="icon" aria-hidden="true">&#xE004;</span
+            ><span class="icon" aria-hidden="true">&#xE005;</span
+            ><span class="icon" aria-hidden="true">&#xE006;</span
+            ><span class="icon" aria-hidden="true">&#xE007;</span
+            ><span class="icon" aria-hidden="true">&#xE008;</span
+            ><span class="icon" aria-hidden="true">&#xE009;</span
+            ><span class="icon" aria-hidden="true">&#xE00A;</span
+            ><span class="icon" aria-hidden="true">&#xE00B;</span
+            ><span class="icon" aria-hidden="true">&#xE00C;</span
+            ><span class="icon" aria-hidden="true">&#xE00D;</span
+            ><span class="icon" aria-hidden="true">&#xE00E;</span
+            ><span class="icon" aria-hidden="true">&#xE00F;</span
+            ><span class="icon" aria-hidden="true">&#xE010;</span
+            ><span class="icon" aria-hidden="true">&#xE011;</span
+            ><span class="icon" aria-hidden="true">&#xE012;</span
+            ><span class="icon" aria-hidden="true">&#xE013;</span
+            ><span class="icon" aria-hidden="true">&#xE014;</span
+            ><span class="icon" aria-hidden="true">&#xE015;</span
+            ><span class="icon" aria-hidden="true">&#xE016;</span
+            ><span class="icon" aria-hidden="true">&#xE017;</span
+            ><span class="icon" aria-hidden="true">&#xE018;</span
+            ><span class="icon" aria-hidden="true">&#xE019;</span
+            ><span class="icon" aria-hidden="true">&#xE01A;</span>
+          </div>
+        </div>
+      </section>
+      <section
+        class="gallery-mode"
+        id="mode-dark-more"
+        data-theme="dark"
+        data-contrast="more"
+        data-motion="full"
+        data-accent="blue"
+        aria-label="High contrast, dark"
+      >
+        <h2 class="gallery-title">High contrast, dark</h2>
+        <h3 class="gallery-heading">Button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button" data-preview="hover">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button" data-preview="active">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button" data-preview="focus">Button</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button" disabled>Button</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Primary button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="button button-primary">Save</button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button class="button button-primary" data-preview="hover">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button class="button button-primary" data-preview="active">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button class="button button-primary" data-preview="focus">
+              Save
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="button button-primary" disabled>Save</button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icon button</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><button class="icon-button" aria-label="Reload">
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Hover</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="hover"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Pressed</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="active"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="icon-button"
+              aria-label="Reload"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE002;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button class="icon-button" aria-label="Forward" disabled>
+              <span class="icon" aria-hidden="true">&#xE001;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Text field</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Rest</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              placeholder="Search or enter address"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Filled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              value="example.com/a/very/long/path/that/keeps/going"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              data-preview="focus"
+              value="example.com"
+            />
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><input
+              class="text-field"
+              type="text"
+              aria-label="Address"
+              disabled
+              value="example.com"
+            />
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, vertical</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="tablist"
+              role="tablist"
+              aria-orientation="vertical"
+              aria-label="Tabs"
+            >
+              <button role="tab" aria-selected="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label"
+                  >Selected tab with a very long title that truncates</span
+                ></button
+              ><button role="tab" aria-selected="false">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Rest</span></button
+              ><button role="tab" aria-selected="false" data-preview="hover">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Hover</span></button
+              ><button role="tab" aria-selected="false" data-preview="focus">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Focus visible</span></button
+              ><button role="tab" aria-selected="false" aria-disabled="true">
+                <span class="icon" aria-hidden="true">&#xE017;</span
+                ><span class="label">Disabled</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Tabs, horizontal</h3>
+        <div class="gallery-row">
+          <div
+            class="tablist"
+            role="tablist"
+            aria-orientation="horizontal"
+            aria-label="Tabs"
+          >
+            <button role="tab" aria-selected="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label"
+                >Selected tab with a very long title that truncates</span
+              ></button
+            ><button role="tab" aria-selected="false">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Rest</span></button
+            ><button role="tab" aria-selected="false" data-preview="hover">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Hover</span></button
+            ><button role="tab" aria-selected="false" data-preview="focus">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Focus visible</span></button
+            ><button role="tab" aria-selected="false" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE017;</span
+              ><span class="label">Disabled</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">List rows</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow gallery-surface">
+            <div class="listbox" role="listbox" aria-label="Results">
+              <div role="option" aria-selected="true">
+                <span class="label">Selected row</span>
+              </div>
+              <div role="option" aria-selected="false">
+                <span class="label">Rest</span>
+              </div>
+              <div role="option" aria-selected="false" data-preview="hover">
+                <span class="label">Hover</span>
+              </div>
+              <div
+                role="option"
+                aria-selected="false"
+                data-preview="focus"
+                tabindex="0"
+              >
+                <span class="label">Focus visible</span>
+              </div>
+              <div role="option" aria-selected="false" aria-disabled="true">
+                <span class="label">Disabled</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Toggle</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Off</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Off"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">On</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="On"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="switch"
+              role="switch"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Checkbox</h3>
+        <div class="gallery-row">
+          <div class="gallery-state">
+            <span class="gallery-caption">Unchecked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Unchecked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Checked</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Checked"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Focus visible</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="true"
+              aria-label="Focused"
+              data-preview="focus"
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+          <div class="gallery-state">
+            <span class="gallery-caption">Disabled</span
+            ><button
+              class="checkbox"
+              role="checkbox"
+              aria-checked="false"
+              aria-label="Disabled"
+              disabled
+            >
+              <span class="icon" aria-hidden="true">&#xE00F;</span>
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Segmented control</h3>
+        <div class="gallery-row">
+          <div class="segmented" role="radiogroup" aria-label="Theme">
+            <button
+              role="radio"
+              aria-checked="true"
+              data-command="appearance.theme"
+              data-value="system"
+            >
+              System</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="light"
+              data-preview="hover"
+            >
+              Light</button
+            ><button
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="dark"
+              data-preview="focus"
+            >
+              Dark
+            </button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Accent swatches</h3>
+        <div class="gallery-row">
+          <div class="swatches" role="radiogroup" aria-label="Accent">
+            <button
+              role="radio"
+              aria-checked="true"
+              aria-label="Blue"
+              data-accent="blue"
+              data-command="appearance.accent"
+              data-value="blue"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Purple"
+              data-accent="purple"
+              data-command="appearance.accent"
+              data-value="purple"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Pink"
+              data-accent="pink"
+              data-command="appearance.accent"
+              data-value="pink"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Red"
+              data-accent="red"
+              data-command="appearance.accent"
+              data-value="red"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Orange"
+              data-accent="orange"
+              data-command="appearance.accent"
+              data-value="orange"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Yellow"
+              data-accent="yellow"
+              data-command="appearance.accent"
+              data-value="yellow"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Green"
+              data-accent="green"
+              data-command="appearance.accent"
+              data-value="green"
+            ></button
+            ><button
+              role="radio"
+              aria-checked="false"
+              aria-label="Graphite"
+              data-accent="graphite"
+              data-command="appearance.accent"
+              data-value="graphite"
+            ></button>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Progress bar</h3>
+        <div class="gallery-row">
+          <div class="gallery-narrow">
+            <div
+              class="progress"
+              role="progressbar"
+              aria-label="Download"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="40"
+            >
+              <div class="progress-fill gallery-progress-40"></div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Menu (Linux overlay)</h3>
+        <div class="gallery-row">
+          <div class="menu" role="menu" aria-label="Appearance">
+            <div role="menuitemradio" aria-checked="true">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">System</span>
+            </div>
+            <div role="menuitemradio" aria-checked="false" data-preview="hover">
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Light</span>
+            </div>
+            <div
+              role="menuitemradio"
+              aria-checked="false"
+              data-preview="focus"
+              tabindex="0"
+            >
+              <span class="icon check" aria-hidden="true">&#xE00F;</span
+              ><span class="label">Dark</span>
+            </div>
+            <div role="separator"></div>
+            <div role="menuitem">
+              <span class="icon" aria-hidden="true">&#xE014;</span
+              ><span class="label">Settings…</span
+              ><span class="shortcut">Ctrl+,</span>
+            </div>
+            <div role="menuitem" aria-disabled="true">
+              <span class="icon" aria-hidden="true">&#xE00A;</span
+              ><span class="label">Disabled item</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Popover panel</h3>
+        <div class="gallery-row">
+          <div class="popover" role="dialog" aria-label="Site information">
+            <div class="gallery-row">
+              <span class="icon" aria-hidden="true">&#xE007;</span
+              ><span class="label">Connection is secure</span>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Dialog sheet</h3>
+        <div class="gallery-row">
+          <div class="gallery-sheet-host gallery-narrow">
+            <div class="scrim">
+              <div
+                class="sheet"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="sheet-dark-more"
+              >
+                <h2 class="sheet-title" id="sheet-dark-more">
+                  Leave this page?
+                </h2>
+                <span>Changes you made may not be saved.</span>
+                <div class="sheet-actions">
+                  <button class="button">Stay</button
+                  ><button class="button button-primary">Leave</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 class="gallery-heading">Icons (icons.ttf)</h3>
+        <div class="gallery-row">
+          <div class="gallery-row" aria-label="All icons">
+            <span class="icon" aria-hidden="true">&#xE000;</span
+            ><span class="icon" aria-hidden="true">&#xE001;</span
+            ><span class="icon" aria-hidden="true">&#xE002;</span
+            ><span class="icon" aria-hidden="true">&#xE003;</span
+            ><span class="icon" aria-hidden="true">&#xE004;</span
+            ><span class="icon" aria-hidden="true">&#xE005;</span
+            ><span class="icon" aria-hidden="true">&#xE006;</span
+            ><span class="icon" aria-hidden="true">&#xE007;</span
+            ><span class="icon" aria-hidden="true">&#xE008;</span
+            ><span class="icon" aria-hidden="true">&#xE009;</span
+            ><span class="icon" aria-hidden="true">&#xE00A;</span
+            ><span class="icon" aria-hidden="true">&#xE00B;</span
+            ><span class="icon" aria-hidden="true">&#xE00C;</span
+            ><span class="icon" aria-hidden="true">&#xE00D;</span
+            ><span class="icon" aria-hidden="true">&#xE00E;</span
+            ><span class="icon" aria-hidden="true">&#xE00F;</span
+            ><span class="icon" aria-hidden="true">&#xE010;</span
+            ><span class="icon" aria-hidden="true">&#xE011;</span
+            ><span class="icon" aria-hidden="true">&#xE012;</span
+            ><span class="icon" aria-hidden="true">&#xE013;</span
+            ><span class="icon" aria-hidden="true">&#xE014;</span
+            ><span class="icon" aria-hidden="true">&#xE015;</span
+            ><span class="icon" aria-hidden="true">&#xE016;</span
+            ><span class="icon" aria-hidden="true">&#xE017;</span
+            ><span class="icon" aria-hidden="true">&#xE018;</span
+            ><span class="icon" aria-hidden="true">&#xE019;</span
+            ><span class="icon" aria-hidden="true">&#xE01A;</span>
+          </div>
+        </div>
+      </section>
+      <section class="gallery-mode" id="dev-tools" aria-label="Developer">
+        <h2 class="gallery-title">Developer</h2>
+        <h3 class="gallery-heading">Native file dialogs</h3>
+        <div class="gallery-row">
+          <button
+            class="button"
+            id="dev-open-file"
+            data-command="dev.open_file"
+          >
+            Open file…</button
+          ><button
+            class="button"
+            id="dev-save-file"
+            data-command="dev.save_file"
+          >
+            Save file…
+          </button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

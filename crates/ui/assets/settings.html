@@ -1,0 +1,198 @@
+<!doctype html>
+<!--
+  The settings window's chrome document (spec 0003, build plan task 18):
+  Theme, Accent and Interface size. Same rules as frame.html: scripts off,
+  embedded assets only, no markup injected. Rust writes the root
+  attributes, aria-checked on the radios, aria-disabled on the size
+  buttons, the "System (Blue)" label and the size, all found by id.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Settings</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="controls.css" />
+    <link rel="stylesheet" href="frame.css" />
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <div class="frame settings" id="frame" data-side="right" data-drag-region>
+      <div class="caption" data-drag-region>
+        <span class="settings-title label" data-drag-region>Settings</span>
+        <div class="caption-buttons" id="caption-buttons">
+          <button
+            class="caption-button"
+            id="caption-close"
+            tabindex="-1"
+            aria-label="Close"
+            data-command="window.close"
+          >
+            <span class="caption-glyph" aria-hidden="true">&#xE8BB;</span
+            ><span class="icon" aria-hidden="true">&#xE004;</span>
+          </button>
+        </div>
+      </div>
+      <main class="settings-body" id="settings-body" data-drag-region>
+        <section class="settings-group" aria-labelledby="theme-heading">
+          <h2 class="settings-heading" id="theme-heading">Theme</h2>
+          <div
+            class="segmented"
+            id="theme"
+            role="radiogroup"
+            aria-labelledby="theme-heading"
+          >
+            <button
+              id="theme-system"
+              role="radio"
+              aria-checked="true"
+              data-command="appearance.theme"
+              data-value="system"
+            >
+              System</button
+            ><button
+              id="theme-light"
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="light"
+            >
+              Light</button
+            ><button
+              id="theme-dark"
+              role="radio"
+              aria-checked="false"
+              data-command="appearance.theme"
+              data-value="dark"
+            >
+              Dark
+            </button>
+          </div>
+        </section>
+        <section class="settings-group" aria-labelledby="accent-heading">
+          <h2 class="settings-heading" id="accent-heading">Accent</h2>
+          <div
+            class="swatches"
+            id="accent"
+            role="radiogroup"
+            aria-labelledby="accent-heading"
+          >
+            <button
+              id="accent-system"
+              role="radio"
+              aria-checked="true"
+              aria-label="System (Blue)"
+              data-accent="blue"
+              data-command="appearance.accent"
+              data-value="system"
+            >
+              <span class="icon" aria-hidden="true">&#xE01A;</span></button
+            ><button
+              id="accent-blue"
+              role="radio"
+              aria-checked="false"
+              aria-label="Blue"
+              data-accent="blue"
+              data-command="appearance.accent"
+              data-value="blue"
+            ></button
+            ><button
+              id="accent-purple"
+              role="radio"
+              aria-checked="false"
+              aria-label="Purple"
+              data-accent="purple"
+              data-command="appearance.accent"
+              data-value="purple"
+            ></button
+            ><button
+              id="accent-pink"
+              role="radio"
+              aria-checked="false"
+              aria-label="Pink"
+              data-accent="pink"
+              data-command="appearance.accent"
+              data-value="pink"
+            ></button
+            ><button
+              id="accent-red"
+              role="radio"
+              aria-checked="false"
+              aria-label="Red"
+              data-accent="red"
+              data-command="appearance.accent"
+              data-value="red"
+            ></button
+            ><button
+              id="accent-orange"
+              role="radio"
+              aria-checked="false"
+              aria-label="Orange"
+              data-accent="orange"
+              data-command="appearance.accent"
+              data-value="orange"
+            ></button
+            ><button
+              id="accent-yellow"
+              role="radio"
+              aria-checked="false"
+              aria-label="Yellow"
+              data-accent="yellow"
+              data-command="appearance.accent"
+              data-value="yellow"
+            ></button
+            ><button
+              id="accent-green"
+              role="radio"
+              aria-checked="false"
+              aria-label="Green"
+              data-accent="green"
+              data-command="appearance.accent"
+              data-value="green"
+            ></button
+            ><button
+              id="accent-graphite"
+              role="radio"
+              aria-checked="false"
+              aria-label="Graphite"
+              data-accent="graphite"
+              data-command="appearance.accent"
+              data-value="graphite"
+            ></button>
+          </div>
+          <p class="settings-hint label" id="accent-label">System (Blue)</p>
+        </section>
+        <section class="settings-group" aria-labelledby="zoom-heading">
+          <h2 class="settings-heading" id="zoom-heading">Interface size</h2>
+          <div class="stepper" role="group" aria-labelledby="zoom-heading">
+            <button
+              class="icon-button"
+              id="zoom-out"
+              aria-label="Smaller"
+              data-command="ui.zoom"
+              data-value="out"
+            >
+              <span class="icon" aria-hidden="true">&#xE010;</span></button
+            ><span class="stepper-value" id="zoom-value">100%</span
+            ><button
+              class="icon-button"
+              id="zoom-in"
+              aria-label="Bigger"
+              data-command="ui.zoom"
+              data-value="in"
+            >
+              <span class="icon" aria-hidden="true">&#xE005;</span></button
+            ><button
+              class="button"
+              id="zoom-reset"
+              aria-disabled="true"
+              data-command="ui.zoom"
+              data-value="reset"
+            >
+              Reset
+            </button>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

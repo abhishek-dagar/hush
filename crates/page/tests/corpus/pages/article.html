@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang=en>
+<head>
+<meta charset=utf-8>
+<title>A plain article</title>
+<link rel=stylesheet href=article.css>
+</head>
+<body>
+<header><p class=kicker>Field notes</p><h1>Why small browsers matter</h1>
+<p class=byline>By A. Writer, <time>21 October</time></p></header>
+<article>
+<p>A browser is mostly a <em>reading</em> machine. Most of what people open is text: news, documentation,
+recipes and long essays. If a small engine gets <strong>that</strong> right, it is already useful.</p>
+<h2>What it takes</h2>
+<p>Reading needs a parser that forgives broken markup, a cascade that applies styles in the
+right order, and <a href="#layout">flow layout</a> that wraps lines where people expect.</p>
+<ul>
+<li>Parse the page as it streams in.</li>
+<li>Style it with the cascade.</li>
+<li>Lay out blocks and lines, then paint.</li>
+</ul>
+<blockquote><p>Simple things should be simple.</p></blockquote>
+<h2 id=layout>Layout</h2>
+<p>Blocks stack down the page; their vertical margins collapse. Inside a block, text and inline
+boxes fill <code>line boxes</code> from left to right.</p>
+<ol><li>First</li><li>Second</li></ol>
+<p><img src=two.png alt="two colour bars" width=40 height=20> A picture sits on the line like a word.</p>
+<hr>
+<p class=footnote>Thanks for reading.</p>
+</article>
+</body>
+</html>

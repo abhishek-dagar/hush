@@ -1,0 +1,33 @@
+[package]
+name = "conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Runs WPT reftests and crashtests against the engine (spec 0005). Never shipped."
+
+[dependencies]
+anyhow.workspace = true
+base.workspace = true
+# Snapshot folder default (spec 0005, Value sourcing).
+dirs.workspace = true
+display-list.workspace = true
+dom.workspace = true
+html.workspace = true
+ipc.workspace = true
+lexopt.workspace = true
+page.workspace = true
+# Failure images (spec 0005, AC-12).
+png.workspace = true
+render.workspace = true
+serde.workspace = true
+# The worker protocol and `results.json`.
+serde_json.workspace = true
+# `subset.toml`.
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,34 @@
+# Build output (also holds conformance and perf reports: target/conformance, target/perf)
+/target
+**/*.rs.bk
+
+# Profiling and coverage output
+*.profraw
+*.profdata
+perf.data
+perf.data.old
+flamegraph.svg
+lcov.info
+*.pdb
+
+# Saved third party sites for the modern layout proof; rebuilt with
+# `cargo conformance sites --save <site>` (spec 0010, child 0006)
+/tools/conformance/sites/tailwindcss/
+/tools/conformance/sites/vercel/
+/tools/conformance/sites/stripe/
+
+# Local secrets and environment
+.env
+.env.*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

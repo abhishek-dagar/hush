@@ -1,0 +1,39 @@
+[package]
+name = "net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+brotli-decompressor.workspace = true
+bytes.workspace = true
+display-list.workspace = true
+flate2.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+ipc.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+thiserror.workspace = true
+# The network thread's runtime (spec 0004, child 0001): a current thread
+# runtime with sockets, timers, channels and file reads.
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "fs", "io-util"] }
+tower-service.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+# The local test server (spec 0004, Critical test scenarios): HTTP/1.1 and
+# h2 over TLS with the checked in test certificates, and compressed bodies.
+# Test only, never shipped.
+brotli = "8.0.4"
+hyper = { workspace = true, features = ["server"] }
+hyper-util = { workspace = true, features = ["server", "server-auto"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "macros"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+
+[lints]
+workspace = true

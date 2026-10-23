@@ -1,0 +1,19 @@
+[package]
+name = "paint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base.workspace = true
+css.workspace = true
+layout.workspace = true
+display-list.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+dom.workspace = true
+text.workspace = true

@@ -1,0 +1,75 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+    body
+      "stray textmore stray"
+      b
+        "bold"
+      p
+        "para in table"
+      table
+        tbody
+          tr
+            td
+              "cell"
+              div
+                "block"
+      "\ncell outside\nafter"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>b: font-weight: 700
+html>body>p: display: block; margin: 16px 0px 16px 0px
+html>body>table: display: block
+html>body>table>tbody: display: block
+html>body>table>tbody>tr: display: block
+html>body>table>tbody>tr>td: display: block
+html>body>table>tbody>tr>td>div: display: block
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x155.58
+    box html>body at=8,8 size=784x139.58
+      box (anonymous) at=0,0 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>#text[1] at=0,0 size=146.67x21.52 baseline=16.93 "stray textmore stray"
+          box html>body>b at=146.67,0 size=31.37x21.52 inline
+            text html>body>b>#text at=0,0 size=31.37x21.52 baseline=16.93 "bold"
+      box html>body>p at=0,37.52 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p>#text at=0,0 size=87.23x21.52 baseline=16.93 "para in table"
+      box html>body>table at=0,75.03 size=784x43.03
+        box html>body>table>tbody at=0,0 size=784x43.03
+          box html>body>table>tbody>tr at=0,0 size=784x43.03
+            box html>body>table>tbody>tr>td at=0,0 size=784x43.03
+              box (anonymous) at=0,0 size=784x21.52
+                line at=0,0 size=784x21.52 baseline=16.93
+                  text html>body>table>tbody>tr>td>#text at=0,0 size=24.23x21.52 baseline=16.93 "cell"
+              box html>body>table>tbody>tr>td>div at=0,21.52 size=784x21.52
+                line at=0,0 size=784x21.52 baseline=16.93
+                  text html>body>table>tbody>tr>td>div>#text at=0,0 size=37.67x21.52 baseline=16.93 "block"
+      box (anonymous) at=0,118.07 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>#text[2] at=0,0 size=119.98x21.52 baseline=16.93 "cell outside after"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- text font=0 size=16 #000000ff glyphs=20
+  s1 clip=- text font=0 size=16 #000000ff glyphs=4
+  s1 clip=- text font=0 size=16 #000000ff glyphs=13
+  s1 clip=- text font=0 size=16 #000000ff glyphs=4
+  s1 clip=- text font=0 size=16 #000000ff glyphs=5
+  s1 clip=- text font=0 size=16 #000000ff glyphs=18

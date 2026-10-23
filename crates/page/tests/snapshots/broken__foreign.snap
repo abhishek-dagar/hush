@@ -1,0 +1,28 @@
+---
+source: crates/page/tests/broken.rs
+expression: page.main_frame().document.dump()
+---
+#document
+  #doctype html
+  html
+    head
+    body
+      p
+        "text"
+        svg
+          circle r="1"
+      p
+        "breaks out\n"
+        math
+          mi
+            "x"
+            mglyph
+          annotation-xml encoding="text/html"
+            div
+              "html"
+        "\n"
+        svg
+          foreignObject
+            b
+              "inside"
+          "cdata <b>"

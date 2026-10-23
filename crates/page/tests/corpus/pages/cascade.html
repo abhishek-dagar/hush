@@ -1,0 +1,22 @@
+<!doctype html>
+<title>Cascade and selectors</title>
+<link rel=stylesheet href=cascade.css>
+<style>
+  p { color: blue }
+  #id { color: green }
+  .later { color: purple }
+  .important { color: orange !important }
+</style>
+<div class=box>
+  <p>type selector: blue from the inline sheet beats the linked red (same specificity, later)</p>
+  <p id=id class=cls>id beats class</p>
+  <p class="cls later">two classes in source order: purple</p>
+  <p class=important style="color: black">important beats the style attribute</p>
+  <p style="color: teal">the style attribute beats the sheets</p>
+  <p data-kind=attr>attribute selector</p>
+  <p lang=fr-CA>attribute prefix and dash match</p>
+  <span>a span</span> <span class=sib>adjacent sibling</span> <span>general sibling</span>
+  <ul><li>first</li><li>middle</li><li>last</li></ul>
+  <p class=not-me>:not() skips this</p>
+  <section><div><em>descendant</em></div><em>child</em></section>
+</div>

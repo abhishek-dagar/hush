@@ -1,0 +1,67 @@
+---
+source: crates/page/tests/corpus.rs
+expression: "dumps(&page, &list)"
+---
+== dom ==
+#document
+  #doctype html
+  html
+    head
+    body
+      p
+        "text"
+        svg
+          circle r="1"
+      p
+        "breaks out\n"
+        math
+          mi
+            "x"
+            mglyph
+          annotation-xml encoding="text/html"
+            div
+              "html"
+        "\n"
+        svg
+          foreignObject
+            b
+              "inside"
+          "cdata <b>"
+
+== computed style ==
+html: display: block
+html>head: display: none
+html>body: display: block; margin: 8px 8px 8px 8px
+html>body>p[1]: display: block; margin: 16px 0px 16px 0px
+html>body>p[1]>svg: display: none
+html>body>p[1]>svg>circle: 
+html>body>p[2]: display: block; margin: 16px 0px 16px 0px
+html>body>p[2]>math: display: none
+html>body>p[2]>math>mi: 
+html>body>p[2]>math>mi>mglyph: 
+html>body>p[2]>math>annotation-xml: 
+html>body>p[2]>math>annotation-xml>div: display: block
+html>body>p[2]>svg: display: none
+html>body>p[2]>svg>foreignObject: 
+html>body>p[2]>svg>foreignObject>b: font-weight: 700
+
+== fragments ==
+fragments viewport=800x600
+  box html at=0,0 size=800x91.03
+    box html>body at=8,16 size=784x59.03
+      box html>body>p[1] at=0,0 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[1]>#text at=0,0 size=28.95x21.52 baseline=16.93 "text"
+      box html>body>p[2] at=0,37.52 size=784x21.52
+        line at=0,0 size=784x21.52 baseline=16.93
+          text html>body>p[2]>#text[1] at=0,0 size=75.32x21.52 baseline=16.93 "breaks out"
+
+== display list ==
+display list page=1 epoch=1 viewport=800x600
+spatial
+  s0 parent=- root
+  s1 parent=0 scroll-frame port=(0,0 800x600) content=800x600 offset=0,0 generation=0
+clips
+items
+  s1 clip=- text font=0 size=16 #000000ff glyphs=4
+  s1 clip=- text font=0 size=16 #000000ff glyphs=10

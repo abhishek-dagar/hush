@@ -1,0 +1,31 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The chrome document runs on the engine (spec 0003, milestone 3): a page
+# with scripts off, its DOM and its display list. All already in the
+# browser process through `embed`.
+base.workspace = true
+display-list.workspace = true
+dom.workspace = true
+ipc.workspace = true
+# The address's display rules (spec 0008, AC-3, AC-4).
+navigation.workspace = true
+page.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+cssparser.workspace = true
+# The reference screenshots (spec 0003, AC-14): an offscreen render, saved
+# and compared as PNG. Both already in the workspace.
+png.workspace = true
+render.workspace = true
+
+[lints]
+workspace = true

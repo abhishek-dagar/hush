@@ -1,0 +1,3 @@
+[alias]
+# Runs the WPT conformance harness (spec 0005).
+conformance = "run -p conformance --profile conformance --"

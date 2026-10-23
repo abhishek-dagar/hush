@@ -1,0 +1,23 @@
+<!doctype html>
+<title>Margin collapsing</title>
+<style>
+  body { margin: 0; font-family: sans-serif; font-size: 16px; line-height: 20px }
+  div, p { background: #eef }
+  .a { margin: 20px 0 }
+  .b { margin: 30px 0 }
+  .parent { margin-top: 10px; background: #fee }
+  .child { margin-top: 25px }
+  .border { border-top: 1px solid black; margin-top: 10px }
+  .border .child { margin-top: 15px }
+  .empty { margin: 12px 0 18px }
+  .neg { margin-top: -8px }
+  .pad { padding-top: 1px; margin-top: 10px }
+  .pad .child { margin-top: 40px }
+</style>
+<p class=a>siblings: max(20, 30) between</p>
+<p class=b>second sibling</p>
+<div class=parent><p class=child>child margin collapses through the parent</p></div>
+<div class=border><p class=child>a border stops it</p></div>
+<div class=empty></div>
+<p class=neg>an empty block's margins collapse through it, then a negative one</p>
+<div class=pad><p class=child>padding stops it too</p></div>

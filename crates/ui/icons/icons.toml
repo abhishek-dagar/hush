@@ -1,0 +1,33 @@
+# The chrome's icons (spec 0003, Icons): our name, the Lucide icon it comes
+# from, and its Private Use Area codepoint in icons.ttf. Codepoints are a
+# contract with chrome HTML (`&#xE000;`), so add new icons at the end and
+# never reuse a number. Rebuild icons.ttf with build_icons.py after a change.
+
+[icons]
+back = { lucide = "arrow-left", codepoint = 0xE000 }
+forward = { lucide = "arrow-right", codepoint = 0xE001 }
+reload = { lucide = "rotate-cw", codepoint = 0xE002 }
+stop = { lucide = "x", codepoint = 0xE003 }
+close = { lucide = "x", codepoint = 0xE004 }
+plus = { lucide = "plus", codepoint = 0xE005 }
+search = { lucide = "search", codepoint = 0xE006 }
+lock = { lucide = "lock", codepoint = 0xE007 }
+unlock = { lucide = "lock-open", codepoint = 0xE008 }
+warning = { lucide = "triangle-alert", codepoint = 0xE009 }
+star = { lucide = "star", codepoint = 0xE00A }
+menu = { lucide = "menu", codepoint = 0xE00B }
+sidebar = { lucide = "panel-left", codepoint = 0xE00C }
+chevron-down = { lucide = "chevron-down", codepoint = 0xE00D }
+chevron-right = { lucide = "chevron-right", codepoint = 0xE00E }
+check = { lucide = "check", codepoint = 0xE00F }
+minus = { lucide = "minus", codepoint = 0xE010 }
+square = { lucide = "square", codepoint = 0xE011 }
+copy = { lucide = "copy", codepoint = 0xE012 }
+download = { lucide = "download", codepoint = 0xE013 }
+settings = { lucide = "settings", codepoint = 0xE014 }
+more = { lucide = "ellipsis", codepoint = 0xE015 }
+pin = { lucide = "pin", codepoint = 0xE016 }
+globe = { lucide = "globe", codepoint = 0xE017 }
+sun = { lucide = "sun", codepoint = 0xE018 }
+moon = { lucide = "moon", codepoint = 0xE019 }
+monitor = { lucide = "monitor", codepoint = 0xE01A }
