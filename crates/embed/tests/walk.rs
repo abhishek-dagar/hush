@@ -7,7 +7,7 @@
 //! stop a slow load, and search a phrase.
 //!
 //! The shortcuts that start back, forward and reload are unit tested in
-//! `input.rs`; here each one is the history move it maps to.
+//! `lifecycle.rs`; here each one is the history move it maps to.
 
 #![allow(
     clippy::unwrap_used,
