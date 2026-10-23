@@ -487,10 +487,16 @@ body {
 }
 
 .button:disabled,
-.button[aria-disabled="true"],
+.button[aria-disabled="true"] {
+  border-color: var(--border-subtle);
+  color: var(--text-disabled);
+  background-color: transparent;
+}
+
+/* An icon button only greys its glyph: no border appears (design.md). */
 .icon-button:disabled,
 .icon-button[aria-disabled="true"] {
-  border-color: var(--border-subtle);
+  border-color: transparent;
   color: var(--text-disabled);
   background-color: transparent;
 }

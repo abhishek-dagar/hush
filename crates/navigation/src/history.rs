@@ -131,8 +131,46 @@ pub struct PendingNavigation {
 pub enum Begin {
     /// Load the URL as this navigation.
     Load(NavigationId),
+    /// The URL is the document on screen at another fragment (AC-20): no
+    /// load. The entry is already in the history; the page only scrolls.
+    SameDocument {
+        /// The entry left, whose scroll offset to save (AC-23).
+        leaving: EntryId,
+        /// The history now.
+        history: HistoryInfo,
+    },
     /// Nothing loads: the target entry is gone.
     Refused,
+}
+
+/// A move between two entries of the same document (AC-21): no load, only
+/// a scroll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SameDocumentMove {
+    /// The entry left, whose scroll offset to save (AC-23).
+    pub leaving: EntryId,
+    /// The offset the entry moved to was left at, if it saved one.
+    pub scroll: Option<(f32, f32)>,
+    /// The history now.
+    pub history: HistoryInfo,
+}
+
+/// What [`SessionHistory::stop`] did (spec 0008, AC-26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    /// Nothing was loading.
+    Nothing,
+    /// The load had not committed: it is dropped, and the document on
+    /// screen stays, as the given navigation.
+    BeforeCommit {
+        /// The dropped load.
+        dropped: NavigationId,
+        /// The document still on screen, if any.
+        shown: Option<NavigationId>,
+    },
+    /// The document committed and its `load` has not fired: the page
+    /// cancels what is left, and loading ends at its `load` event.
+    AfterCommit(NavigationId),
 }
 
 /// One page's session history (spec 0008, Data model). Only the browser
@@ -167,6 +205,11 @@ impl SessionHistory {
     /// (AC-22). The caller has already checked page loads with
     /// [`crate::page_may_load`].
     pub fn begin(&mut self, url: Url, origin: Origin, action: Action) -> Begin {
+        if matches!(action, Action::Push | Action::Replace)
+            && let Some(begin) = self.same_document(&url, action)
+        {
+            return begin;
+        }
         let action = match action {
             Action::Push if self.current().is_some_and(|entry| entry.url == url) => Action::Replace,
             Action::Traverse { to } if self.index_of(to).is_none() => return Begin::Refused,
@@ -190,6 +233,60 @@ impl SessionHistory {
         });
         self.load = LoadState::Requesting;
         Begin::Load(navigation)
+    }
+
+    /// A move to another fragment of the document on screen (AC-20): its
+    /// URL equals the current entry's but for the fragment, the target has
+    /// one, the entry is no error page, and no other load is pending. A
+    /// push adds an entry of the same document, dropping those ahead; the
+    /// same URL, or a replace, keeps the entry and changes its URL.
+    fn same_document(&mut self, url: &Url, action: Action) -> Option<Begin> {
+        let current = self.current()?;
+        let same = self.pending.is_none()
+            && current.kind == EntryKind::Document
+            && url.fragment().is_some()
+            && without_fragment(url) == without_fragment(&current.url);
+        if !same {
+            return None;
+        }
+        let leaving = current.id;
+        let document = current.document;
+        if action == Action::Replace || *url == current.url {
+            let entry = &mut self.entries[self.current];
+            entry.url = url.clone();
+        } else {
+            let title = current.title.clone();
+            self.push(url.clone(), EntryKind::Document, document);
+            if let Some(entry) = self.entries.get_mut(self.current) {
+                entry.title = title;
+            }
+        }
+        Some(Begin::SameDocument {
+            leaving,
+            history: self.info(),
+        })
+    }
+
+    /// Back or forward to entry `to` when it shows the same document as
+    /// the current one (AC-21): only the current entry moves, nothing
+    /// loads. `None` when it is another document, gone, or a load is
+    /// pending; then the caller loads it.
+    pub fn traverse_within(&mut self, to: EntryId) -> Option<SameDocumentMove> {
+        let index = self.index_of(to)?;
+        let current = self.current()?;
+        if self.pending.is_some()
+            || index == self.current
+            || self.entries[index].document != current.document
+        {
+            return None;
+        }
+        let leaving = current.id;
+        self.current = index;
+        Some(SameDocumentMove {
+            leaving,
+            scroll: self.entries[index].scroll,
+            history: self.info(),
+        })
     }
 
     /// Starts a load that adds no entry: the error page for start input
@@ -338,6 +435,39 @@ impl SessionHistory {
             .map(|entry| Action::Traverse { to: entry.id })
     }
 
+    /// The user pressed Stop (AC-26, State transitions). Before commit
+    /// the pending load is dropped and the state goes back to what it
+    /// was; after commit the state stays `Loading` until `load` fires.
+    /// The document still on screen lost its own loads when the dropped
+    /// one began (the network cancels them, spec 0004 AC-11), so it can
+    /// never fire `load`: it counts as complete.
+    pub fn stop(&mut self) -> Stopped {
+        let dropped = match (self.pending.take(), self.detached.take()) {
+            (Some(pending), _) => Some(pending.navigation),
+            (None, detached) => detached,
+        };
+        if let Some(dropped) = dropped {
+            self.load = match self.committed {
+                Some(_) => LoadState::Complete,
+                None => LoadState::Idle,
+            };
+            return Stopped::BeforeCommit {
+                dropped,
+                shown: self.committed,
+            };
+        }
+        match (self.load, self.committed) {
+            (LoadState::Loading, Some(navigation)) => Stopped::AfterCommit(navigation),
+            _ => Stopped::Nothing,
+        }
+    }
+
+    /// Whether a load is running: from its start until the new document's
+    /// `load` event (AC-25).
+    pub fn loading(&self) -> bool {
+        matches!(self.load, LoadState::Requesting | LoadState::Loading)
+    }
+
     /// The content process crashed: its pending load is gone with it
     /// (spec 0008, Edge cases). The entries stay (AC-34).
     pub fn crashed(&mut self) {
@@ -395,6 +525,13 @@ impl SessionHistory {
     fn index_of(&self, id: EntryId) -> Option<usize> {
         self.entries.iter().position(|entry| entry.id == id)
     }
+}
+
+/// `url` without its fragment, to compare documents.
+fn without_fragment(url: &Url) -> Url {
+    let mut url = url.clone();
+    url.set_fragment(None);
+    url
 }
 
 /// A [`HistoryInfo`] from sizes that never exceed [`MAX_ENTRIES`].
@@ -630,5 +767,131 @@ mod tests {
         assert_eq!(history.current().unwrap().title.len(), MAX_TITLE_CHARS);
         load(&mut history, "a", Action::Reload);
         assert_eq!(history.current().unwrap().title, "");
+    }
+
+    #[test]
+    fn stop_before_commit_drops_the_load_and_keeps_the_page() {
+        // AC-26, State transitions
+        let mut history = SessionHistory::new();
+        let first = load(&mut history, "a", Action::Push);
+        history.load_complete(first);
+        let Begin::Load(slow) = history.begin(url("slow"), Origin::Browser, Action::Push) else {
+            panic!("refused");
+        };
+        assert!(history.loading());
+        assert_eq!(
+            history.stop(),
+            Stopped::BeforeCommit {
+                dropped: slow,
+                shown: Some(first)
+            }
+        );
+        assert!(!history.loading());
+        assert_eq!(urls(&history), ["/a"], "no entry added");
+        assert_eq!(history.commit(slow, url("slow"), EntryKind::Document), None);
+        assert_eq!(history.stop(), Stopped::Nothing);
+    }
+
+    #[test]
+    fn stop_after_commit_waits_for_the_load_event() {
+        // AC-26
+        let mut history = SessionHistory::new();
+        let navigation = load(&mut history, "a", Action::Push);
+        assert_eq!(history.stop(), Stopped::AfterCommit(navigation));
+        assert!(history.loading(), "loading ends at `load`");
+        history.load_complete(navigation);
+        assert!(!history.loading());
+        assert_eq!(history.stop(), Stopped::Nothing);
+    }
+
+    #[test]
+    fn stop_while_the_page_on_screen_still_loads_counts_it_complete() {
+        // AC-26: its own loads were cancelled when the newer one began.
+        let mut history = SessionHistory::new();
+        load(&mut history, "a", Action::Push);
+        history.begin(url("b"), Origin::Browser, Action::Push);
+        history.stop();
+        assert_eq!(history.load_state(), LoadState::Complete);
+    }
+
+    fn same_document(history: &mut SessionHistory, path: &str) -> Begin {
+        history.begin(
+            url(path),
+            Origin::Page(PageNavigationOrigin::Link),
+            Action::Push,
+        )
+    }
+
+    #[test]
+    fn a_fragment_of_the_page_on_screen_pushes_without_a_load() {
+        // AC-20, AC-22
+        let mut history = SessionHistory::new();
+        let navigation = load(&mut history, "a", Action::Push);
+        history.title("Docs");
+        let first = history.current().unwrap().id;
+        let Begin::SameDocument {
+            leaving,
+            history: info,
+        } = same_document(&mut history, "a#intro")
+        else {
+            panic!("a load");
+        };
+        assert_eq!(leaving, first);
+        assert_eq!(info, super::info(2, 1));
+        assert_eq!(history.committed(), Some(navigation), "the same document");
+        assert_eq!(history.current().unwrap().url.fragment(), Some("intro"));
+        assert_eq!(history.current().unwrap().title, "Docs");
+        // The same fragment again scrolls, and adds nothing.
+        assert!(matches!(
+            same_document(&mut history, "a#intro"),
+            Begin::SameDocument { .. }
+        ));
+        assert_eq!(history.info(), super::info(2, 1));
+        // Another document loads.
+        assert!(matches!(
+            same_document(&mut history, "b#intro"),
+            Begin::Load(_)
+        ));
+    }
+
+    #[test]
+    fn a_fragment_on_an_error_page_or_without_one_loads() {
+        // AC-20: error documents always load; no fragment is a load.
+        let mut history = SessionHistory::new();
+        load(&mut history, "a", Action::Push);
+        assert!(matches!(same_document(&mut history, "a"), Begin::Load(_)));
+        let mut history = SessionHistory::new();
+        let Begin::Load(navigation) = history.begin(url("x"), Origin::Browser, Action::Push) else {
+            panic!("refused");
+        };
+        history.commit(
+            navigation,
+            url("x"),
+            EntryKind::Error(FetchError::DnsFailed),
+        );
+        assert!(matches!(same_document(&mut history, "x#a"), Begin::Load(_)));
+    }
+
+    #[test]
+    fn back_and_forward_inside_one_document_only_scroll() {
+        // AC-21, AC-23
+        let mut history = SessionHistory::new();
+        load(&mut history, "a", Action::Push);
+        let top = history.current().unwrap().id;
+        same_document(&mut history, "a#b");
+        history.save_scroll(top, (0.0, 300.0));
+        let Some(Action::Traverse { to }) = history.go(-1) else {
+            panic!("no back");
+        };
+        let moved = history.traverse_within(to).expect("same document");
+        assert_eq!(moved.scroll, Some((0.0, 300.0)));
+        assert_eq!(moved.history, super::info(2, 0));
+        assert_eq!(history.current().unwrap().id, top);
+        // An entry of another document is the caller's to load.
+        load(&mut history, "c", Action::Push);
+        let Some(Action::Traverse { to }) = history.go(-1) else {
+            panic!("no back");
+        };
+        assert_eq!(history.traverse_within(to), None);
     }
 }

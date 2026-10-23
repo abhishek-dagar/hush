@@ -13,5 +13,10 @@ thiserror.workspace = true
 tracing.workspace = true
 url.workspace = true
 
+[dev-dependencies]
+# Property tests for the history rules and `interpret` (spec 0008, AC-36).
+# Test only, never shipped.
+proptest.workspace = true
+
 [lints]
 workspace = true

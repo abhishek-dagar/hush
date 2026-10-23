@@ -492,16 +492,25 @@ impl Scene<'_> {
         }
     }
 
-    /// The lists to draw in order, each with where it lands: the chrome
-    /// over the whole target, then the page in its area.
-    fn layers(&self) -> Vec<(&DisplayList, Geometry)> {
-        let mut layers = Vec::with_capacity(2);
+    /// The lists to draw in order, each with where it lands and whether
+    /// it is the page: the chrome over the whole target, then the page in
+    /// its area, then the chrome's overlay over both (spec 0008).
+    fn layers(&self) -> Vec<(&DisplayList, Geometry, bool)> {
+        let mut layers = Vec::with_capacity(3);
+        let target = [0.0, 0.0, self.width as f32, self.height as f32];
         if let Some(chrome) = self.chrome {
-            let geometry = Geometry::new(chrome.list, chrome.scale, [0.0, 0.0], NO_CLIP);
-            layers.push((chrome.list, geometry));
+            let geometry = Geometry::new(chrome.list, chrome.scale, [0.0, 0.0], NO_CLIP, target);
+            layers.push((chrome.list, geometry, false));
         }
         if let (Some(list), Some((offset, clip))) = (self.list, self.page_area()) {
-            layers.push((list, Geometry::new(list, self.scale, offset, clip)));
+            let geometry = Geometry::new(list, self.scale, offset, clip, target);
+            layers.push((list, geometry, true));
+        }
+        if let Some(chrome) = self.chrome
+            && let Some(overlay) = chrome.overlay
+        {
+            let geometry = Geometry::new(overlay, chrome.scale, [0.0, 0.0], NO_CLIP, target);
+            layers.push((overlay, geometry, false));
         }
         layers
     }
@@ -519,6 +528,8 @@ struct Geometry {
     origins: Vec<Option<PointF>>,
     clips: Vec<Option<Clip>>,
     page_clip: Clip,
+    /// The target, in its own pixels: nothing outside it can show.
+    target: Edges,
     scale: f32,
     offset: [f32; 2],
 }
@@ -526,7 +537,13 @@ struct Geometry {
 impl Geometry {
     /// Spatial nodes only move their content (scroll offsets and the
     /// translation part of a reference frame), which is all paint emits.
-    fn new(list: &DisplayList, scale: f32, offset: [f32; 2], page_clip: Clip) -> Self {
+    fn new(
+        list: &DisplayList,
+        scale: f32,
+        offset: [f32; 2],
+        page_clip: Clip,
+        target: Edges,
+    ) -> Self {
         let origins: Vec<Option<PointF>> = (0..list.spatial.len())
             .map(|i| list.to_root(SpatialId(i as u32), PointF::default()))
             .collect();
@@ -534,6 +551,7 @@ impl Geometry {
             origins,
             clips: Vec::with_capacity(list.clips.len()),
             page_clip,
+            target,
             scale,
             offset,
         };
@@ -578,6 +596,28 @@ impl Geometry {
         Some((self.origin(item.spatial)?, clip))
     }
 
+    /// Whether anything of `quad` can show: some of it lies inside both
+    /// `clip` and the target. Items scrolled out of view fail this, so a
+    /// frame costs what the window shows, not the whole page.
+    fn shows(&self, quad: Edges, clip: &Clip) -> bool {
+        !is_empty(intersect(intersect(quad, clip.rect), self.target))
+    }
+
+    /// Whether a glyph whose pen sits at `pen` can show. Its box is not
+    /// known before the atlas rasterizes it, so this uses a generous box
+    /// around the pen (an em back and up, two forward, one down) that holds
+    /// any real glyph, however far it overhangs.
+    fn glyph_shows(&self, pen: [f32; 2], size: f32, clip: &Clip) -> bool {
+        let em = size * self.scale;
+        let quad = [
+            pen[0] - em,
+            pen[1] - 2.0 * em,
+            pen[0] + 2.0 * em,
+            pen[1] + em,
+        ];
+        self.shows(quad, clip)
+    }
+
     /// A glyph's atlas key and its pen position: x in target pixels with
     /// its fraction kept for the subpixel bin, y on a whole pixel.
     fn glyph(
@@ -599,7 +639,7 @@ impl Geometry {
 /// repeats.
 pub(crate) fn glyph_keys(scene: &Scene<'_>) -> Vec<GlyphKey> {
     let mut keys = Vec::new();
-    for (list, geometry) in scene.layers() {
+    for (list, geometry, _) in scene.layers() {
         for item in &list.items {
             let ItemKind::Text {
                 font, size, glyphs, ..
@@ -607,14 +647,13 @@ pub(crate) fn glyph_keys(scene: &Scene<'_>) -> Vec<GlyphKey> {
             else {
                 continue;
             };
-            let Some(origin) = geometry.origin(item.spatial) else {
+            let Some((origin, clip)) = geometry.place(item) else {
                 continue;
             };
-            keys.extend(
-                glyphs
-                    .iter()
-                    .map(|glyph| geometry.glyph(list.page, *font, *size, glyph, origin).0),
-            );
+            keys.extend(glyphs.iter().filter_map(|glyph| {
+                let (key, pen) = geometry.glyph(list.page, *font, *size, glyph, origin);
+                geometry.glyph_shows(pen, *size, &clip).then_some(key)
+            }));
         }
     }
     keys.sort_unstable_by_key(|k| (k.page.0, k.font, k.glyph, k.size, k.bin));
@@ -623,7 +662,7 @@ pub(crate) fn glyph_keys(scene: &Scene<'_>) -> Vec<GlyphKey> {
 }
 
 /// Builds the frame for `scene` from item `start` on, counting the chrome's
-/// items first and the page's after them. `place` finds a glyph in the
+/// items first, the page's after them, then the chrome overlay's. `place` finds a glyph in the
 /// atlas, adding it if needed, or says the atlas is full (`None`). When it
 /// fills up, the frame ends before the text item that did not fit, so the
 /// caller can draw it, empty the atlas and build the rest from `resume`.
@@ -641,10 +680,7 @@ pub(crate) fn build(
     let mut drew_text = false;
     let mut warned = false;
     let mut index = 0;
-    let layers = scene.layers();
-    let page_layer = scene.list.is_some() && scene.page_area().is_some();
-    for (layer, (list, geometry)) in layers.iter().enumerate() {
-        let is_page = page_layer && layer == layers.len() - 1;
+    for (list, geometry, is_page) in &scene.layers() {
         for item in &list.items {
             let at = index;
             index += 1;
@@ -669,8 +705,11 @@ pub(crate) fn build(
             let scale = geometry.scale;
             match &item.kind {
                 ItemKind::Rect { rect, color, radii } => {
-                    let radii = corner_radii(*rect, *radii, scale);
-                    builder.fill(geometry.edges(*rect, origin), *color, radii, clip);
+                    let quad = geometry.edges(*rect, origin);
+                    if geometry.shows(quad, &clip) {
+                        let radii = corner_radii(*rect, *radii, scale);
+                        builder.fill(quad, *color, radii, clip);
+                    }
                 }
                 ItemKind::Border {
                     rect,
@@ -679,8 +718,12 @@ pub(crate) fn build(
                     styles,
                     radii,
                 } => {
+                    let quad = geometry.edges(*rect, origin);
+                    if !geometry.shows(quad, &clip) {
+                        continue;
+                    }
                     builder.border(
-                        geometry.edges(*rect, origin),
+                        quad,
                         widths.map(|w| w * scale),
                         *colors,
                         *styles,
@@ -698,6 +741,11 @@ pub(crate) fn build(
                     let mut full = false;
                     for glyph in glyphs {
                         let (key, pen) = geometry.glyph(list.page, *font, *size, glyph, origin);
+                        // Matches `glyph_keys`, so an unseen glyph never
+                        // takes atlas room.
+                        if !geometry.glyph_shows(pen, *size, &clip) {
+                            continue;
+                        }
                         match place(key) {
                             Some(slot) => placed.push((slot, pen)),
                             None => full = true,
@@ -737,17 +785,22 @@ pub(crate) fn build(
                     }
                     drew_text = true;
                 }
-                ItemKind::Image { key, rect } => builder.image(
-                    Texture::Image(list.page, *key),
-                    geometry.edges(*rect, origin),
-                    [0.0, 0.0, 1.0, 1.0],
-                    1.0,
-                    clip,
-                ),
+                ItemKind::Image { key, rect } => {
+                    let quad = geometry.edges(*rect, origin);
+                    if geometry.shows(quad, &clip) {
+                        builder.image(
+                            Texture::Image(list.page, *key),
+                            quad,
+                            [0.0, 0.0, 1.0, 1.0],
+                            1.0,
+                            clip,
+                        );
+                    }
+                }
                 ItemKind::PushStackingContext { .. } | ItemKind::PopStackingContext => {}
             }
         }
-        if is_page && let Some(indicator) = scene.indicator {
+        if *is_page && let Some(indicator) = scene.indicator {
             let edges = geometry.edges(indicator.rect, PointF::default());
             let radius = (edges[2] - edges[0]) / 2.0;
             builder.fill(edges, indicator.color, [radius; 4], geometry.page_clip);
@@ -1230,6 +1283,7 @@ mod tests {
                 rect: rect(10.0, 20.0, 100.0, 50.0),
                 radius: 8.0,
             }),
+            overlay: None,
         };
         let scene = Scene {
             chrome: Some(&chrome),
@@ -1254,6 +1308,7 @@ mod tests {
             list: &chrome_list,
             scale: 1.0,
             slot: None,
+            overlay: None,
         };
         let scene = Scene {
             chrome: Some(&chrome),
@@ -1275,6 +1330,7 @@ mod tests {
                 rect: rect(0.0, 0.0, 100.0, 100.0),
                 radius: 0.0,
             }),
+            overlay: None,
         };
         let scene = Scene {
             chrome: Some(&chrome),
@@ -1289,5 +1345,107 @@ mod tests {
             slot()
         });
         assert_eq!(built.resume, Some(2), "the page's second text item");
+    }
+
+    #[test]
+    fn the_chrome_overlay_draws_after_the_page_at_the_chrome_scale() {
+        // Spec 0008, Decision: chrome base, then the page, then the overlay.
+        let list = list(vec![filled(0.0, RED)]);
+        let mut chrome_list = DisplayList::new(PageId(0), Epoch(1), SizeF::default());
+        chrome_list.items = vec![item(filled(0.0, BLUE))];
+        let mut overlay = chrome_list.clone();
+        overlay.items = vec![item(filled(1.0, BLUE))];
+        let chrome = Chrome {
+            list: &chrome_list,
+            scale: 2.0,
+            slot: Some(PageSlot {
+                rect: rect(10.0, 20.0, 100.0, 50.0),
+                radius: 0.0,
+            }),
+            overlay: Some(&overlay),
+        };
+        let scene = Scene {
+            chrome: Some(&chrome),
+            ..scene(&list, 1.0)
+        };
+        let frame = build(&scene, 0, 64, |_| slot()).frame;
+        assert_eq!(frame.shapes.len(), 3 * SHAPE_FLOATS);
+        assert_eq!(
+            &shape(&frame, 1)[..2],
+            &[10.0, 20.0],
+            "the page in its slot"
+        );
+        assert_eq!(
+            &shape(&frame, 2)[..2],
+            &[2.0, 0.0],
+            "the overlay last, at the chrome's scale and not in the slot"
+        );
+    }
+
+    #[test]
+    fn items_and_glyphs_outside_the_target_are_skipped() {
+        let below = |kind: ItemKind| match kind {
+            ItemKind::Rect { color, radii, .. } => ItemKind::Rect {
+                rect: rect(0.0, 5000.0, 10.0, 10.0),
+                color,
+                radii,
+            },
+            ItemKind::Text {
+                font,
+                size,
+                color,
+                mut glyphs,
+            } => {
+                for glyph in &mut glyphs {
+                    glyph.point.y += 5000.0;
+                }
+                ItemKind::Text {
+                    font,
+                    size,
+                    color,
+                    glyphs,
+                }
+            }
+            other => other,
+        };
+        let list = list(vec![
+            filled(0.0, RED),
+            below(filled(0.0, BLUE)),
+            text(2),
+            below(text(3)),
+            ItemKind::Image {
+                key: ImageKey(1),
+                rect: rect(-50.0, 0.0, 10.0, 10.0),
+            },
+        ]);
+        let scene = scene(&list, 1.0);
+
+        assert_eq!(
+            glyph_keys(&scene).len(),
+            2,
+            "only the visible text's glyphs"
+        );
+        let mut placed = 0;
+        let frame = build(&scene, 0, 64, |_| {
+            placed += 1;
+            slot()
+        })
+        .frame;
+        assert_eq!(placed, 2, "unseen glyphs never ask the atlas");
+        assert_eq!(frame.shapes.len(), SHAPE_FLOATS, "only the visible rect");
+        assert_eq!(frame.glyphs.len(), 2 * GLYPH_FLOATS);
+        assert!(frame.images.is_empty(), "the image left of the target");
+    }
+
+    #[test]
+    fn a_glyph_partly_in_view_still_draws() {
+        // The pen sits just below the target's bottom edge at 100, but the
+        // glyph rises above its baseline into view.
+        let mut kind = text(1);
+        if let ItemKind::Text { glyphs, .. } = &mut kind {
+            glyphs[0].point.y = 104.0;
+        }
+        let list = list(vec![kind]);
+        assert_eq!(glyph_keys(&scene(&list, 1.0)).len(), 1);
     }
 }

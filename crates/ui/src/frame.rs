@@ -131,18 +131,25 @@ pub struct FrameLayout {
     /// The window buttons the chrome draws, with their boxes. Empty on
     /// macOS, which keeps the native traffic lights.
     pub caption_buttons: Vec<(CaptionButton, RectF)>,
+    /// The overlay layer's boxes that take the pointer: the open palette
+    /// and its scrim over the page card (spec 0008, AC-6). Checked before
+    /// the page.
+    pub overlay: Vec<RectF>,
     /// Boxes the chrome document handles itself: controls and open menus.
     pub controls: Vec<RectF>,
     /// `data-drag-region` boxes.
     pub drag: Vec<RectF>,
     /// The resize border width; zero where the OS resizes the window.
     pub resize_border: f32,
+    /// The sidebar's top row, `#nav-row`: on macOS the traffic lights are
+    /// centered on it.
+    pub title_row: Option<RectF>,
 }
 
 impl FrameLayout {
     /// What `point` is, checked in this order: resize border (unless
-    /// `maximized`), window buttons, controls, the page card, the drag
-    /// area, and anything else is the chrome's.
+    /// `maximized`), window buttons, the overlay, controls, the page card,
+    /// the drag area, and anything else is the chrome's.
     pub fn hit(&self, point: PointF, maximized: bool) -> Hit {
         if !maximized && let Some(edge) = self.edge(point) {
             return Hit::Resize(edge);
@@ -150,7 +157,9 @@ impl FrameLayout {
         if let Some((button, _)) = self.caption_buttons.iter().find(|(_, r)| r.contains(point)) {
             return Hit::Caption(*button);
         }
-        if self.controls.iter().any(|r| r.contains(point)) {
+        if self.overlay.iter().any(|r| r.contains(point))
+            || self.controls.iter().any(|r| r.contains(point))
+        {
             return Hit::Chrome;
         }
         if self.page.is_some_and(|page| page.contains(point)) {
@@ -211,9 +220,11 @@ mod tests {
                 (CaptionButton::Maximize, RectF::new(1188.0, 0.0, 46.0, 32.0)),
                 (CaptionButton::Close, RectF::new(1234.0, 0.0, 46.0, 32.0)),
             ],
+            overlay: Vec::new(),
             controls: vec![RectF::new(4.0, 2.0, 28.0, 28.0)],
             drag: vec![RectF::new(0.0, 0.0, 1280.0, 800.0)],
             resize_border,
+            title_row: None,
         }
     }
 
@@ -234,6 +245,15 @@ mod tests {
         assert_eq!(hit(600.0, 400.0), Hit::Page);
         assert_eq!(hit(100.0, 400.0), Hit::Drag, "the empty sidebar");
         assert_eq!(hit(1.0, 1.0), Hit::Drag, "no resize border on macOS");
+    }
+
+    #[test]
+    fn the_overlay_takes_the_pointer_before_the_page() {
+        // Spec 0008, AC-6: an open palette's scrim covers the card.
+        let mut frame = layout(0.0);
+        assert_eq!(frame.hit(PointF { x: 600.0, y: 400.0 }, false), Hit::Page);
+        frame.overlay.push(RectF::new(240.0, 32.0, 1032.0, 760.0));
+        assert_eq!(frame.hit(PointF { x: 600.0, y: 400.0 }, false), Hit::Chrome);
     }
 
     #[test]

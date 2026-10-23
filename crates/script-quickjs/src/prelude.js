@@ -25,7 +25,7 @@
     ['NotFoundError', 'The node was not found.'],
     ['InvalidStateError', 'The node is not in a state that allows this.'],
     ['InvalidCharacterError', 'The name is not valid.'],
-    ['SyntaxError', 'The selector is not valid.'],
+    ['SyntaxError', 'The string did not match the expected pattern.'],
     ['NotSupportedError', 'The operation is not supported.'],
   ];
 
@@ -304,6 +304,30 @@
   global.DOMException = DOMException;
   global.addEventListener = (type, callback) => listen(global, type, callback);
   global.removeEventListener = (type, callback) => unlisten(global, type, callback);
+
+  // Navigation (spec 0008, AC-27): the browser decides what loads.
+  const location = {
+    assign(url) { check(native.navigate(String(url), 'push')); },
+    replace(url) { check(native.navigate(String(url), 'replace')); },
+    reload() { native.navigate('', 'reload'); },
+    toString() { return native.location(); },
+  };
+  Object.defineProperty(location, 'href', {
+    get() { return native.location(); },
+    set(url) { check(native.navigate(String(url), 'push')); },
+    enumerable: true,
+  });
+  const history = {
+    back() { native.historyGo(-1); },
+    forward() { native.historyGo(1); },
+    go(delta) { native.historyGo(Math.trunc(Number(delta)) || 0); },
+  };
+  Object.defineProperty(history, 'length', {
+    get() { return native.historyLength(); },
+    enumerable: true,
+  });
+  global.location = location;
+  global.history = history;
 
   const log = (level) => (...args) => native.console(level, args.map(String).join(' '));
   global.console = {

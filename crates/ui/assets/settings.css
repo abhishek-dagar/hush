@@ -66,3 +66,22 @@
   min-width: var(--stepper-value-width);
   text-align: center;
 }
+
+/* Search engine (spec 0008, AC-32): the list fills the group, and Custom
+   shows its URL field under it. */
+
+.settings-group > .listbox,
+.settings-custom {
+  align-self: stretch;
+}
+
+.settings-custom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settings-custom[hidden],
+.settings-custom > [hidden] {
+  display: none;
+}

@@ -5,6 +5,7 @@
 use std::str::FromStr;
 
 use crate::ChromeError;
+use crate::address::{AddressStyle, EngineKind};
 use crate::settings::{AccentSetting, Settings, Theme};
 
 /// Which way to move the interface size.
@@ -79,6 +80,24 @@ pub enum ChromeCommand {
     Forward,
     /// `nav.reload`: load the current entry again.
     Reload,
+    /// `nav.stop`: stop the load in progress (spec 0008, AC-26). The
+    /// reload button carries it while a load runs (AC-25).
+    Stop,
+    /// `address.open`: focus the address field, or open the palette
+    /// (spec 0008, AC-5, AC-6).
+    OpenAddress,
+    /// `address.go`: load what the address holds, as Enter would (the
+    /// intent row, AC-7).
+    AddressGo,
+    /// `settings.address_style`: the palette or the inline field (spec
+    /// 0008, AC-32).
+    SetAddressStyle(AddressStyle),
+    /// `settings.search_engine`: a preset, or Custom, which only shows
+    /// its URL field until a valid template is saved (AC-32).
+    SetSearchEngine(EngineKind),
+    /// `settings.custom_search`: Enter in the Custom field; the host reads
+    /// and checks the field's text (AC-32).
+    SaveCustomSearch,
 }
 
 impl ChromeCommand {
@@ -99,6 +118,12 @@ impl ChromeCommand {
             Self::Back => ("nav.back", None),
             Self::Forward => ("nav.forward", None),
             Self::Reload => ("nav.reload", None),
+            Self::Stop => ("nav.stop", None),
+            Self::OpenAddress => ("address.open", None),
+            Self::AddressGo => ("address.go", None),
+            Self::SetAddressStyle(style) => ("settings.address_style", Some(style.as_str())),
+            Self::SetSearchEngine(kind) => ("settings.search_engine", Some(kind.as_str())),
+            Self::SaveCustomSearch => ("settings.custom_search", None),
         }
     }
 
@@ -121,18 +146,16 @@ impl ChromeCommand {
     /// The settings after this command, or `None` when it does not change
     /// settings (or changes nothing, like zooming in at 200%).
     pub fn apply(self, settings: &Settings) -> Option<Settings> {
-        let next = match self {
-            Self::SetTheme(theme) => Settings { theme, ..*settings },
-            Self::SetAccent(accent) => Settings {
-                accent,
-                ..*settings
-            },
-            Self::Zoom(step) => Settings {
-                ui_zoom: settings.ui_zoom.step(step),
-                ..*settings
-            },
+        let mut next = settings.clone();
+        match self {
+            Self::SetTheme(theme) => next.theme = theme,
+            Self::SetAccent(accent) => next.accent = accent,
+            Self::Zoom(step) => next.ui_zoom = settings.ui_zoom.step(step),
+            Self::SetAddressStyle(style) => next.address_style = style,
+            // Custom changes nothing until its template is saved.
+            Self::SetSearchEngine(kind) => next.search = kind.preset()?,
             _ => return None,
-        };
+        }
         (next != *settings).then_some(next)
     }
 }
@@ -153,6 +176,12 @@ pub fn parse_command(name: &str, value: Option<&str>) -> Result<ChromeCommand, C
         ("nav.back", None) => ChromeCommand::Back,
         ("nav.forward", None) => ChromeCommand::Forward,
         ("nav.reload", None) => ChromeCommand::Reload,
+        ("nav.stop", None) => ChromeCommand::Stop,
+        ("address.open", None) => ChromeCommand::OpenAddress,
+        ("address.go", None) => ChromeCommand::AddressGo,
+        ("settings.address_style", Some(v)) => ChromeCommand::SetAddressStyle(v.parse()?),
+        ("settings.search_engine", Some(v)) => ChromeCommand::SetSearchEngine(v.parse()?),
+        ("settings.custom_search", None) => ChromeCommand::SaveCustomSearch,
         _ => return Err(ChromeError::UnknownCommand(name.to_owned())),
     };
     Ok(command)
@@ -226,7 +255,13 @@ mod tests {
                 ChromeCommand::Back,
                 ChromeCommand::Forward,
                 ChromeCommand::Reload,
-            ]);
+                ChromeCommand::Stop,
+                ChromeCommand::OpenAddress,
+                ChromeCommand::AddressGo,
+                ChromeCommand::SetAddressStyle(AddressStyle::Inline),
+                ChromeCommand::SaveCustomSearch,
+            ])
+            .chain(EngineKind::ALL.map(ChromeCommand::SetSearchEngine));
         for command in all {
             assert_eq!(ChromeCommand::from_id(&command.id()).unwrap(), command);
         }
@@ -245,7 +280,7 @@ mod tests {
         );
         let max = Settings {
             ui_zoom: UiZoom::nearest(200),
-            ..settings
+            ..settings.clone()
         };
         assert_eq!(ChromeCommand::Zoom(ZoomStep::In).apply(&max), None);
         assert_eq!(ChromeCommand::OpenSettings.apply(&settings), None);

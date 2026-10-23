@@ -37,6 +37,8 @@ use self::platform::Platform;
 use self::settings_file::SettingsFile;
 use self::settings_window::{SettingsWindow, View};
 use crate::browser::UserEvent;
+use crate::clipboard::Clipboard;
+use crate::input::EditKey;
 use crate::render_thread::ChromeDraw;
 use crate::{Config, EmbedError, input, scrolling};
 
@@ -67,7 +69,7 @@ pub(crate) enum ChromeEvent {
 }
 
 /// What the event loop has to do after the chrome handled something.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Outcome {
     /// Nothing visible changed.
     None,
@@ -86,6 +88,12 @@ pub(crate) enum Outcome {
     Forward,
     /// The reload button.
     Reload,
+    /// The stop button, which reload turns into while a load runs
+    /// (spec 0008, AC-25, AC-26).
+    Stop,
+    /// Enter in the address, or its intent row: load this URL, typed by
+    /// the user (AC-7, AC-8).
+    Load(url::Url),
 }
 
 /// Pointer state over the chrome.
@@ -129,6 +137,8 @@ pub(crate) struct ChromeHost {
     /// The settings window, while it is open (AC-12).
     settings_window: Option<SettingsWindow>,
     pointer: Pointer,
+    /// The OS clipboard, opened once for the whole run (spec 0008, AC-15).
+    clipboard: Clipboard,
 }
 
 impl ChromeHost {
@@ -149,7 +159,10 @@ impl ChromeHost {
             width: 1.0,
             height: 1.0,
         };
-        let doc = ChromeDocument::load(surface, os.os, size, 1.0, None)?;
+        let mut doc = ChromeDocument::load(surface, os.os, size, 1.0, None)?;
+        // Typed absolute paths load as files when one exists (spec 0008,
+        // AC-8); the pure core asks through this.
+        doc.set_file_check(Box::new(|path| path.is_file()));
         Ok(Self {
             app_name: config.title.clone(),
             file,
@@ -165,6 +178,7 @@ impl ChromeHost {
             dialog_open: false,
             settings_window: None,
             pointer: Pointer::default(),
+            clipboard: Clipboard::new(),
         })
     }
 
@@ -187,6 +201,73 @@ impl ChromeHost {
     /// AC-3); the next [`ChromeHost::take_draw`] draws it.
     pub(crate) fn set_navigation(&mut self, view: &ui::NavView) {
         self.doc.set_navigation(view);
+    }
+
+    /// Shows the link the page has under the pointer or focused in the
+    /// status bubble, or hides it (spec 0008, AC-19).
+    pub(crate) fn set_link_hover(&mut self, url: Option<&str>) {
+        self.doc.set_link_hover(url);
+    }
+
+    /// Focuses the address, or opens the palette (spec 0008, AC-5, AC-6).
+    pub(crate) fn open_address(&mut self) {
+        self.doc.open_address();
+    }
+
+    /// Moves the loading shimmer to time `ms` (spec 0008, AC-25);
+    /// returns whether the next tick needs a timer (motion is not reduced).
+    pub(crate) fn tick_loading(&mut self, ms: f64) -> bool {
+        self.doc.tick_loading(ms);
+        self.doc.loading_animates()
+    }
+
+    /// F6 (spec 0008, AC-31): with focus in the chrome it lets go and
+    /// returns true, so the page takes focus; otherwise focus goes to the
+    /// sidebar's address and it returns false.
+    pub(crate) fn cycle_region(&mut self) -> bool {
+        if self.doc.has_focus() || self.doc.palette_open() {
+            self.doc.blur();
+            true
+        } else {
+            self.doc.focus_sidebar();
+            false
+        }
+    }
+
+    /// Whether Escape belongs to the chrome rather than to Stop: the user
+    /// is typing in the address, or a menu is open (spec 0008, AC-26).
+    pub(crate) fn wants_escape(&self) -> bool {
+        self.doc.address_editing() || self.doc.menu_open()
+    }
+
+    /// The clipboard's text, read right as the user pressed paste (spec
+    /// 0008, Key invariants).
+    pub(crate) fn clipboard_text(&mut self) -> Option<String> {
+        self.clipboard.read()
+    }
+
+    /// Puts `text` on the clipboard: a copy the browser asked for.
+    pub(crate) fn set_clipboard(&mut self, text: &str) {
+        self.clipboard.write(text);
+    }
+
+    /// A platform edit key while a chrome field has focus (spec 0008,
+    /// AC-15). `None` when the chrome has no focus, so it is the page's.
+    pub(crate) fn edit(&mut self, window: &Window, edit: EditKey) -> Option<Outcome> {
+        if !self.doc.has_focus() {
+            return None;
+        }
+        let event = match edit {
+            EditKey::SelectAll => InputEvent::SelectAll,
+            EditKey::Copy => InputEvent::Copy { request: 0 },
+            EditKey::Cut => InputEvent::Cut { request: 0 },
+            EditKey::Paste => match self.clipboard.read() {
+                Some(text) => InputEvent::Paste { text },
+                None => return Some(Outcome::None),
+            },
+        };
+        let outcome = self.doc.input(event);
+        Some(self.handle(window, outcome))
     }
 
     /// The chrome document's next drawing for the render thread, when it
@@ -212,6 +293,7 @@ impl ChromeHost {
             deletes: frame.deletes,
             scale,
             slot,
+            overlay: frame.overlay,
         };
         Some((draw, moved))
     }
@@ -317,7 +399,17 @@ impl ChromeHost {
             pressed,
             repeat: event.repeat,
         });
-        Some(self.handle(window, outcome))
+        let outcome = self.handle(window, outcome);
+        // The text it types goes to the focused field, if it is still
+        // focused (spec 0008, AC-13).
+        if outcome == Outcome::None
+            && self.doc.has_focus()
+            && let Some(text) = input::typed_text(event, self.pointer.modifiers)
+        {
+            let typed = self.doc.input(InputEvent::Text { text });
+            return Some(self.handle(window, typed));
+        }
+        Some(outcome)
     }
 
     /// Focus arrives from the page by `Tab` (spec 0003, AC-7). False when
@@ -429,6 +521,19 @@ impl ChromeHost {
             }
             _ => settings.window_event(event),
         };
+        // Its text field takes the edit keys (spec 0008, AC-15).
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && let Some(edit) = input::edit_key(event, settings.modifiers())
+        {
+            let paste = match edit {
+                EditKey::Paste => self.clipboard.read(),
+                _ => None,
+            };
+            if let Some(copied) = settings.edit(edit, paste) {
+                self.clipboard.write(&copied);
+            }
+            return Some(Outcome::None);
+        }
         Some(match command {
             // Its own buttons, keys and close request act on it, focused
             // or not.
@@ -531,8 +636,54 @@ impl ChromeHost {
             ChromeCommand::Back => Outcome::Back,
             ChromeCommand::Forward => Outcome::Forward,
             ChromeCommand::Reload => Outcome::Reload,
+            ChromeCommand::Stop => Outcome::Stop,
+            ChromeCommand::OpenAddress => {
+                self.doc.open_address();
+                Outcome::None
+            }
+            ChromeCommand::AddressGo => match self.doc.address_go() {
+                Some(url) => Outcome::Load(url),
+                None => Outcome::None,
+            },
+            // Custom shows its field; the engine changes once a valid
+            // template is saved (spec 0008, AC-32).
+            ChromeCommand::SetSearchEngine(ui::EngineKind::Custom) => {
+                if let Some(settings) = &mut self.settings_window {
+                    let template = match &self.settings.search {
+                        ui::SearchEngine::Custom(template) => Some(template.as_str()),
+                        _ => None,
+                    };
+                    settings.show_custom_search(template, false);
+                }
+                Outcome::None
+            }
+            ChromeCommand::SaveCustomSearch => self.save_custom_search(window),
             // Settings commands that changed nothing, like zooming in at 200%.
-            ChromeCommand::SetTheme(_) | ChromeCommand::SetAccent(_) | ChromeCommand::Zoom(_) => {
+            ChromeCommand::SetTheme(_)
+            | ChromeCommand::SetAccent(_)
+            | ChromeCommand::Zoom(_)
+            | ChromeCommand::SetAddressStyle(_)
+            | ChromeCommand::SetSearchEngine(_) => Outcome::None,
+        }
+    }
+
+    /// Enter in the settings window's Custom field (spec 0008, AC-32): an
+    /// `http` or `https` template with `%s` is saved and used; anything
+    /// else shows the error line and keeps the last valid choice.
+    fn save_custom_search(&mut self, window: &Window) -> Outcome {
+        let Some(settings_window) = &mut self.settings_window else {
+            return Outcome::None;
+        };
+        let text = settings_window.custom_search_text();
+        match ui::SearchEngine::custom(text.trim()) {
+            Ok(engine) => {
+                settings_window.show_custom_search(None, false);
+                self.settings.search = engine;
+                self.file.save(&self.settings);
+                self.refresh(window)
+            }
+            Err(_) => {
+                settings_window.show_custom_search(None, true);
                 Outcome::None
             }
         }
@@ -592,6 +743,10 @@ impl ChromeHost {
         self.menu = app_menu(&self.settings, &self.os, &self.app_name);
         self.native_menu.set(&self.menu);
         self.doc.set_theme(&self.theme);
+        // The address style and engine apply on the next frame (spec 0008,
+        // AC-2, AC-32).
+        self.doc.set_address_style(self.settings.address_style);
+        self.doc.set_search_engine(self.settings.search.clone());
         self.doc.set_caption(&self.os.button_layout);
         self.doc.set_maximized(window.is_maximized());
         self.resize_doc(window);
@@ -698,6 +853,12 @@ impl ChromeHost {
         let (x, y) = (at.x, at.y);
         match state {
             ElementState::Pressed => {
+                // Anywhere outside the open palette, the press only closes
+                // it: the sidebar, the caption, the drag area and the edges
+                // too, not just the card (spec 0008, AC-6).
+                if self.doc.dismiss_palette(at) {
+                    return Outcome::None;
+                }
                 if self.pointer_on_page(window) {
                     return Outcome::None;
                 }
@@ -752,6 +913,9 @@ impl ChromeHost {
     /// Carries out what the chrome document said: its cursor, a command
     /// (an unknown one is logged and ignored, AC-13), focus leaving.
     fn handle(&mut self, window: &Window, outcome: ChromeOutcome) -> Outcome {
+        if let Some(text) = &outcome.copied {
+            self.clipboard.write(text);
+        }
         if let Some(cursor) = outcome.cursor {
             self.pointer.cursor = cursor;
             if self.pointer.in_chrome && self.pointer.edge.is_none() {
@@ -820,6 +984,7 @@ fn shortcut(event: &KeyEvent, modifiers: ModifiersState) -> Option<Shortcut> {
         KeyCode::Equal => ShortcutKey::Equal,
         KeyCode::Minus => ShortcutKey::Minus,
         KeyCode::Digit0 => ShortcutKey::Digit0,
+        KeyCode::KeyL => ShortcutKey::Letter('l'),
         KeyCode::KeyM => ShortcutKey::Letter('m'),
         KeyCode::KeyO => ShortcutKey::Letter('o'),
         KeyCode::KeyS => ShortcutKey::Letter('s'),

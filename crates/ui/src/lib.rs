@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+mod address;
 mod appearance;
 mod assets;
 mod color;
@@ -21,6 +22,7 @@ mod settings;
 mod theme;
 mod tokens;
 
+pub use address::{AddressBar, AddressStyle, EngineKind, MAX_ADDRESS_BYTES, SearchEngine};
 pub use appearance::{ButtonLayout, CaptionButton, Os, OsAppearance, Side};
 pub use assets::{Asset, ORIGIN, asset};
 pub use color::{Rgba, contrast_ratio};

@@ -27,6 +27,11 @@
   --border-subtle: #D8D8DC;
   --border-strong: #85858B;
   --scrim: rgba(0, 0, 0, 0.32);
+  /* The palette's frosted glass (spec 0008): the raised surface, barely
+     see through, edged with light. Real backdrop blur needs renderer
+     support first. */
+  --glass-surface: rgba(255, 255, 255, 0.94);
+  --glass-border: rgba(0, 0, 0, 0.10);
   --on-accent: #FFFFFF;
   --blue: #0A64D6;
   --blue-strong: #0855B6;
@@ -44,6 +49,16 @@
   --green-strong: #1A692C;
   --graphite: #5E5E63;
   --graphite-strong: #505054;
+  /* Text selection (spec 0008, AC-14): each preset at 28% over
+     --surface-raised; --selection picks one with the accent. */
+  --blue-selection: #BAD4F4;
+  --purple-selection: #DAC9F0;
+  --pink-selection: #EEBED1;
+  --red-selection: #EFC3C3;
+  --orange-selection: #EACFBA;
+  --yellow-selection: #DED5B8;
+  --green-selection: #C0DAC6;
+  --graphite-selection: #D2D2D3;
 
   --font-family: system-ui;
   --weight-regular: 400;
@@ -81,12 +96,15 @@
   --switch-inset: 2px;
   --swatch-size: 20px;
   --progress-height: 4px;
+  --loading-height: 4px;
+  --loading-width: 160px;
   --menu-width: 200px;
   --popover-width: 280px;
   --sheet-width: 480px;
   --stepper-value-width: 56px;
 
   --caption-height: 32px;
+  --toolbar-height: 44px;
   --caption-inset-start: 78px;
   --caption-button-width: 46px;
   --caption-button-size: 28px;
@@ -112,6 +130,8 @@
   --border-subtle: #3A3A3C;
   --border-strong: #75757B;
   --scrim: rgba(0, 0, 0, 0.56);
+  --glass-surface: rgba(44, 44, 46, 0.94);
+  --glass-border: rgba(255, 255, 255, 0.14);
   --on-accent: #000000;
   --blue: #3D8BFF;
   --blue-strong: #5A9CFF;
@@ -129,6 +149,14 @@
   --green-strong: #74D88C;
   --graphite: #A1A1A6;
   --graphite-strong: #AFAFB3;
+  --blue-selection: #314769;
+  --purple-selection: #524769;
+  --pink-selection: #674354;
+  --red-selection: #674241;
+  --orange-selection: #674D35;
+  --yellow-selection: #615735;
+  --green-selection: #395A43;
+  --graphite-selection: #4D4D50;
 }
 
 /* High contrast, light. Applies whenever the OS asks for more contrast. */
@@ -144,6 +172,8 @@
   --border-subtle: #000000;
   --border-strong: #000000;
   --scrim: rgba(0, 0, 0, 0.56);
+  --glass-surface: #FFFFFF;
+  --glass-border: #000000;
   --focus-width: 3px;
 }
 
@@ -159,6 +189,8 @@
   --border-subtle: #FFFFFF;
   --border-strong: #FFFFFF;
   --scrim: rgba(0, 0, 0, 0.72);
+  --glass-surface: #000000;
+  --glass-border: #FFFFFF;
 }
 
 [data-motion="reduce"] {
@@ -167,11 +199,11 @@
 }
 
 /* Which preset --accent shows. */
-[data-accent="blue"] { --accent: var(--blue); --accent-strong: var(--blue-strong); }
-[data-accent="purple"] { --accent: var(--purple); --accent-strong: var(--purple-strong); }
-[data-accent="pink"] { --accent: var(--pink); --accent-strong: var(--pink-strong); }
-[data-accent="red"] { --accent: var(--red); --accent-strong: var(--red-strong); }
-[data-accent="orange"] { --accent: var(--orange); --accent-strong: var(--orange-strong); }
-[data-accent="yellow"] { --accent: var(--yellow); --accent-strong: var(--yellow-strong); }
-[data-accent="green"] { --accent: var(--green); --accent-strong: var(--green-strong); }
-[data-accent="graphite"] { --accent: var(--graphite); --accent-strong: var(--graphite-strong); }
+[data-accent="blue"] { --accent: var(--blue); --accent-strong: var(--blue-strong); --selection: var(--blue-selection); }
+[data-accent="purple"] { --accent: var(--purple); --accent-strong: var(--purple-strong); --selection: var(--purple-selection); }
+[data-accent="pink"] { --accent: var(--pink); --accent-strong: var(--pink-strong); --selection: var(--pink-selection); }
+[data-accent="red"] { --accent: var(--red); --accent-strong: var(--red-strong); --selection: var(--red-selection); }
+[data-accent="orange"] { --accent: var(--orange); --accent-strong: var(--orange-strong); --selection: var(--orange-selection); }
+[data-accent="yellow"] { --accent: var(--yellow); --accent-strong: var(--yellow-strong); --selection: var(--yellow-selection); }
+[data-accent="green"] { --accent: var(--green); --accent-strong: var(--green-strong); --selection: var(--green-selection); }
+[data-accent="graphite"] { --accent: var(--graphite); --accent-strong: var(--graphite-strong); --selection: var(--graphite-selection); }

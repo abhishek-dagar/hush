@@ -123,7 +123,9 @@ lexopt = "0.3.2"
 muda = { version = "0.21.2", default-features = false }
 # macOS appearance readers, the versions muda and wgpu already pull in.
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSColor", "NSColorSpace", "NSWorkspace", "NSAccessibility"] }
+# NSWindow, NSView and NSButton place the traffic lights on the sidebar's
+# top row (spec 0003 frame, as in Zen).
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSColor", "NSColorSpace", "NSWorkspace", "NSAccessibility", "NSWindow", "NSView", "NSButton", "NSControl", "NSResponder", "NSGraphics", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSNotification", "NSString", "NSOperation", "block2"] }
 pollster = "1.0.1"
 # PNG decoding (spec 0004, child 0005); already in the binary through muda.
@@ -154,6 +156,10 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 # Reading the html5lib-tests JSON files (spec 0004, child 0002, Testing).
 # Dev only, never shipped.
 serde_json = "1.0.154"
+# The OS clipboard (spec 0008, AC-15): text only, so the image features
+# (and the `image` crate) stay out. Linux adds the Wayland data control
+# protocol in `embed`; X11 goes through `x11rb`, which winit already links.
+arboard = { version = "3.7.0", default-features = false }
 # Native file dialogs (spec 0003, AC-10). Since 0.17 rfd talks to the XDG
 # portal itself, without ashpd or tokio. `wayland` parents the Linux dialog
 # to the window; the Wayland client crates already come with winit.
@@ -198,6 +204,21 @@ todo = "warn"
 # Every `unsafe` block carries a `// SAFETY:` comment.
 undocumented_unsafe_blocks = "warn"
 unwrap_used = "warn"
+
+# Dependencies (wgpu, the text stack, QuickJS) build optimized in dev too, so
+# `cargo run` scrolls and lays out at a usable speed. Workspace crates stay at
+# opt-level 0 and rebuild fast.
+[profile.dev.package."*"]
+opt-level = 2
+
+# The render thread redraws the whole frame on every scroll step. Built at
+# opt-level 0 that took 12 ms a frame on a long page, over the 8.3 ms a
+# 120 Hz display allows, so scrolling stuttered; at opt-level 2 it fits.
+[profile.dev.package.render]
+opt-level = 2
+
+[profile.dev.package.display-list]
+opt-level = 2
 
 [profile.release]
 lto = "fat"

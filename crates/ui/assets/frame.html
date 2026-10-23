@@ -69,10 +69,10 @@
         <nav class="frame-sidebar" aria-label="Sidebar" data-drag-region>
           <!--
             Navigation (spec 0008, AC-1): back, forward and reload, then the
-            address. Rust sets aria-disabled on back and forward, and the
-            address icon and host text.
+            address. Rust sets aria-disabled on back and forward, and turns
+            reload into stop while a load runs (AC-25).
           -->
-          <div class="nav-row" data-drag-region>
+          <div class="nav-row" id="nav-row" data-drag-region>
             <button
               class="icon-button"
               id="nav-back"
@@ -97,18 +97,78 @@
               aria-label="Reload"
               data-command="nav.reload"
             >
-              <span class="icon" aria-hidden="true">&#xE002;</span>
+              <span class="icon" id="nav-reload-icon" aria-hidden="true">&#xE002;</span>
             </button>
           </div>
-          <div class="address" id="address">
+          <!--
+            The address (AC-2): a pill that opens the palette (palette
+            style, the default) or a field (inline style). Rust shows one,
+            writes the icon, the host and the field's value, and shows the
+            intent row under the field while it holds text (AC-7).
+          -->
+          <button
+            class="address"
+            id="address-pill"
+            aria-label="Search or enter address"
+            data-command="address.open"
+          >
             <span class="icon" id="address-icon" aria-hidden="true">&#xE017;</span>
             <span class="label" id="address-host" hidden></span>
             <span class="label address-placeholder" id="address-placeholder"
               >Search or enter address</span
             >
+          </button>
+          <div class="address address-inline" id="address-inline" hidden>
+            <span class="icon" id="address-field-icon" aria-hidden="true">&#xE017;</span>
+            <input
+              class="address-input"
+              id="address-field"
+              aria-label="Address"
+              placeholder="Search or enter address"
+              spellcheck="false"
+            />
+          </div>
+          <div class="intent" id="address-intent" data-command="address.go" hidden>
+            <span class="icon" id="address-intent-icon" aria-hidden="true">&#xE006;</span>
+            <span class="label" id="address-intent-text"></span>
           </div>
         </nav>
         <main class="page-slot" id="page-slot"></main>
+      </div>
+      <!--
+        The overlay layer (spec 0008, Decision): drawn after the page and hit
+        tested before it. Rust places each piece over the page card with a
+        style attribute, from the card's box.
+      -->
+      <div class="loading-bar" id="loading-bar" data-layer="overlay" hidden>
+        <div class="loading-shimmer" id="loading-shimmer"></div>
+      </div>
+      <div class="status-bubble" id="status-bubble" data-layer="overlay" hidden>
+        <span class="status-text" id="status-text"></span>
+      </div>
+      <div class="palette-scrim" id="palette-scrim" data-layer="overlay" hidden></div>
+      <div
+        class="palette"
+        id="palette"
+        role="dialog"
+        aria-label="Search or enter address"
+        data-layer="overlay"
+        hidden
+      >
+        <div class="palette-field">
+          <span class="icon" id="palette-icon" aria-hidden="true">&#xE017;</span>
+          <input
+            class="address-input"
+            id="palette-field"
+            aria-label="Address"
+            placeholder="Search or enter address"
+            spellcheck="false"
+          />
+        </div>
+        <div class="intent" id="palette-intent" data-command="address.go" hidden>
+          <span class="icon" id="palette-intent-icon" aria-hidden="true">&#xE006;</span>
+          <span class="label" id="palette-intent-text"></span>
+        </div>
       </div>
       <div
         class="menu app-menu"

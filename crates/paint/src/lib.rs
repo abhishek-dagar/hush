@@ -53,6 +53,22 @@ pub struct PaintContext<'a> {
     pub pictures: &'a HashMap<Rc<str>, Picture>,
     /// The focused text input's caret and selection, if any.
     pub edit: Option<EditPaint>,
+    /// The roots of the overlay layer, by [`scroll_id`] (spec 0008,
+    /// Decision): what a stacking context rooted at one paints goes into
+    /// [`Layers::overlay`]. Empty for pages.
+    pub overlay: &'a [ScrollId],
+}
+
+/// A painted document in two layers (spec 0008, Interface surface, Paint
+/// and render): the overlay is drawn after the page, the base before it.
+/// Both share the base's spatial nodes and clips, so either list's ids
+/// stay valid.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layers {
+    /// Everything outside an overlay root.
+    pub base: DisplayList,
+    /// What the overlay roots paint; no items when there are none.
+    pub overlay: DisplayList,
 }
 
 /// A text input's caret and selection, drawn with its text (spec 0008,
@@ -165,6 +181,11 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
 /// Writes the steps of the paint order into the list.
 struct Painter<'a> {
     list: DisplayList,
+    /// The overlay layer's items (spec 0008).
+    overlay: Vec<DisplayItem>,
+    /// While inside an overlay root: how many stacking contexts were open
+    /// around it.
+    overlay_from: Option<usize>,
     boxes: &'a BoxTree,
     context: &'a PaintContext<'a>,
     /// The box whose background the canvas took.
@@ -179,11 +200,21 @@ struct Painter<'a> {
 /// Everything hangs off the root viewport's scroll frame, the first
 /// spatial node after the root (spec 0004, child 0005, Root scroll frame).
 pub fn paint(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext<'_>) -> DisplayList {
+    paint_layers(tree, boxes, context).base
+}
+
+/// Paints `tree` like [`paint`], putting what the stacking contexts rooted
+/// at `context.overlay` paint into their own list.
+pub fn paint_layers(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext<'_>) -> Layers {
     let mut list = DisplayList::new(context.page, context.epoch, size_f(tree.viewport));
     let viewport = viewport_frame(tree, context, &mut list);
     let canvas = canvas_background(tree, boxes, context.pictures, viewport, &mut list);
     let Some((origin, root)) = &tree.root else {
-        return list;
+        let overlay = list.clone();
+        return Layers {
+            base: list,
+            overlay,
+        };
     };
     let mut walker = PaintWalker {
         list: &mut list,
@@ -198,6 +229,8 @@ pub fn paint(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext<'_>) -
     let steps = stacking::paint_order(boxes, root, &mut walker);
     let mut painter = Painter {
         list,
+        overlay: Vec::new(),
+        overlay_from: None,
         boxes,
         context,
         canvas,
@@ -211,6 +244,12 @@ pub fn paint(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext<'_>) -
                 state: (spatial, clip),
                 ..
             } => {
+                let root = fragment
+                    .node
+                    .is_some_and(|node| context.overlay.contains(&scroll_id(context.frame, node)));
+                if root && painter.overlay_from.is_none() {
+                    painter.overlay_from = Some(groups.len());
+                }
                 let opacity = painter
                     .style(fragment)
                     .map_or(1.0, |style| style.effects.opacity);
@@ -230,6 +269,9 @@ pub fn paint(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext<'_>) -
             Step::Leave => {
                 if groups.pop() == Some(true) {
                     painter.push(SpatialId::ROOT, None, ItemKind::PopStackingContext);
+                }
+                if painter.overlay_from == Some(groups.len()) {
+                    painter.overlay_from = None;
                 }
             }
             Step::Box {
@@ -269,7 +311,12 @@ pub fn paint(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext<'_>) -
             }
         }
     }
-    painter.list
+    let mut overlay = painter.list.clone();
+    overlay.items = painter.overlay;
+    Layers {
+        base: painter.list,
+        overlay,
+    }
 }
 
 impl<'a> Painter<'a> {
@@ -284,11 +331,15 @@ impl<'a> Painter<'a> {
     }
 
     fn push(&mut self, spatial: SpatialId, clip: Option<ClipId>, kind: ItemKind) {
-        self.list.items.push(DisplayItem {
+        let item = DisplayItem {
             spatial,
             clip,
             kind,
-        });
+        };
+        match self.overlay_from {
+            Some(_) => self.overlay.push(item),
+            None => self.list.items.push(item),
+        }
     }
 
     /// A box's background, background image, border and `<img>` picture,
@@ -745,6 +796,7 @@ mod tests {
             scroll_offsets: scroll,
             pictures: &pictures,
             edit: None,
+            overlay: &[],
         };
         paint(&tree, &boxes, &context)
     }

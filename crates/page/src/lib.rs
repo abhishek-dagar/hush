@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod anchors;
 mod dom_sink;
 mod editor;
 mod fonts;
@@ -205,6 +206,19 @@ pub struct Page {
     selection_color: ColorF,
     /// A cap in bytes on every text input's value: the address's (AC-10).
     text_cap: Option<usize>,
+    /// The link URL last reported for the status bubble (spec 0008,
+    /// AC-19).
+    link_hover: Option<String>,
+    /// The overlay layer's roots, by scroll id (spec 0008, Decision): the
+    /// chrome's `data-layer="overlay"` elements. Empty for pages.
+    overlay_roots: Vec<ScrollId>,
+    /// The last frame's overlay list, while there are overlay roots.
+    overlay: Option<DisplayList>,
+    /// The root scroll still owed to a fragment or a restored offset
+    /// (spec 0008, AC-20, AC-23).
+    pending_scroll: Option<anchors::PendingScroll>,
+    /// The session history as scripts see it (spec 0008, AC-27).
+    history: ipc::HistoryInfo,
 }
 
 impl Page {
@@ -251,6 +265,11 @@ impl Page {
             caret_moved: None,
             selection_color: editor::PAGE_SELECTION,
             text_cap: None,
+            link_hover: None,
+            overlay_roots: Vec::new(),
+            overlay: None,
+            pending_scroll: None,
+            history: ipc::HistoryInfo::default(),
         }
     }
 
@@ -278,6 +297,24 @@ impl Page {
         self.selection_color = color;
     }
 
+    /// Paints what the stacking contexts rooted at `roots` paint into an
+    /// overlay list of its own (spec 0008, Decision): the chrome's
+    /// `data-layer="overlay"` elements. Each must be positioned with a
+    /// `z-index`, so it roots a stacking context.
+    pub fn set_overlay_roots(&mut self, roots: &[NodeId]) {
+        self.overlay_roots = roots
+            .iter()
+            .map(|&node| paint::scroll_id(FrameId::MAIN.0, node))
+            .collect();
+        self.needs_update = true;
+    }
+
+    /// The overlay list painted with the last list [`Page::begin_frame`]
+    /// returned, drawn after the page; `None` without overlay roots.
+    pub fn overlay_list(&self) -> Option<&DisplayList> {
+        self.overlay.as_ref()
+    }
+
     /// Caps every text input's value at `bytes` (spec 0008, AC-10): the
     /// chrome's address takes 8 KB.
     pub fn set_text_cap(&mut self, bytes: Option<usize>) {
@@ -292,6 +329,22 @@ impl Page {
         // Its timers and events stop with it; the document stays on
         // screen until the next one commits.
         self.script = None;
+    }
+
+    /// Stop after commit (`Stop`, spec 0008, AC-26): the parser ends with
+    /// what arrived, so no more of the document loads. The browser fails
+    /// every fetch still running, and `load` follows once they are in.
+    /// A stale navigation is ignored.
+    pub fn stop(&mut self, navigation: NavigationId) {
+        if !self.is_current(navigation) || self.committed != navigation {
+            debug!(?navigation, "stale stop dropped");
+            return;
+        }
+        if let Some(parser) = &mut self.parser {
+            info!("stopped; keeping what arrived");
+            let step = parser.end(&mut DomSink::new(&mut self.main_frame.document));
+            self.pump(step);
+        }
     }
 
     /// Whether `navigation` is the page's current one.
@@ -349,6 +402,10 @@ impl Page {
         self.input.document_replaced();
         self.edits.clear();
         self.caret_moved = None;
+        // A new document starts at the top, or at its fragment (AC-23).
+        self.pending_scroll = url::Url::parse(url)
+            .ok()
+            .and_then(|url| url.fragment().map(|_| anchors::PendingScroll::Fragment));
         self.needs_first_build = true;
         self.needs_update = true;
         self.parser = Some(Parser::new(ParserOptions {
@@ -718,6 +775,34 @@ impl Page {
         }
     }
 
+    /// The grapheme boundary of the text input `id`'s value nearest to `x`,
+    /// measured from its border box's left edge as the pointer sees it
+    /// (spec 0008, AC-13). `None` before layout, for an empty value, or a
+    /// password, whose bullets do not line up with its bytes.
+    pub(crate) fn caret_at(&self, id: NodeId, x: Au) -> Option<usize> {
+        let doc = &self.main_frame.document;
+        let value = doc.input_value(id)?;
+        if value.is_empty() || editor::limits(doc, id, None).password {
+            return None;
+        }
+        let (_, texts) = self
+            .main_frame
+            .fragments
+            .as_ref()
+            .and_then(|tree| field_texts(tree, id))?;
+        let scroll = self.scroll_offset(paint::scroll_id(FrameId::MAIN.0, id)).x;
+        let target = x + Au::from_px(scroll);
+        text::grapheme_boundaries(&value)
+            .into_iter()
+            .filter_map(|boundary| {
+                texts.iter().find_map(|(at, text)| {
+                    paint::offset_x(text, boundary).map(|dx| (boundary, at.x + dx))
+                })
+            })
+            .min_by_key(|&(_, at)| (at - target).0.unsigned_abs())
+            .map(|(boundary, _)| boundary)
+    }
+
     /// The focused text input's caret and selection, for paint (spec 0008,
     /// AC-14), in the bytes of the text it shows: a password shows one
     /// bullet per character. The caret hides while the window is in the
@@ -758,6 +843,7 @@ impl Page {
     /// offset, but not a new generation, so the next list does not undo a
     /// user scroll that happens meanwhile (AC-13). Nothing needs repainting.
     pub fn scroll_changed(&mut self, scroll_id: ScrollId, x: f32, y: f32) {
+        self.user_scrolled(scroll_id);
         let entry = self.scroll.entry(scroll_id).or_default();
         entry.x = x;
         entry.y = y;
@@ -1240,10 +1326,11 @@ impl Page {
                 .add_font(font.key, &font.data, font.index, font.variations);
         }
         self.keep_caret_visible();
+        self.apply_pending_scroll();
         let edit = self.edit_paint();
         let frame = &mut self.main_frame;
         self.epoch = self.epoch.next();
-        let list = {
+        let (list, overlay) = {
             let _span = debug_span!("paint", epoch = self.epoch.0).entered();
             let pictures = self
                 .images
@@ -1257,19 +1344,39 @@ impl Page {
                 scroll_offsets: &self.scroll,
                 pictures: &pictures,
                 edit,
+                overlay: &self.overlay_roots,
             };
-            let list = frame
+            let layers = frame
                 .fragments
                 .as_ref()
-                .map(|fragments| paint::paint(fragments, &frame.boxes, &context))
-                .unwrap_or_else(|| DisplayList::new(self.id, self.epoch, SizeF::default()));
-            debug!(items = list.items.len(), "painted");
-            list
+                .map(|fragments| paint::paint_layers(fragments, &frame.boxes, &context));
+            let (list, overlay) = match layers {
+                Some(layers) => (layers.base, layers.overlay),
+                None => {
+                    let empty = DisplayList::new(self.id, self.epoch, SizeF::default());
+                    (empty.clone(), empty)
+                }
+            };
+            debug!(
+                items = list.items.len(),
+                overlay = overlay.items.len(),
+                "painted"
+            );
+            (list, overlay)
         };
         // Scroll containers that left the page take their offsets with them.
         let live: Vec<ScrollId> = list.scroll_frames().map(|(_, id)| id).collect();
         self.scroll.retain(|id, _| live.contains(id));
-        self.resources.list_painted(&list);
+        // Fonts and images in use count across both layers.
+        if overlay.items.is_empty() {
+            self.resources.list_painted(&list);
+        } else {
+            let mut both = list.clone();
+            both.items.extend(overlay.items.iter().cloned());
+            self.resources.list_painted(&both);
+        }
+        self.overlay = (!self.overlay_roots.is_empty()).then_some(overlay);
+        self.settle_pending_scroll(&list);
         self.after_layout(laid_out);
         Some(list)
     }

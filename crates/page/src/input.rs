@@ -124,6 +124,11 @@ impl InputState {
         self.window_focused
     }
 
+    /// The innermost hovered node, if any.
+    pub(crate) fn hovered(&self) -> Option<NodeId> {
+        self.hovered.first().copied()
+    }
+
     /// The pointer moved to `point`.
     pub(crate) fn pointer_move(&mut self, point: PointF) {
         self.pointer = Some(point);
@@ -447,7 +452,14 @@ impl Page {
                 self.edit(EditOp::Insert(&text));
             }
             InputEvent::SelectAll => {
-                self.edit(EditOp::SelectAll);
+                if self.edit(EditOp::SelectAll).is_none()
+                    && let Some(id) = self.editing()
+                {
+                    // The whole value is selected: show it from its start,
+                    // so a long URL shows its host first (AC-12).
+                    self.caret_moved = None;
+                    self.show_field_start(id);
+                }
             }
             InputEvent::Copy { request } => {
                 outcome.copied = self.edit(EditOp::Copy).map(|text| (request, text));
@@ -548,6 +560,23 @@ impl Page {
             target.and_then(|t| inclusive_ancestors(doc, t).find(|&id| is_focusable(doc, id)));
         self.input.modality = Modality::Pointer;
         self.focus(focus);
+        // A press on a text input's own box puts the caret where it landed
+        // (AC-13).
+        if let Some(hit) = hit
+            && Some(hit.node) == focus
+            && self.editing() == Some(hit.node)
+            && let Some(caret) = self.caret_at(hit.node, hit.point.x)
+        {
+            self.edits.set(
+                hit.node,
+                editor::EditState {
+                    caret,
+                    anchor: None,
+                },
+            );
+            self.caret_moved = Some(hit.node);
+            self.needs_update = true;
+        }
     }
 
     /// A primary release (AC-15): clears `:active`, and activates the
@@ -603,12 +632,19 @@ impl Page {
             self.show_focus();
         }
         let plain = !(modifiers.ctrl || modifiers.alt || modifiers.meta);
-        if plain && self.editing().is_some() {
+        // On macOS, Cmd+Left and Cmd+Right keep their text meaning in a
+        // field: start and end (AC-29).
+        let command =
+            cfg!(target_os = "macos") && modifiers.meta && !modifiers.ctrl && !modifiers.alt;
+        if (plain || command) && self.editing().is_some() {
             let motion = |to| EditOp::Move {
                 to,
                 extend: modifiers.shift,
             };
             let op = match key {
+                Key::ArrowLeft if command => Some(motion(Motion::Home)),
+                Key::ArrowRight if command => Some(motion(Motion::End)),
+                _ if command => None,
                 Key::Backspace => Some(EditOp::Backspace),
                 Key::Delete => Some(EditOp::Delete),
                 Key::ArrowLeft => Some(motion(Motion::Left)),
@@ -682,6 +718,42 @@ impl Page {
         self.caret_moved = Some(id);
         self.needs_update = true;
         applied.clipboard
+    }
+
+    /// Replaces the value of the text input `id` from outside the editor,
+    /// the caret at its end and nothing selected, showing the value from
+    /// its start: the chrome mirrors the address into its input this way
+    /// (spec 0008, AC-3, AC-12). Not an edit, so the caret does not
+    /// scroll into view. Anything but a live text input is left alone.
+    pub fn set_input_text(&mut self, id: NodeId, text: &str) {
+        let doc = &mut self.main_frame.document;
+        if !doc.is_alive(id) || !editor::editable_type(doc, id) {
+            return;
+        }
+        if doc.input_value(id).as_deref() != Some(text) {
+            let _ = doc.set_input_value(id, text.to_owned());
+        }
+        self.edits.set(id, editor::EditState::at_end(text));
+        if self.caret_moved == Some(id) {
+            self.caret_moved = None;
+        }
+        self.show_field_start(id);
+        self.needs_update = true;
+    }
+
+    /// Scrolls the text input `id` back to the start of its value.
+    fn show_field_start(&mut self, id: NodeId) {
+        let scroll_id = paint::scroll_id(FrameId::MAIN.0, id);
+        if self.scroll_offset(scroll_id).x != 0.0 {
+            self.scroll_to(
+                NodeRef {
+                    frame: FrameId::MAIN,
+                    node: id,
+                },
+                0.0,
+                0.0,
+            );
+        }
     }
 
     /// The focused text input's caret, selection and current value, for

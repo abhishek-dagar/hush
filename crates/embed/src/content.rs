@@ -8,7 +8,7 @@ use std::time::Instant;
 use display_list::PageId;
 use ipc::{BrowserChannel, PageNavigationAction, PageNavigationOrigin, ToBrowser, ToContent};
 use page::Page;
-use tracing::{debug, error, info, info_span, trace, warn};
+use tracing::{error, info, info_span, trace, warn};
 
 use crate::EmbedError;
 
@@ -90,7 +90,19 @@ pub(crate) fn run(server_name: &str) -> Result<(), EmbedError> {
             }
             ToContent::Input { page, event } => {
                 if let Some(target) = pages.get_mut(&page) {
+                    let history_key = history_key(&event);
                     let outcome = target.input(event);
+                    // Cmd+Left and Cmd+Right go back and forward when no
+                    // text field used them (spec 0008, AC-29).
+                    if let Some((key, delta)) = history_key
+                        && outcome.unused_key.as_ref() == Some(&key)
+                    {
+                        channel.send(ToBrowser::HistoryGo {
+                            page,
+                            navigation: target.navigation(),
+                            delta,
+                        })?;
+                    }
                     send_outcome(&channel, target, outcome)?;
                 }
                 page
@@ -113,16 +125,46 @@ pub(crate) fn run(server_name: &str) -> Result<(), EmbedError> {
                 url,
                 charset,
                 kind,
+                restore_scroll,
+                history,
                 ..
             } => {
-                if let Some(target) = pages.get_mut(&page) {
-                    target.commit_navigation(navigation, &url, charset, &kind);
+                if let Some(target) = pages.get_mut(&page)
+                    && target.commit_navigation(navigation, &url, charset, &kind)
+                {
+                    target.restore_scroll(navigation, restore_scroll);
+                    target.set_history(history);
                 }
                 page
             }
-            // Scripts read it once `history` exists (spec 0008, milestone 4).
-            ToContent::HistoryChanged { page, history, .. } => {
-                debug!(?history, "history changed");
+            ToContent::HistoryChanged {
+                page,
+                navigation,
+                history,
+            } => {
+                if let Some(target) = pages.get_mut(&page)
+                    && target.navigation() == navigation
+                {
+                    target.set_history(history);
+                }
+                page
+            }
+            ToContent::Stop { page, navigation } => {
+                if let Some(target) = pages.get_mut(&page) {
+                    target.stop(navigation);
+                }
+                page
+            }
+            ToContent::SameDocument {
+                page,
+                navigation,
+                url,
+                scroll,
+                history,
+            } => {
+                if let Some(target) = pages.get_mut(&page) {
+                    target.same_document(navigation, &url, scroll, history);
+                }
                 page
             }
             ToContent::FetchResponse {
@@ -183,6 +225,29 @@ pub(crate) fn run(server_name: &str) -> Result<(), EmbedError> {
     }
 }
 
+/// On macOS, a Cmd+Left or Cmd+Right press, with the history move it means
+/// when no text field takes it (spec 0008, AC-29).
+fn history_key(event: &ipc::InputEvent) -> Option<(ipc::Key, i32)> {
+    let ipc::InputEvent::Key {
+        key,
+        modifiers,
+        pressed: true,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    let command = modifiers.meta && !modifiers.ctrl && !modifiers.alt && !modifiers.shift;
+    if !cfg!(target_os = "macos") || !command {
+        return None;
+    }
+    match key {
+        ipc::Key::ArrowLeft => Some((key.clone(), -1)),
+        ipc::Key::ArrowRight => Some((key.clone(), 1)),
+        _ => None,
+    }
+}
+
 /// Tells the browser what an input event led to (spec 0006, AC-13,
 /// AC-15, AC-18): focus leaving the page, a new pointer shape, and a link
 /// to follow (spec 0008, AC-17). Other activations and unused keys have
@@ -198,6 +263,21 @@ fn send_outcome(
     }
     if let Some(cursor) = outcome.cursor {
         channel.send(ToBrowser::SetCursor { page, cursor })?;
+    }
+    // The answer to the browser's `Copy` or `Cut` (spec 0008, AC-15).
+    if let Some((request, mut text)) = outcome.copied {
+        if text.len() > ipc::MAX_CLIPBOARD_WRITE_BYTES {
+            let mut cut = ipc::MAX_CLIPBOARD_WRITE_BYTES;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+        }
+        channel.send(ToBrowser::ClipboardWrite {
+            page,
+            request,
+            text,
+        })?;
     }
     if let Some(node) = outcome.activated {
         match target.link_url(node) {
@@ -230,6 +310,10 @@ fn after_task(channel: &BrowserChannel, page: &mut Page) -> Result<(), EmbedErro
     if let Some(message) = page.take_load_message() {
         channel.send(message)?;
     }
+    // What scripts asked to load (spec 0008, AC-27); the browser decides.
+    for message in page.take_navigation_messages() {
+        channel.send(message)?;
+    }
     // A frame's new hover or style can change the shape (AC-18).
     if let Some(cursor) = page.take_cursor_change() {
         channel.send(ToBrowser::SetCursor {
@@ -237,6 +321,7 @@ fn after_task(channel: &BrowserChannel, page: &mut Page) -> Result<(), EmbedErro
             cursor,
         })?;
     }
+    send_link_hover(channel, page)?;
     if page.take_frame_request() {
         channel.send(ToBrowser::NeedsFrame { page: page.id() })?;
     }
@@ -275,6 +360,26 @@ fn send_frame(
     // The style pass may have found background images to load.
     for message in page.take_fetch_messages() {
         channel.send(message)?;
+    }
+    // The frame's hit test may have moved the pointer onto or off a link.
+    send_link_hover(channel, page)?;
+    if let Some(cursor) = page.take_cursor_change() {
+        channel.send(ToBrowser::SetCursor {
+            page: page.id(),
+            cursor,
+        })?;
+    }
+    Ok(())
+}
+
+/// Tells the browser the link the status bubble shows, when it changed
+/// (spec 0008, AC-19).
+fn send_link_hover(channel: &BrowserChannel, page: &mut Page) -> Result<(), EmbedError> {
+    if let Some(url) = page.take_link_hover() {
+        channel.send(ToBrowser::LinkHover {
+            page: page.id(),
+            url,
+        })?;
     }
     Ok(())
 }

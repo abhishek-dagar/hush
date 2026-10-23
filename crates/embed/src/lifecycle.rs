@@ -26,14 +26,25 @@ pub(crate) enum Shortcut {
     Back,
     /// Go forward one entry.
     Forward,
+    /// Focus the address, or open the palette (spec 0008, AC-5, AC-6).
+    FocusAddress,
+    /// Stop the load in progress (AC-26).
+    Stop,
+    /// F6, or Shift+F6 with `backward`: focus to the next region, the
+    /// sidebar or the page (AC-31).
+    Region {
+        /// Shift was held.
+        backward: bool,
+    },
     /// Shut the content process down and close.
     Quit,
 }
 
 /// The shortcut `event` is, if any: the platform's primary modifier (Cmd on
 /// macOS, Ctrl elsewhere) with R or Q, or F5; back and forward with Cmd+[
-/// and Cmd+] on macOS, Alt+Left and Alt+Right elsewhere (spec 0008,
-/// AC-29). Keys go by their physical position, as the chrome's shortcuts
+/// and Cmd+] on macOS, Alt+Left and Alt+Right elsewhere; the address with
+/// the primary modifier and L, or Alt+D off macOS; stop with Cmd+. on
+/// macOS (spec 0008, AC-29). Keys go by their physical position, as the chrome's shortcuts
 /// do. Repeats are ignored, so holding a key acts once.
 pub(crate) fn shortcut(event: &KeyEvent, modifiers: ModifiersState) -> Option<Shortcut> {
     if event.state != ElementState::Pressed || event.repeat {
@@ -62,6 +73,12 @@ fn shortcut_for(code: KeyCode, modifiers: ModifiersState) -> Option<Shortcut> {
         KeyCode::BracketRight if mac && primary => Some(Shortcut::Forward),
         KeyCode::ArrowLeft if !mac && alt => Some(Shortcut::Back),
         KeyCode::ArrowRight if !mac && alt => Some(Shortcut::Forward),
+        KeyCode::KeyL if primary => Some(Shortcut::FocusAddress),
+        KeyCode::KeyD if !mac && alt => Some(Shortcut::FocusAddress),
+        KeyCode::Period if mac && primary => Some(Shortcut::Stop),
+        KeyCode::F6 if !primary && !modifiers.alt_key() => Some(Shortcut::Region {
+            backward: modifiers.shift_key(),
+        }),
         _ => None,
     }
 }
@@ -184,6 +201,43 @@ mod tests {
             let with_ctrl = ModifiersState::ALT | ModifiersState::CONTROL;
             assert_eq!(shortcut_for(back, with_ctrl), None);
         }
+    }
+
+    #[test]
+    fn the_address_and_stop_take_the_platform_keys() {
+        // Spec 0008, AC-29
+        assert_eq!(
+            shortcut_for(KeyCode::KeyL, primary()),
+            Some(Shortcut::FocusAddress)
+        );
+        assert_eq!(shortcut_for(KeyCode::KeyL, ModifiersState::empty()), None);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                shortcut_for(KeyCode::Period, primary()),
+                Some(Shortcut::Stop)
+            );
+            assert_eq!(shortcut_for(KeyCode::KeyD, ModifiersState::ALT), None);
+        } else {
+            assert_eq!(
+                shortcut_for(KeyCode::KeyD, ModifiersState::ALT),
+                Some(Shortcut::FocusAddress)
+            );
+            assert_eq!(shortcut_for(KeyCode::Period, primary()), None);
+        }
+    }
+
+    #[test]
+    fn f6_and_shift_f6_cycle_the_regions() {
+        // Spec 0008, AC-31
+        assert_eq!(
+            shortcut_for(KeyCode::F6, ModifiersState::empty()),
+            Some(Shortcut::Region { backward: false })
+        );
+        assert_eq!(
+            shortcut_for(KeyCode::F6, ModifiersState::SHIFT),
+            Some(Shortcut::Region { backward: true })
+        );
+        assert_eq!(shortcut_for(KeyCode::F6, primary()), None);
     }
 
     #[test]

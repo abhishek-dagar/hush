@@ -16,6 +16,8 @@
 mod browser;
 #[cfg(feature = "chrome")]
 mod chrome_host;
+#[cfg(feature = "chrome")]
+mod clipboard;
 mod content;
 mod input;
 mod lifecycle;

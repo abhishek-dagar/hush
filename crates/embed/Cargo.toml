@@ -23,6 +23,7 @@ chrome = [
     "dep:futures-util",
     "dep:pollster",
     "dep:rfd",
+    "dep:arboard",
 ]
 
 [dependencies]
@@ -40,6 +41,7 @@ url.workspace = true
 winit.workspace = true
 
 ui = { workspace = true, optional = true }
+arboard = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 rfd = { workspace = true, optional = true }
@@ -56,9 +58,24 @@ muda = { workspace = true, optional = true }
 windows-sys = { workspace = true, optional = true }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+arboard = { workspace = true, optional = true, features = ["wayland-data-control"] }
 ashpd = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The keyboard only walk (spec 0008, AC-36): the real network against the
+# `net` crate's local TLS test server, a real page and the chrome's address
+# palette. Test only, never shipped; all already in the lockfile.
+bytes.workspace = true
+dom.workspace = true
+hyper = { workspace = true, features = ["server"] }
+hyper-util = { workspace = true, features = ["server", "server-auto"] }
+paint.workspace = true
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "macros"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+ui.workspace = true
 
 [lints]
 workspace = true

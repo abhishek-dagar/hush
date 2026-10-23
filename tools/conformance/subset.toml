@@ -1,0 +1,21 @@
+wpt_commit = "46175634c0210e97365ef864020ff3be6358ea41"
+
+[[area]]
+name = "colors"
+paths = ["css/CSS2/colors"]
+
+[[area]]
+name = "fonts"
+paths = ["css/CSS2/fonts"]
+
+[[area]]
+name = "box-model"
+paths = ["css/CSS2/box-display", "css/CSS2/margin-padding-clear", "css/CSS2/borders"]
+
+[[area]]
+name = "text"
+paths = ["css/CSS2/text", "css/CSS2/linebox"]
+
+[[area]]
+name = "normal-flow"
+paths = ["css/CSS2/normal-flow", "css/CSS2/visudet"]

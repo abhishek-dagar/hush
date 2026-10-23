@@ -11,10 +11,13 @@ use std::time::{Duration, Instant};
 use display_list::{PageId, PointF, SizeF};
 use ipc::{
     BootstrapServer, ContentChannel, ContentReceiver, ContentSender, CursorKind, DocumentKind,
-    FetchError, InputEvent, NavigationId, PageNavigationAction, PageNavigationOrigin, ToBrowser,
-    ToContent,
+    FetchError, HistoryInfo, InputEvent, NavigationId, PageNavigationAction, PageNavigationOrigin,
+    ScrollTarget, ToBrowser, ToContent,
 };
-use navigation::{Action, Begin, EntryKind, Origin, SessionHistory, UserInput};
+use navigation::{
+    Action, Allow, Begin, EntryId, EntryKind, Origin, ScriptThrottle, SessionHistory, Stopped,
+    UserInput,
+};
 use net::{ContentSink, FetchRequest, Net, NetConfig, NetHandle};
 use render::Renderer;
 use tracing::{debug, error, info, info_span, warn};
@@ -29,6 +32,8 @@ use winit::window::{Window, WindowId};
 #[cfg(feature = "chrome")]
 use crate::chrome_host::{ChromeEvent, ChromeHost, Outcome};
 use crate::input;
+#[cfg(feature = "chrome")]
+use crate::input::EditKey;
 use crate::lifecycle::{self, CrashLog, PaintHold, Shortcut};
 use crate::render_thread::{self, RenderEvent, RenderMsg};
 use crate::scrolling;
@@ -44,6 +49,14 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const MAIN_PAGE: PageId = PageId(1);
 /// The launch number of the first content process.
 const FIRST_PROCESS: u32 = 1;
+/// How long a `Copy` or `Cut` sent to the page may be answered (spec 0008,
+/// Key invariants).
+#[cfg(feature = "chrome")]
+const COPY_ANSWER: Duration = Duration::from_secs(1);
+/// How often the loading shimmer moves while a load runs (spec 0008,
+/// AC-25): about 30 frames a second.
+#[cfg(feature = "chrome")]
+const SHIMMER_TICK: Duration = Duration::from_millis(33);
 
 /// The sender to the live content process, shared with the network thread
 /// so a relaunch can point its stream at the new process (AC-14).
@@ -67,6 +80,15 @@ enum Load {
     /// The crash error page for the current entry (AC-14; spec 0008,
     /// AC-34).
     CrashPage,
+}
+
+/// What beginning a load in the session history led to.
+enum Begun {
+    /// A navigation, and what the network fetches for it.
+    Load(NavigationId, Fetch),
+    /// A move to another fragment of the document on screen (spec 0008,
+    /// AC-20): no load, the entry `leaving` was left.
+    Moved(EntryId, HistoryInfo),
 }
 
 /// What the network is asked to load for a navigation.
@@ -190,6 +212,13 @@ pub(crate) fn run(config: Config) -> Result<(), EmbedError> {
         pressed_in_page: false,
         page_cursor: CursorKind::Default,
         viewport_sent: None,
+        throttle: ScriptThrottle::default(),
+        #[cfg(feature = "chrome")]
+        copies: Vec::new(),
+        #[cfg(feature = "chrome")]
+        next_copy: 0,
+        #[cfg(feature = "chrome")]
+        clock: Instant::now(),
         failure: None,
     };
     let result = event_loop.run_app(&mut app);
@@ -264,6 +293,18 @@ struct App {
     page_cursor: CursorKind,
     /// The last viewport and scale sent to the page, to skip repeats.
     viewport_sent: Option<(SizeF, f32)>,
+    /// The page's recent script started loads (spec 0008, AC-28).
+    throttle: ScriptThrottle,
+    /// The `Copy` and `Cut` requests sent to the page and not answered,
+    /// with when they went out (spec 0008, Key invariants).
+    #[cfg(feature = "chrome")]
+    copies: Vec<(u32, Instant)>,
+    /// The next copy request id.
+    #[cfg(feature = "chrome")]
+    next_copy: u32,
+    /// The loading shimmer's time zero.
+    #[cfg(feature = "chrome")]
+    clock: Instant,
     /// The first error that stopped the event loop, reported after it returns.
     failure: Option<EmbedError>,
 }
@@ -330,15 +371,10 @@ impl App {
         let Some((draw, moved)) = self.chrome.take_draw(&app_window.window) else {
             return;
         };
-        self.render(RenderMsg::Chrome(draw));
+        self.render(RenderMsg::Chrome(Box::new(draw)));
         if moved {
             self.send_viewport();
         }
-    }
-
-    /// Whether the current navigation's first list is on screen.
-    fn painted(&self) -> bool {
-        self.shown == Some(self.navigation)
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, err: EmbedError) {
@@ -414,9 +450,23 @@ impl App {
             return;
         };
         let net = net.handle();
-        let Some((navigation, fetch)) = self.begin_history(load) else {
-            return;
+        let leaving = self.history.current().map(|entry| entry.id);
+        let (navigation, fetch) = match self.begin_history(load) {
+            None => return,
+            Some(Begun::Moved(leaving, history)) => {
+                self.same_document_move(leaving, ScrollTarget::Fragment, history);
+                return;
+            }
+            Some(Begun::Load(navigation, fetch)) => (navigation, fetch),
         };
+        // A push or a traverse leaves the current entry: the render thread
+        // says where it was scrolled, for coming back (AC-23).
+        let leaves = self.history.pending().is_some_and(|pending| {
+            matches!(pending.action, Action::Push | Action::Traverse { .. })
+        });
+        if leaves && let Some(entry) = leaving {
+            self.render(RenderMsg::SaveScroll { entry });
+        }
         let params = self
             .history
             .pending()
@@ -444,28 +494,35 @@ impl App {
     /// Begins `load` in the session history: its navigation, and what the
     /// network should fetch. `None` when the history refuses it (a
     /// traverse target that is gone).
-    fn begin_history(&mut self, load: Load) -> Option<(NavigationId, Fetch)> {
+    fn begin_history(&mut self, load: Load) -> Option<Begun> {
         let begin = |history: &mut SessionHistory, url: Url, origin, action| match history
             .begin(url, origin, action)
         {
-            Begin::Load(navigation) => Some(navigation),
+            Begin::Load(navigation) => Some(Ok(navigation)),
+            Begin::SameDocument { leaving, history } => Some(Err(Begun::Moved(leaving, history))),
             Begin::Refused => {
                 debug!(?action, "the history entry is gone; nothing loads");
                 None
             }
         };
+        // Only a URL load can land in the same document; the others name
+        // no fragment of it.
+        let load_of = |begun: Result<NavigationId, Begun>, fetch: Fetch| match begun {
+            Ok(navigation) => Begun::Load(navigation, fetch),
+            Err(moved) => moved,
+        };
         match load {
             Load::Start => match &self.start {
                 StartPage::Url(url) => {
-                    let navigation = begin(
+                    let begun = begin(
                         &mut self.history,
                         url.clone(),
                         Origin::Browser,
                         Action::Push,
                     )?;
-                    Some((navigation, Fetch::Url(url.clone())))
+                    Some(load_of(begun, Fetch::Url(url.clone())))
                 }
-                StartPage::Invalid(input) => Some((
+                StartPage::Invalid(input) => Some(Begun::Load(
                     self.history.begin_detached(),
                     Fetch::Error(FetchError::InvalidUrl, input.clone()),
                 )),
@@ -475,8 +532,8 @@ impl App {
                 origin,
                 action,
             } => {
-                let navigation = begin(&mut self.history, url.clone(), origin, action)?;
-                Some((navigation, Fetch::Url(url)))
+                let begun = begin(&mut self.history, url.clone(), origin, action)?;
+                Some(load_of(begun, Fetch::Url(url)))
             }
             // The crash page stands in for the current entry, whose URL a
             // reload tries again (AC-34).
@@ -485,11 +542,13 @@ impl App {
                 match current {
                     Some(url) => {
                         let input = url.to_string();
-                        let navigation =
-                            begin(&mut self.history, url, Origin::Browser, Action::Reload)?;
-                        Some((navigation, Fetch::Error(FetchError::ContentCrashed, input)))
+                        let begun = begin(&mut self.history, url, Origin::Browser, Action::Reload)?;
+                        Some(load_of(
+                            begun,
+                            Fetch::Error(FetchError::ContentCrashed, input),
+                        ))
                     }
-                    None => Some((
+                    None => Some(Begun::Load(
                         self.history.begin_detached(),
                         Fetch::Error(FetchError::ContentCrashed, self.start.input()),
                     )),
@@ -516,19 +575,57 @@ impl App {
     fn go(&mut self, delta: i32, origin: Origin) {
         match self.history.go(delta) {
             Some(Action::Reload) => self.reload(origin),
-            Some(action @ Action::Traverse { to }) => {
-                let Some(url) = self.history.entry(to).map(|entry| entry.url.clone()) else {
+            Some(Action::Traverse { to }) if self.content.is_some() => {
+                // Inside one document it only scrolls (AC-21, AC-23).
+                if let Some(moved) = self.history.traverse_within(to) {
+                    let scroll = moved
+                        .scroll
+                        .map_or(ScrollTarget::Fragment, |(x, y)| ScrollTarget::Offset(x, y));
+                    info!(delta, "history traverse in the same document");
+                    self.same_document_move(moved.leaving, scroll, moved.history);
                     return;
-                };
-                info!(delta, "history traverse");
-                self.load(Load::Url {
-                    url,
-                    origin,
-                    action,
-                });
+                }
+                self.traverse(delta, to, origin);
             }
+            Some(Action::Traverse { to }) => self.traverse(delta, to, origin),
             _ => debug!(delta, "no history entry that way"),
         }
+    }
+
+    /// Loads entry `to` again (AC-21).
+    fn traverse(&mut self, delta: i32, to: EntryId, origin: Origin) {
+        let Some(url) = self.history.entry(to).map(|entry| entry.url.clone()) else {
+            return;
+        };
+        info!(delta, "history traverse");
+        self.load(Load::Url {
+            url,
+            origin,
+            action: Action::Traverse { to },
+        });
+    }
+
+    /// A move inside the document on screen (spec 0008, AC-20, AC-21):
+    /// the render thread saves where `leaving` was scrolled, the page takes
+    /// the current entry's URL and scrolls to `scroll`, and the address
+    /// shows the new URL. No navigation starts, so nothing loading stops.
+    fn same_document_move(&mut self, leaving: EntryId, scroll: ScrollTarget, history: HistoryInfo) {
+        self.render(RenderMsg::SaveScroll { entry: leaving });
+        let (Some(navigation), Some(url)) = (
+            self.history.committed(),
+            self.history.current().map(|entry| entry.url.clone()),
+        ) else {
+            return;
+        };
+        self.send(ToContent::SameDocument {
+            page: MAIN_PAGE,
+            navigation,
+            url: url.to_string(),
+            scroll,
+            history,
+        });
+        self.document_url = Some(url);
+        self.show_navigation();
     }
 
     /// The network committed `navigation`'s document at `url` (spec 0008,
@@ -578,6 +675,11 @@ impl App {
                 return;
             }
         };
+        // Script loads past the limit are dropped (AC-28); user actions
+        // and links never count.
+        if origin == PageNavigationOrigin::Script && !self.script_load_allowed() {
+            return;
+        }
         let origin = Origin::Page(origin);
         match action {
             PageNavigationAction::Reload => self.reload(origin),
@@ -594,17 +696,124 @@ impl App {
         }
     }
 
-    /// Shows the history's state in the chrome: back and forward enabled
-    /// or not, and the address (spec 0008, AC-1, AC-3).
+    /// Counts a script started load against the throttle (spec 0008,
+    /// AC-28): false when it is over the limit, with one `warn` a window.
+    fn script_load_allowed(&mut self) -> bool {
+        match self.throttle.allow(Instant::now()) {
+            Allow::Yes => true,
+            Allow::No { warn } => {
+                if warn {
+                    warn!(
+                        max = navigation::MAX_SCRIPT_LOADS,
+                        window_secs = navigation::SCRIPT_WINDOW.as_secs(),
+                        "too many script started loads; dropping them"
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    /// Shows the history's state in the chrome (spec 0008, AC-1, AC-3,
+    /// AC-11, AC-25): back and forward enabled or not, the address with
+    /// the committed URL, or the user's own pending one, and whether a
+    /// load runs.
     fn show_navigation(&mut self) {
         #[cfg(feature = "chrome")]
         {
+            let pending = self
+                .history
+                .pending()
+                .filter(|pending| matches!(pending.origin, Origin::User(_)))
+                .map(|pending| pending.url.clone());
             let view = ui::NavView {
                 can_back: self.history.can_back(),
                 can_forward: self.history.can_forward(),
                 url: self.history.current().map(|entry| entry.url.clone()),
+                pending,
+                loading: self.history.loading(),
             };
             self.chrome.set_navigation(&view);
+        }
+    }
+
+    /// Stop (spec 0008, AC-26). Before commit the load is dropped: the
+    /// network forgets it, and the render thread takes the old document's
+    /// lists again. After commit the page and the network end what is
+    /// still loading, and loading ends at the `load` event.
+    fn stop_load(&mut self) {
+        let page = MAIN_PAGE;
+        match self.history.stop() {
+            Stopped::Nothing => return,
+            Stopped::BeforeCommit { dropped, shown } => {
+                info!("stopped before commit; the page stays");
+                if let Some(net) = &self.net {
+                    net.handle().stop(page, dropped);
+                }
+                if let Some(shown) = shown {
+                    self.navigation = shown;
+                    self.render(RenderMsg::NavigationStarted { navigation: shown });
+                }
+                self.hold.painted();
+            }
+            Stopped::AfterCommit(navigation) => {
+                info!("stopped; keeping what arrived");
+                self.send(ToContent::Stop { page, navigation });
+                if let Some(net) = &self.net {
+                    net.handle().stop(page, navigation);
+                }
+            }
+        }
+        self.show_navigation();
+    }
+
+    /// A platform edit key for the page (spec 0008, AC-15): select all
+    /// goes as it is; paste carries the clipboard read right now; copy and
+    /// cut carry a fresh request id the answer must name within a second.
+    #[cfg(feature = "chrome")]
+    fn page_edit(&mut self, edit: EditKey) {
+        let event = match edit {
+            EditKey::SelectAll => InputEvent::SelectAll,
+            EditKey::Paste => match self.chrome.clipboard_text() {
+                Some(text) => InputEvent::Paste { text },
+                None => return,
+            },
+            EditKey::Copy | EditKey::Cut => {
+                let request = self.next_copy;
+                self.next_copy = self.next_copy.wrapping_add(1);
+                let now = Instant::now();
+                self.copies
+                    .retain(|(_, at)| now.saturating_duration_since(*at) < COPY_ANSWER);
+                self.copies.push((request, now));
+                if edit == EditKey::Copy {
+                    InputEvent::Copy { request }
+                } else {
+                    InputEvent::Cut { request }
+                }
+            }
+        };
+        self.send(ToContent::Input {
+            page: MAIN_PAGE,
+            event,
+        });
+    }
+
+    /// The page answered a copy or cut: the clipboard takes the text only
+    /// for a request this browser sent in the last second, each id once
+    /// (spec 0008, Key invariants).
+    #[cfg(feature = "chrome")]
+    fn clipboard_write(&mut self, request: u32, text: &str) {
+        let now = Instant::now();
+        let outstanding = self
+            .copies
+            .iter()
+            .position(|&(id, at)| id == request && now.saturating_duration_since(at) < COPY_ANSWER);
+        match outstanding {
+            Some(index) => {
+                self.copies.swap_remove(index);
+                self.chrome.set_clipboard(text);
+            }
+            None => warn!(request, "clipboard write without a matching copy dropped"),
         }
     }
 
@@ -814,8 +1023,52 @@ impl App {
         });
     }
 
+    /// A key that is no browser shortcut (spec 0008, AC-26, AC-29): Escape
+    /// stops a load when nothing in the chrome wants it, an edit key goes
+    /// to the focused chrome field or the page, then the chrome's own keys
+    /// and focused controls, then the page.
+    fn key(&mut self, event_loop: &ActiveEventLoop, event: &KeyEvent) {
+        let _ = event_loop;
+        let escape = event.state == ElementState::Pressed
+            && !event.repeat
+            && input::key(&event.logical_key) == Some(ipc::Key::Escape);
+        #[cfg(feature = "chrome")]
+        let chrome_wants = self.chrome.wants_escape();
+        #[cfg(not(feature = "chrome"))]
+        let chrome_wants = false;
+        if cfg!(feature = "chrome") && escape && !chrome_wants && self.history.loading() {
+            self.stop_load();
+            return;
+        }
+        #[cfg(feature = "chrome")]
+        if let Some(edit) = input::edit_key(event, self.modifiers) {
+            let outcome = self
+                .window
+                .as_ref()
+                .and_then(|app_window| self.chrome.edit(&app_window.window, edit));
+            match outcome {
+                Some(outcome) => self.apply(event_loop, outcome),
+                None => self.page_edit(edit),
+            }
+            return;
+        }
+        // The chrome's shortcuts and focused controls first.
+        #[cfg(feature = "chrome")]
+        if let Some(app_window) = &self.window
+            && let Some(outcome) = self.chrome.key(&app_window.window, event)
+        {
+            self.apply(event_loop, outcome);
+            return;
+        }
+        self.forward_key(event);
+        if let Some(key) = scrolling::key_scroll(event, self.modifiers) {
+            self.render(RenderMsg::ScrollKey(key));
+        }
+    }
+
     /// Forwards a key the browser did not use to the page (spec 0006,
-    /// Interface surface). Modifiers alone stay here.
+    /// Interface surface), then the text it types (spec 0008, AC-13).
+    /// Modifiers alone stay here.
     fn forward_key(&self, event: &KeyEvent) {
         let Some(key) = input::key(&event.logical_key) else {
             return;
@@ -829,6 +1082,12 @@ impl App {
                 repeat: event.repeat,
             },
         });
+        if let Some(text) = input::typed_text(event, self.modifiers) {
+            self.send(ToContent::Input {
+                page: MAIN_PAGE,
+                event: InputEvent::Text { text },
+            });
+        }
     }
 
     /// Scrolls whatever is under the pointer, on the render thread, which
@@ -883,6 +1142,15 @@ impl App {
             Outcome::Back => self.go(-1, Origin::User(UserInput::Toolbar)),
             Outcome::Forward => self.go(1, Origin::User(UserInput::Toolbar)),
             Outcome::Reload => self.reload(Origin::User(UserInput::Toolbar)),
+            Outcome::Stop => self.stop_load(),
+            Outcome::Load(url) => {
+                info!(%url, "typed load");
+                self.load(Load::Url {
+                    url,
+                    origin: Origin::User(UserInput::Typed),
+                    action: Action::Push,
+                });
+            }
         }
     }
 }
@@ -906,6 +1174,13 @@ impl ApplicationHandler<UserEvent> for App {
                 #[cfg(feature = "chrome")]
                 self.pump_chrome();
                 self.send_viewport();
+                // A new window on the start page opens the palette, ready
+                // to type (spec 0008, Edge cases).
+                #[cfg(feature = "chrome")]
+                if matches!(&self.start, StartPage::Url(url) if url.as_str() == "about:start") {
+                    self.chrome.open_address();
+                    self.pump_chrome();
+                }
             }
             Err(err) => self.fail(event_loop, err),
         }
@@ -923,6 +1198,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if navigation == self.navigation {
                     self.hold.painted();
                 }
+                return;
+            }
+            UserEvent::Render(RenderEvent::ScrollSaved { entry, offset }) => {
+                self.history.save_scroll(entry, offset);
                 return;
             }
             UserEvent::Render(RenderEvent::Failed { window, error }) => {
@@ -1004,7 +1283,8 @@ impl ApplicationHandler<UserEvent> for App {
                 navigation,
                 delta,
             }) if page == MAIN_PAGE => {
-                if self.history.committed() == Some(navigation) {
+                // Counted like every script started load (AC-28).
+                if self.history.committed() == Some(navigation) && self.script_load_allowed() {
                     self.go(delta, Origin::Page(PageNavigationOrigin::Script));
                 }
             }
@@ -1012,6 +1292,23 @@ impl ApplicationHandler<UserEvent> for App {
                 if page == MAIN_PAGE =>
             {
                 self.history.load_complete(navigation);
+                self.show_navigation();
+            }
+            FromContent::Message(ToBrowser::LinkHover { page, url }) if page == MAIN_PAGE => {
+                #[cfg(feature = "chrome")]
+                self.chrome.set_link_hover(url.as_deref());
+                #[cfg(not(feature = "chrome"))]
+                let _ = url;
+            }
+            FromContent::Message(ToBrowser::ClipboardWrite {
+                page,
+                request,
+                text,
+            }) if page == MAIN_PAGE => {
+                #[cfg(feature = "chrome")]
+                self.clipboard_write(request, &text);
+                #[cfg(not(feature = "chrome"))]
+                let _ = (request, text);
             }
             FromContent::Message(ToBrowser::FaviconChanged {
                 page,
@@ -1069,24 +1366,39 @@ impl ApplicationHandler<UserEvent> for App {
                     Some(Shortcut::Reload) => self.reload(shortcut),
                     Some(Shortcut::Back) => self.go(-1, shortcut),
                     Some(Shortcut::Forward) => self.go(1, shortcut),
+                    // The shell has no browser shortcuts (spec 0008, AC-35).
+                    Some(Shortcut::Stop) => {
+                        #[cfg(feature = "chrome")]
+                        self.stop_load();
+                    }
+                    Some(Shortcut::FocusAddress) => {
+                        #[cfg(feature = "chrome")]
+                        self.chrome.open_address();
+                    }
+                    // With two regions, F6 and Shift+F6 land in the same
+                    // place; they stay apart for when tabs add a third
+                    // (spec 0008, AC-31).
+                    Some(Shortcut::Region { backward }) => {
+                        #[cfg(feature = "chrome")]
+                        if self.chrome.cycle_region() {
+                            let direction = if backward {
+                                ipc::FocusDirection::Backward
+                            } else {
+                                ipc::FocusDirection::Forward
+                            };
+                            self.send(ToContent::Input {
+                                page: MAIN_PAGE,
+                                event: InputEvent::FocusEnter { direction },
+                            });
+                        }
+                        #[cfg(not(feature = "chrome"))]
+                        let _ = backward;
+                    }
                     Some(Shortcut::Quit) => {
                         info!("quit");
                         event_loop.exit();
                     }
-                    None => {
-                        // The chrome's shortcuts and focused controls first.
-                        #[cfg(feature = "chrome")]
-                        if let Some(app_window) = &self.window
-                            && let Some(outcome) = self.chrome.key(&app_window.window, &event)
-                        {
-                            self.apply(event_loop, outcome);
-                            return;
-                        }
-                        self.forward_key(&event);
-                        if let Some(key) = scrolling::key_scroll(&event, self.modifiers) {
-                            self.render(RenderMsg::ScrollKey(key));
-                        }
-                    }
+                    None => self.key(event_loop, &event),
                 }
             }
             // Buttons 4 and 5 go back and forward anywhere in the window
@@ -1125,17 +1437,29 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    /// Ends paint holding when it runs out before the new page painted, and
-    /// wakes the loop for its deadline (AC-12).
+    /// Wakes the loop for the paint hold deadline (AC-12). The old frame
+    /// stays on screen until the new navigation paints (or an error page
+    /// paints); we do not clear to white on timeout.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        // While a load runs, the shimmer moves on a timer (spec 0008,
+        // AC-25); idle, nothing wakes the loop.
+        #[cfg(feature = "chrome")]
+        let shimmer = (self.history.loading()
+            && self
+                .chrome
+                .tick_loading(now.duration_since(self.clock).as_secs_f64() * 1000.0))
+        .then(|| now + SHIMMER_TICK);
+        #[cfg(not(feature = "chrome"))]
+        let shimmer: Option<Instant> = None;
         // Hover and other chrome changes since the last turn draw once.
         #[cfg(feature = "chrome")]
         self.pump_chrome();
-        if self.hold.expired(Instant::now()) && !self.painted() {
-            self.shown = None;
-            self.render(RenderMsg::ClearToWhite);
-        }
-        event_loop.set_control_flow(match self.hold.deadline() {
+        // Clear the paint hold deadline so the event loop doesn't keep
+        // waking up, but keep the old frame on screen.
+        let _ = self.hold.expired(now);
+        let wake = [self.hold.deadline(), shimmer].into_iter().flatten().min();
+        event_loop.set_control_flow(match wake {
             Some(deadline) => ControlFlow::WaitUntil(deadline),
             None => ControlFlow::Wait,
         });

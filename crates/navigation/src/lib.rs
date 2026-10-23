@@ -11,11 +11,16 @@
 
 mod display;
 mod history;
+mod intent;
 mod policy;
+mod throttle;
 
 pub use display::{DisplayUrl, Security, display_host};
 pub use history::{
     Action, Begin, DocumentSeq, EntryId, EntryKind, HistoryEntry, LoadState, MAX_ENTRIES,
-    MAX_TITLE_CHARS, Origin, PendingNavigation, SessionHistory, UserInput,
+    MAX_TITLE_CHARS, Origin, PendingNavigation, SameDocumentMove, SessionHistory, Stopped,
+    UserInput,
 };
+pub use intent::{Intent, interpret};
 pub use policy::{Refused, page_may_load, parse_page_url};
+pub use throttle::{Allow, MAX_SCRIPT_LOADS, SCRIPT_WINDOW, ScriptThrottle};

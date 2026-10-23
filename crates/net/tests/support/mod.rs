@@ -35,9 +35,11 @@ pub const PAGE: PageId = PageId(1);
 pub const NAV: NavigationId = NavigationId(7);
 pub const WAIT: Duration = Duration::from_secs(10);
 
-/// The test certificates' folder.
+/// The test certificates' folder. Found through the crates folder, so
+/// another crate's tests can use this server too (`embed`, spec 0008,
+/// AC-36).
 pub fn certs() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/certs")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../net/tests/certs")
 }
 
 /// Starts the network trusting the test root, with a sink that hands every

@@ -124,6 +124,26 @@ fn every_documented_pair_meets_aa() {
                     );
                 }
             }
+            // Selected text in a field keeps its color (spec 0008, AC-14).
+            check(
+                at("--text-primary on --selection"),
+                color(&tokens, "--text-primary"),
+                color(&tokens, "--selection"),
+                TEXT,
+            );
+            // The palette's glass over the darkest and lightest page.
+            for page in ["#000000", "#FFFFFF"] {
+                let under = ui::Rgba::parse(page).unwrap();
+                let glass = color(&tokens, "--glass-surface").over(under);
+                for text in TEXTS {
+                    check(
+                        at(&format!("{text} on --glass-surface over {page}")),
+                        color(&tokens, text),
+                        glass,
+                        TEXT,
+                    );
+                }
+            }
             for fill in ["--accent", "--accent-strong"] {
                 check(
                     at(&format!("--on-accent on {fill}")),
@@ -151,6 +171,7 @@ fn every_mode_defines_every_color_token() {
                 "--accent-strong",
                 "--on-accent",
                 "--focus-ring",
+                "--selection",
             ]
             .into_iter()
             .chain(SURFACES)

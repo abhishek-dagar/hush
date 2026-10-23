@@ -131,8 +131,9 @@ pub enum DomException {
     /// `InvalidCharacterError`: a bad element or attribute name.
     #[error("the name is not valid")]
     InvalidCharacter,
-    /// `SyntaxError`: a selector that does not parse, or is not supported.
-    #[error("the selector is not valid")]
+    /// `SyntaxError`: a selector or URL that does not parse, or is not
+    /// supported.
+    #[error("the string did not match the expected pattern")]
     Syntax,
     /// `NotSupportedError`.
     #[error("the operation is not supported")]
@@ -259,6 +260,29 @@ pub trait ScriptHost {
     fn clear_timeout(&mut self, id: TimerId);
     /// A `console` call, its arguments already joined.
     fn console(&mut self, level: ConsoleLevel, message: &str);
+    /// `location.href`: the document's URL (spec 0008, AC-27).
+    fn location(&self) -> String;
+    /// `location.href = url`, `assign`, `replace` and `reload`: asks the
+    /// browser to load `url`, resolved against the document's base URL
+    /// (ignored for a reload). `SyntaxError` when it does not resolve. The
+    /// browser checks and throttles it (AC-18, AC-28).
+    fn navigate(&mut self, url: &str, action: LocationAction) -> Result<(), DomException>;
+    /// `history.back()`, `forward()` and `go(delta)`: asks the browser to
+    /// move through the session history.
+    fn history_go(&mut self, delta: i32);
+    /// `history.length`.
+    fn history_length(&self) -> u32;
+}
+
+/// What a `location` call does to the session history (spec 0008, AC-27).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocationAction {
+    /// `href = url` and `assign(url)`: a new entry.
+    Push,
+    /// `replace(url)`: the current entry.
+    Replace,
+    /// `reload()`.
+    Reload,
 }
 
 /// A page's script engine: one runtime and one global object per committed

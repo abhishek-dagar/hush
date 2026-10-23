@@ -12,6 +12,8 @@ use super::*;
 #[derive(Default)]
 struct Mock {
     console: Vec<(ConsoleLevel, String)>,
+    navigations: Vec<(String, script::LocationAction)>,
+    history: Vec<i32>,
     timers: Vec<f64>,
     cleared: Vec<u32>,
     pins: i32,
@@ -120,6 +122,22 @@ impl ScriptHost for Mock {
     }
     fn console(&mut self, level: ConsoleLevel, message: &str) {
         self.console.push((level, message.to_owned()));
+    }
+    fn location(&self) -> String {
+        "https://a.test/page".into()
+    }
+    fn navigate(&mut self, url: &str, action: script::LocationAction) -> Result<(), DomException> {
+        if url.contains(' ') {
+            return Err(DomException::Syntax);
+        }
+        self.navigations.push((url.to_owned(), action));
+        Ok(())
+    }
+    fn history_go(&mut self, delta: i32) {
+        self.history.push(delta);
+    }
+    fn history_length(&self) -> u32 {
+        3
     }
 }
 
@@ -283,4 +301,37 @@ fn promise_jobs_run_at_the_checkpoint() {
     assert_eq!(logged(&mock), ["sync"]);
     engine.run_microtasks().unwrap();
     assert_eq!(logged(&mock), ["sync", "then 1"]);
+}
+
+#[test]
+fn location_and_history_ask_the_host() {
+    // Spec 0008, AC-27
+    let (mut engine, mock) = engine();
+    engine
+        .eval_classic(
+            "console.log(location.href, String(location), history.length);
+             location.href = 'b.html';
+             location.assign('c.html');
+             location.replace('d.html');
+             location.reload();
+             history.back(); history.forward(); history.go(-2); history.go('x');
+             try { location.assign('bad url'); } catch (e) { console.log(e.name); }",
+            "t.js",
+        )
+        .unwrap();
+    use script::LocationAction::{Push, Reload, Replace};
+    assert_eq!(
+        mock.borrow().navigations,
+        [
+            ("b.html".to_owned(), Push),
+            ("c.html".to_owned(), Push),
+            ("d.html".to_owned(), Replace),
+            (String::new(), Reload),
+        ]
+    );
+    assert_eq!(mock.borrow().history, [-1, 1, -2, 0]);
+    assert_eq!(
+        logged(&mock),
+        ["https://a.test/page https://a.test/page 3", "SyntaxError"]
+    );
 }

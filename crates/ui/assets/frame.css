@@ -72,13 +72,23 @@ body {
 
 /* macOS keeps the native traffic lights and the native menu bar. */
 
+/* With nothing of its own to show, the caption row goes, as in Zen: the
+   traffic lights share the sidebar's top row with back, forward and
+   reload (embed centers them on it), and the page card gets the same inset on top as on its other
+   sides. */
+
 [data-os="macos"] .caption {
+  display: none;
+}
+
+[data-os="macos"] .nav-row {
+  justify-content: flex-end;
+  min-height: var(--toolbar-height);
   padding-left: var(--caption-inset-start);
 }
 
-[data-os="macos"] .caption-menu,
-[data-os="macos"] .caption-buttons {
-  display: none;
+[data-os="macos"] .page-slot {
+  margin-top: var(--page-inset);
 }
 
 /* Windows: three flush buttons top right, glyphs from the OS icon font. */
@@ -166,12 +176,38 @@ body {
   align-items: center;
   gap: var(--space-2);
   box-sizing: border-box;
+  width: 100%;
   min-height: var(--control-height);
+  margin: 0;
   padding: 0 var(--space-2);
   border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--radius-m);
   color: var(--text-primary);
   background-color: var(--surface-raised);
+  font-family: var(--font-family);
+  font-size: var(--text-body);
+  line-height: var(--line-height);
+  text-align: left;
+}
+
+.address[hidden],
+.address > [hidden],
+.intent[hidden] {
+  display: none;
+}
+
+button.address:hover {
+  border-color: var(--border-strong);
+}
+
+button.address:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+/* The inline field shows its focus on the whole control (AC-5). */
+.address-inline[data-editing] {
+  border-color: var(--focus-ring);
 }
 
 .address > .icon {
@@ -181,14 +217,66 @@ body {
 
 .address > .label {
   flex: 1 1 0;
-}
-
-.address > [hidden] {
-  display: none;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .address-placeholder {
   color: var(--text-secondary);
+}
+
+/* The field itself: the control around it draws the box. */
+.address-input {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  color: var(--text-primary);
+  background-color: transparent;
+  font-family: var(--font-family);
+  font-size: var(--text-body);
+  line-height: var(--line-height);
+}
+
+.address-input:focus-visible {
+  outline: none;
+}
+
+.address-input::placeholder {
+  color: var(--text-secondary);
+}
+
+/* What Enter will do (AC-7): one row under the field. */
+.intent {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-m);
+  color: var(--text-primary);
+  background-color: var(--fill-hover);
+}
+
+.intent:hover {
+  background-color: var(--fill-pressed);
+}
+
+.intent > .icon {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.intent > .label {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 [data-tabs="horizontal"] .frame-sidebar {
@@ -237,4 +325,90 @@ body {
 .menu > [role="menuitemradio"]:focus-visible {
   outline: var(--focus-width) solid var(--focus-ring);
   outline-offset: 0;
+}
+
+/* The overlay layer (spec 0008, Decision): drawn over the page card. Rust
+   writes each piece's place and size from the card's box. */
+
+.loading-bar,
+.status-bubble,
+.palette-scrim,
+.palette {
+  position: absolute;
+}
+
+.loading-bar[hidden],
+.status-bubble[hidden],
+.palette-scrim[hidden],
+.palette[hidden] {
+  display: none;
+}
+
+/* A small skeleton track near the top of the card; Rust sweeps the
+   shimmer across it while a load runs, and holds it still when motion is
+   reduced. */
+.loading-bar {
+  z-index: 2;
+  overflow: hidden;
+  width: var(--loading-width);
+  height: var(--loading-height);
+  border-radius: var(--radius-s);
+  background-color: var(--border-subtle);
+}
+
+.loading-shimmer {
+  position: absolute;
+  top: 0;
+  width: 40%;
+  height: var(--loading-height);
+  border-radius: var(--radius-s);
+  background-color: var(--accent);
+}
+
+/* The link under the pointer (AC-19). */
+.status-bubble {
+  z-index: 2;
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-s);
+  overflow: hidden;
+  color: var(--text-secondary);
+  background-color: var(--surface-raised);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* While the palette is open, a press on the card closes it and the page
+   sees nothing (AC-6). It draws nothing itself. */
+.palette-scrim {
+  z-index: 3;
+}
+
+.palette {
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border: var(--border-width) solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  color: var(--text-primary);
+  background-color: var(--glass-surface);
+}
+
+.palette-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+}
+
+.palette-field > .icon {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
 }

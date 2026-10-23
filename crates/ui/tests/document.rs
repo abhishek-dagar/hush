@@ -79,6 +79,7 @@ fn key(doc: &mut ChromeDocument, key: Key) -> ChromeOutcome {
         command: down.command.or(up.command),
         focus_left: down.focus_left.or(up.focus_left),
         cursor: None,
+        copied: down.copied.or(up.copied),
     }
 }
 
@@ -92,7 +93,11 @@ fn the_page_card_sits_beside_the_sidebar_inset_8_px() {
     let doc = load(Os::Mac);
     let page = doc.layout().page.expect("a page slot");
     assert_eq!(page.origin.x, 240.0, "after the sidebar");
-    assert_eq!(page.origin.y, 32.0, "under the caption row");
+    assert_eq!(
+        page.origin.y, 8.0,
+        "the same 8 px inset on top as on the side and bottom: on macOS the \
+         traffic lights share the sidebar's top row, as in Zen"
+    );
     assert_eq!(page.origin.x + page.size.width, 1280.0 - 8.0);
     assert_eq!(page.origin.y + page.size.height, 800.0 - 8.0);
     assert_eq!(doc.layout().page_radius, 8.0);
@@ -102,14 +107,39 @@ fn the_page_card_sits_beside_the_sidebar_inset_8_px() {
     );
     assert_eq!(
         doc.layout().controls.len(),
-        3,
-        "on macOS only the sidebar's back, forward and reload (spec 0008, AC-1): \
-         no menu button, no closed menu"
+        4,
+        "on macOS only the sidebar's back, forward, reload and address pill \
+         (spec 0008, AC-1): no menu button, no closed menu, no hidden overlay"
     );
     assert_eq!(
         doc.layout().hit(PointF { x: 100.0, y: 300.0 }, false),
         Hit::Drag
     );
+}
+
+#[test]
+fn macos_puts_back_forward_and_reload_in_the_traffic_light_row() {
+    // Spec 0008, AC-1, in the Zen frame of spec 0003
+    let doc = load(Os::Mac);
+    let row = doc
+        .layout()
+        .title_row
+        .expect("the row the traffic lights center on");
+    assert_eq!(
+        (row.origin.y, row.size.height),
+        (0.0, 44.0),
+        "a 44 px top row"
+    );
+    for id in ["nav-back", "nav-forward", "nav-reload"] {
+        let button = doc.element_box(id).unwrap();
+        let center = button.origin.y + button.size.height / 2.0;
+        assert_eq!(center, 22.0, "{id} centered on the row");
+        assert!(button.origin.x >= 78.0, "{id} clear of the traffic lights");
+        assert!(
+            button.origin.x + button.size.width <= 240.0,
+            "{id} in the sidebar"
+        );
+    }
 }
 
 #[test]
@@ -178,9 +208,9 @@ fn tab_reaches_the_menu_button_and_leaves_for_the_page() {
     assert!(doc.focus_enter(FocusDirection::Forward), "the menu button");
     let enter = key(&mut doc, Key::Enter);
     assert_eq!(command(enter), Some(ChromeCommand::AppMenu));
-    // Back, forward and reload (spec 0008, AC-1), then out: caption
-    // buttons are not Tab stops.
-    for stop in ["back", "forward", "reload"] {
+    // Back, forward, reload and the address (spec 0008, AC-1), then out:
+    // caption buttons are not Tab stops.
+    for stop in ["back", "forward", "reload", "address"] {
         let out = key(&mut doc, Key::Tab);
         assert_eq!(out.focus_left, None, "{stop}");
     }
@@ -218,6 +248,8 @@ fn the_navigation_row_follows_the_history_and_the_address_shows_the_host() {
         can_back: true,
         can_forward: false,
         url: Some(url::Url::parse("https://www.example.com/docs").unwrap()),
+        pending: None,
+        loading: false,
     });
     assert_eq!(
         doc.element_text("address-host").as_deref(),
@@ -437,7 +469,7 @@ fn the_settings_window_is_sheet_wide_and_as_tall_as_its_content() {
         "{reset:?} inside {size:?}"
     );
     assert!(
-        size.height < 560.0,
+        size.height < 760.0,
         "shorter than the first guess: {size:?}"
     );
     let layout = doc.layout();
@@ -468,6 +500,7 @@ fn the_settings_window_shows_the_settings_it_is_given() {
         theme: Theme::Dark,
         accent: AccentSetting::System,
         ui_zoom: UiZoom::nearest(200),
+        ..Settings::default()
     };
     doc.set_settings(&settings, Accent::Green);
     let _ = doc.frame();
@@ -585,6 +618,21 @@ fn the_keyboard_works_the_whole_settings_window() {
     assert!(doc.has_focus(), "Reset stays focusable while disabled");
     assert!(key(&mut doc, Key::Enter).command.is_none());
 
+    // The address style, then the search engine list (spec 0008, AC-32).
+    let _ = key(&mut doc, Key::Tab);
+    let inline = key(&mut doc, Key::ArrowRight);
+    assert_eq!(
+        command(inline),
+        Some(ChromeCommand::SetAddressStyle(ui::AddressStyle::Inline))
+    );
+    let _ = key(&mut doc, Key::Tab);
+    let _ = key(&mut doc, Key::ArrowDown);
+    let brave = key(&mut doc, Key::Enter);
+    assert_eq!(
+        command(brave),
+        Some(ChromeCommand::SetSearchEngine(ui::EngineKind::Brave))
+    );
+
     let out = key(&mut doc, Key::Tab);
     assert_eq!(out.focus_left, Some(FocusDirection::Forward));
 }
@@ -664,4 +712,325 @@ fn the_gallery_buttons_open_the_file_dialogs() {
         let at = center(doc.element_box(id).unwrap());
         assert_eq!(command(click(&mut doc, at)), Some(expected), "#{id}");
     }
+}
+
+fn url(text: &str) -> url::Url {
+    url::Url::parse(text).unwrap()
+}
+
+/// A frame showing `committed`, idle.
+fn showing(doc: &mut ChromeDocument, committed: &str) {
+    doc.set_navigation(&ui::NavView {
+        url: Some(url(committed)),
+        ..ui::NavView::default()
+    });
+    let _ = doc.frame();
+}
+
+fn type_text(doc: &mut ChromeDocument, text: &str) {
+    doc.input(InputEvent::Text { text: text.into() });
+    let _ = doc.frame();
+}
+
+#[test]
+fn the_pill_opens_the_palette_over_the_card_with_the_url_selected() {
+    // Spec 0008, AC-2, AC-6, AC-7
+    let mut doc = load(Os::Mac);
+    showing(&mut doc, "https://www.example.com/docs");
+    assert_eq!(
+        doc.element_text("address-host").as_deref(),
+        Some("www.example.com")
+    );
+    let pill = doc
+        .element_box("address-pill")
+        .expect("palette style is the default");
+    assert!(doc.element_box("address-inline").is_none());
+    assert_eq!(
+        command(click(&mut doc, center(pill))),
+        Some(ChromeCommand::OpenAddress)
+    );
+    doc.open_address();
+    let frame = doc.frame();
+    assert!(doc.palette_open());
+    assert_eq!(doc.address().text(), "https://www.example.com/docs");
+    let palette = doc.element_box("palette").expect("the palette shows");
+    let width = (WINDOW.width - 32.0).min(600.0);
+    assert_eq!(palette.size.width, width);
+    assert_eq!(
+        palette.origin.x,
+        (WINDOW.width - width) / 2.0,
+        "centered across the window"
+    );
+    assert_eq!(
+        palette.origin.y,
+        (WINDOW.height - palette.size.height) / 2.0,
+        "and down it"
+    );
+    let overlay = frame.and_then(|f| f.overlay).expect("an overlay list");
+    assert!(
+        !overlay.items.is_empty(),
+        "the palette paints in the overlay"
+    );
+
+    // Typing replaces the selected URL, and the intent row follows.
+    type_text(&mut doc, "rust borrow");
+    assert_eq!(
+        doc.element_text("palette-intent-text").as_deref(),
+        Some("Search DuckDuckGo for \"rust borrow\"")
+    );
+    let enter = key(&mut doc, Key::Enter);
+    assert_eq!(command(enter), Some(ChromeCommand::AddressGo));
+    let target = doc.address_go().unwrap();
+    assert_eq!(target.as_str(), "https://duckduckgo.com/?q=rust+borrow");
+    assert!(!doc.palette_open(), "Enter closes it");
+}
+
+#[test]
+fn escape_or_a_press_on_the_card_closes_the_palette_and_reverts() {
+    // Spec 0008, AC-6
+    let mut doc = load(Os::Mac);
+    showing(&mut doc, "https://a.test/");
+    assert!(doc.focus_enter(FocusDirection::Forward));
+    let _ = doc.frame();
+    doc.open_address();
+    let _ = doc.frame();
+    type_text(&mut doc, "typed");
+    let card = doc.layout().page.unwrap();
+    assert_eq!(
+        doc.layout().hit(center(card), false),
+        Hit::Chrome,
+        "the page gets no pointer input while it is open"
+    );
+    key(&mut doc, Key::Escape);
+    assert!(!doc.palette_open());
+    assert!(doc.has_focus(), "focus goes back to where it was");
+    assert_eq!(doc.address().text(), "a.test", "the committed URL is back");
+    assert_eq!(doc.layout().hit(center(card), false), Hit::Page);
+
+    doc.open_address();
+    let _ = doc.frame();
+    type_text(&mut doc, "typed");
+    // The card's bottom left: the palette sits in the middle of the window.
+    let corner = PointF {
+        x: card.origin.x + 20.0,
+        y: card.origin.y + card.size.height - 20.0,
+    };
+    click(&mut doc, corner);
+    assert!(!doc.palette_open(), "a press outside closes it");
+    assert_eq!(doc.address().text(), "a.test");
+}
+
+#[test]
+fn a_commit_while_typing_leaves_the_text_alone() {
+    // Spec 0008, AC-12, Edge cases: the palette stays open.
+    let mut doc = load(Os::Mac);
+    showing(&mut doc, "https://a.test/");
+    doc.open_address();
+    let _ = doc.frame();
+    type_text(&mut doc, "half typ");
+    showing(&mut doc, "https://b.test/");
+    assert!(doc.palette_open());
+    assert_eq!(doc.address().text(), "half typ");
+    key(&mut doc, Key::Escape);
+    assert_eq!(
+        doc.address().text(),
+        "b.test",
+        "the new URL once editing ends"
+    );
+}
+
+#[test]
+fn reload_turns_into_stop_and_the_bar_shows_while_loading() {
+    // Spec 0008, AC-25
+    let mut doc = load(Os::Mac);
+    doc.set_navigation(&ui::NavView {
+        url: Some(url("https://a.test/")),
+        loading: true,
+        ..ui::NavView::default()
+    });
+    let _ = doc.frame();
+    assert_eq!(
+        doc.element_text("nav-reload-icon").as_deref(),
+        Some("\u{E003}")
+    );
+    let reload = doc.element_box("nav-reload").unwrap();
+    assert_eq!(
+        command(click(&mut doc, center(reload))),
+        Some(ChromeCommand::Stop)
+    );
+    let card = doc.layout().page.unwrap();
+    let bar = doc.element_box("loading-bar").expect("the bar shows");
+    assert_eq!(
+        (bar.size.width, bar.size.height),
+        (160.0, 4.0),
+        "a small track"
+    );
+    assert_eq!(bar.origin.y, card.origin.y + 12.0, "a little below the top");
+    assert_eq!(
+        bar.origin.x,
+        card.origin.x + (card.size.width - 160.0) / 2.0,
+        "centered over the card"
+    );
+    // The shimmer sweeps across it as time goes on.
+    assert!(doc.tick_loading(0.0) || doc.element_box("loading-shimmer").is_some());
+    let _ = doc.frame();
+    let start = doc.element_box("loading-shimmer").unwrap().origin.x;
+    assert!(doc.tick_loading(600.0));
+    let _ = doc.frame();
+    let middle = doc.element_box("loading-shimmer").unwrap().origin.x;
+    assert!(middle > start, "{middle} after {start}");
+    showing(&mut doc, "https://a.test/");
+    assert!(doc.element_box("loading-bar").is_none());
+    let reload = doc.element_box("nav-reload").unwrap();
+    assert_eq!(
+        command(click(&mut doc, center(reload))),
+        Some(ChromeCommand::Reload)
+    );
+}
+
+#[test]
+fn the_status_bubble_shows_the_link_bottom_left_of_the_card() {
+    // Spec 0008, AC-19
+    let mut doc = load(Os::Mac);
+    doc.set_link_hover(Some("https://www.example.com/a/b?c"));
+    let _ = doc.frame();
+    assert_eq!(
+        doc.element_text("status-text").as_deref(),
+        Some("www.example.com/a/b?c")
+    );
+    let card = doc.layout().page.unwrap();
+    let bubble = doc.element_box("status-bubble").expect("it shows");
+    assert!(bubble.origin.x >= card.origin.x && bubble.origin.x < card.origin.x + 16.0);
+    let bottom = bubble.origin.y + bubble.size.height;
+    let card_bottom = card.origin.y + card.size.height;
+    assert!(
+        bottom <= card_bottom && bottom > card_bottom - 16.0,
+        "{bottom} vs {card_bottom}"
+    );
+    assert!(bubble.size.width <= card.size.width / 2.0);
+    doc.set_link_hover(None);
+    let _ = doc.frame();
+    assert!(doc.element_box("status-bubble").is_none());
+}
+
+#[test]
+fn the_inline_style_puts_a_field_in_the_sidebar() {
+    // Spec 0008, AC-2, AC-5, AC-7
+    let mut doc = load(Os::Mac);
+    showing(&mut doc, "https://www.example.com/docs");
+    doc.set_address_style(ui::AddressStyle::Inline);
+    let _ = doc.frame();
+    assert!(doc.element_box("address-pill").is_none());
+    assert!(doc.element_box("address-inline").is_some());
+    assert_eq!(
+        doc.address().text(),
+        "www.example.com",
+        "the host while idle"
+    );
+    doc.open_address();
+    let _ = doc.frame();
+    assert!(doc.address().editing());
+    assert_eq!(doc.address().text(), "https://www.example.com/docs");
+    assert!(doc.element_box("address-intent").is_some());
+    type_text(&mut doc, "example.org");
+    assert_eq!(
+        doc.element_text("address-intent-text").as_deref(),
+        Some("Go to example.org")
+    );
+    key(&mut doc, Key::Escape);
+    assert!(!doc.address().editing());
+    assert!(!doc.has_focus(), "focus goes to the page");
+    assert!(doc.element_box("address-intent").is_none());
+}
+
+#[test]
+fn a_press_anywhere_outside_the_palette_closes_it() {
+    // Spec 0008, AC-6: the sidebar and any button count, not only the card.
+    let mut doc = load(Os::Mac);
+    showing(&mut doc, "https://a.test/");
+    doc.open_address();
+    let _ = doc.frame();
+    let inside = center(doc.element_box("palette").unwrap());
+    assert!(!doc.dismiss_palette(inside), "a press inside keeps it");
+    assert!(doc.palette_open());
+    assert!(
+        doc.dismiss_palette(PointF { x: 100.0, y: 600.0 }),
+        "the empty sidebar"
+    );
+    assert!(!doc.palette_open());
+
+    doc.open_address();
+    let _ = doc.frame();
+    doc.input(InputEvent::PointerDown {
+        x: 100.0,
+        y: 600.0,
+        button: PointerButton::Secondary,
+    });
+    assert!(!doc.palette_open(), "any button");
+}
+
+#[test]
+fn f6_lands_on_the_pill_or_the_inline_field() {
+    // Spec 0008, AC-31
+    let mut doc = load(Os::Mac);
+    showing(&mut doc, "https://a.test/");
+    doc.focus_sidebar();
+    assert!(doc.has_focus(), "the pill");
+    assert!(!doc.palette_open(), "focus only, the palette stays shut");
+    let enter = key(&mut doc, Key::Enter);
+    assert_eq!(command(enter), Some(ChromeCommand::OpenAddress));
+    doc.blur();
+    doc.set_address_style(ui::AddressStyle::Inline);
+    let _ = doc.frame();
+    doc.focus_sidebar();
+    assert!(doc.address().editing(), "the field, URL selected");
+}
+
+#[test]
+fn the_settings_window_picks_the_address_style_and_the_engine() {
+    // Spec 0008, AC-32
+    let mut doc =
+        ChromeDocument::load(ChromeSurface::Settings, Os::Mac, WINDOW, 1.0, Some(fonts())).unwrap();
+    let settings = Settings::default();
+    doc.set_settings(&settings, Accent::Blue);
+    let _ = doc.frame();
+    let inline = doc
+        .element_box("address-style-inline")
+        .expect("the segmented control");
+    assert_eq!(
+        command(click(&mut doc, center(inline))),
+        Some(ChromeCommand::SetAddressStyle(ui::AddressStyle::Inline))
+    );
+    assert!(
+        doc.element_box("search-custom").is_none(),
+        "hidden until Custom"
+    );
+    let options = doc.element_box("search-engine").expect("the listbox");
+    let custom = PointF {
+        x: options.origin.x + 20.0,
+        y: options.origin.y + options.size.height - 8.0,
+    };
+    assert_eq!(
+        command(click(&mut doc, custom)),
+        Some(ChromeCommand::SetSearchEngine(ui::EngineKind::Custom))
+    );
+    doc.show_custom_search(None, false);
+    let _ = doc.frame();
+    let field = doc
+        .element_box("search-custom-field")
+        .expect("the URL field");
+    click(&mut doc, center(field));
+    type_text(&mut doc, "ftp://x/%s");
+    assert_eq!(
+        doc.input_value("search-custom-field").as_deref(),
+        Some("ftp://x/%s")
+    );
+    let enter = key(&mut doc, Key::Enter);
+    assert_eq!(command(enter), Some(ChromeCommand::SaveCustomSearch));
+    doc.show_custom_search(None, true);
+    let _ = doc.frame();
+    assert!(
+        doc.element_box("search-custom-error").is_some(),
+        "the error line"
+    );
 }

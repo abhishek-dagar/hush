@@ -23,14 +23,16 @@ use winit::window::{Window, WindowButtons, WindowId};
 
 use super::platform;
 use crate::browser::UserEvent;
+use crate::input::EditKey;
 use crate::render_thread::{self, ChromeDraw, RenderMsg};
 use crate::{EmbedError, input};
 
 /// The first layout's size in chrome px (spec 0003, build plan task 18:
-/// "about 480 by 560"); the window then takes the size its content asks for.
+/// "about 480 by 560", taller since spec 0008 added the address and search
+/// groups); the window then takes the size its content asks for.
 const FIRST_GUESS: ui::SizeF = ui::SizeF {
     width: 480.0,
-    height: 560.0,
+    height: 760.0,
 };
 
 /// What the settings window shows, handed in on open and on every restyle.
@@ -198,16 +200,47 @@ impl SettingsWindow {
         self.modifiers
     }
 
-    /// A key the shortcuts did not take goes to the document.
+    /// A key the shortcuts did not take goes to the document, then the
+    /// text it types (spec 0008, AC-13).
     pub(super) fn key(&mut self, event: &KeyEvent) -> Option<ChromeCommand> {
         // A modifier alone is nobody's.
         let key = input::key(&event.logical_key)?;
-        self.input(InputEvent::Key {
+        let command = self.input(InputEvent::Key {
             key,
             modifiers: input::modifiers(self.modifiers),
             pressed: event.state == ElementState::Pressed,
             repeat: event.repeat,
-        })
+        });
+        if command.is_some() {
+            return command;
+        }
+        let text = input::typed_text(event, self.modifiers)?;
+        self.input(InputEvent::Text { text })
+    }
+
+    /// A platform edit key in its text field (spec 0008, AC-15), with the
+    /// clipboard's text for a paste. Returns text a copy or cut took.
+    pub(super) fn edit(&mut self, edit: EditKey, paste: Option<String>) -> Option<String> {
+        let event = match edit {
+            EditKey::SelectAll => InputEvent::SelectAll,
+            EditKey::Copy => InputEvent::Copy { request: 0 },
+            EditKey::Cut => InputEvent::Cut { request: 0 },
+            EditKey::Paste => InputEvent::Paste { text: paste? },
+        };
+        self.doc.input(event).copied
+    }
+
+    /// Shows the Custom search field, with `template` in it when given,
+    /// and its error line when `error` (spec 0008, AC-32).
+    pub(super) fn show_custom_search(&mut self, template: Option<&str>, error: bool) {
+        self.doc.show_custom_search(template, error);
+    }
+
+    /// The Custom search field's text.
+    pub(super) fn custom_search_text(&self) -> String {
+        self.doc
+            .input_value("search-custom-field")
+            .unwrap_or_default()
     }
 
     /// Stops the render thread while the window still exists, then lets
@@ -252,6 +285,7 @@ impl SettingsWindow {
             command,
             focus_left,
             cursor,
+            ..
         } = self.doc.input(event);
         if let Some(cursor) = cursor {
             self.set_cursor(cursor);
@@ -312,13 +346,14 @@ impl SettingsWindow {
     }
 
     fn send_draw(&self, frame: ui::ChromeFrame) {
-        self.render(RenderMsg::Chrome(ChromeDraw {
+        self.render(RenderMsg::Chrome(Box::new(ChromeDraw {
             list: frame.list,
             adds: frame.adds,
             deletes: frame.deletes,
             scale: self.scale(),
             slot: None,
-        }));
+            overlay: frame.overlay,
+        })));
     }
 
     /// Tells the render thread. It runs until `close`, so a failure means

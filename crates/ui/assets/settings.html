@@ -4,7 +4,8 @@
   Theme, Accent and Interface size. Same rules as frame.html: scripts off,
   embedded assets only, no markup injected. Rust writes the root
   attributes, aria-checked on the radios, aria-disabled on the size
-  buttons, the "System (Blue)" label and the size, all found by id.
+  buttons, the "System (Blue)" label and the size, all found by id. Spec
+  0008 adds the address bar style and the search engine (AC-32).
 -->
 <html lang="en">
   <head>
@@ -190,6 +191,76 @@
             >
               Reset
             </button>
+          </div>
+        </section>
+        <section class="settings-group" aria-labelledby="address-heading">
+          <h2 class="settings-heading" id="address-heading">Address bar</h2>
+          <div
+            class="segmented"
+            id="address-style"
+            role="radiogroup"
+            aria-labelledby="address-heading"
+          >
+            <button
+              id="address-style-palette"
+              role="radio"
+              aria-checked="true"
+              data-command="settings.address_style"
+              data-value="palette"
+            >
+              Palette</button
+            ><button
+              id="address-style-inline"
+              role="radio"
+              aria-checked="false"
+              data-command="settings.address_style"
+              data-value="inline"
+            >
+              Inline
+            </button>
+          </div>
+        </section>
+        <section class="settings-group" aria-labelledby="search-heading">
+          <h2 class="settings-heading" id="search-heading">Search engine</h2>
+          <div
+            class="listbox"
+            id="search-engine"
+            role="listbox"
+            aria-labelledby="search-heading"
+          >
+            <div role="option" aria-selected="true" data-command="settings.search_engine" data-value="duckduckgo">
+              <span class="label">DuckDuckGo</span>
+            </div>
+            <div role="option" aria-selected="false" data-command="settings.search_engine" data-value="brave">
+              <span class="label">Brave Search</span>
+            </div>
+            <div role="option" aria-selected="false" data-command="settings.search_engine" data-value="startpage">
+              <span class="label">Startpage</span>
+            </div>
+            <div role="option" aria-selected="false" data-command="settings.search_engine" data-value="google">
+              <span class="label">Google</span>
+            </div>
+            <div role="option" aria-selected="false" data-command="settings.search_engine" data-value="bing">
+              <span class="label">Bing</span>
+            </div>
+            <div role="option" aria-selected="false" data-command="settings.search_engine" data-value="ecosia">
+              <span class="label">Ecosia</span>
+            </div>
+            <div role="option" aria-selected="false" data-command="settings.search_engine" data-value="custom">
+              <span class="label">Custom</span>
+            </div>
+          </div>
+          <div class="settings-custom" id="search-custom" hidden>
+            <input
+              class="text-field"
+              id="search-custom-field"
+              aria-label="Custom search address"
+              placeholder="https://example.com/search?q=%s"
+              spellcheck="false"
+            />
+            <p class="settings-hint label" id="search-custom-error" hidden>
+              Use an http or https address with %s where the search goes
+            </p>
           </div>
         </section>
       </main>

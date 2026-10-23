@@ -185,6 +185,21 @@ pub enum PageNavigationAction {
     Reload,
 }
 
+/// Where a same document move scrolls the page (spec 0008, Interface
+/// surface, `SameDocument`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ScrollTarget {
+    /// The element the URL's fragment names, else the top (AC-20).
+    Fragment,
+    /// A root scroll offset in CSS px, saved when the entry was left
+    /// (AC-23).
+    Offset(f32, f32),
+}
+
+/// The most URL text one `LinkHover` carries, in bytes (spec 0008,
+/// Interface surface).
+pub const MAX_LINK_HOVER_BYTES: usize = 4 * 1024;
+
 /// The most text one `ClipboardWrite` carries (spec 0008, Interface
 /// surface).
 pub const MAX_CLIPBOARD_WRITE_BYTES: usize = 1024 * 1024;
@@ -488,6 +503,29 @@ pub enum ToContent {
         /// The history now.
         history: HistoryInfo,
     },
+    /// The browser moved inside the current document (spec 0008, AC-20,
+    /// AC-21): no reload, only a new URL and a scroll. It keeps the
+    /// current navigation, so fetches in flight go on.
+    SameDocument {
+        /// Which page.
+        page: PageId,
+        /// The page's current navigation; a stale one is dropped.
+        navigation: NavigationId,
+        /// The document's new URL, with its new fragment.
+        url: String,
+        /// Where to scroll.
+        scroll: ScrollTarget,
+        /// The history now.
+        history: HistoryInfo,
+    },
+    /// Stop after commit (spec 0008, AC-26): the page cancels every fetch
+    /// still running, keeps what it has, and fires `load`.
+    Stop {
+        /// Which page.
+        page: PageId,
+        /// The navigation to stop; a stale one is dropped.
+        navigation: NavigationId,
+    },
     /// A subresource's response headers arrived; its body follows as
     /// [`ToContent::FetchChunk`] messages. The document's headers are inside
     /// [`ToContent::CommitNavigation`] instead.
@@ -695,6 +733,16 @@ pub enum ToBrowser {
         request: u32,
         /// At most [`MAX_CLIPBOARD_WRITE_BYTES`].
         text: String,
+    },
+    /// The link under the pointer, or with keyboard focus, changed (spec
+    /// 0008, AC-19): its resolved URL, at most [`MAX_LINK_HOVER_BYTES`],
+    /// or `None` when no link is hovered or focused any more. Untrusted:
+    /// the browser shows it, nothing more.
+    LinkHover {
+        /// Which page.
+        page: PageId,
+        /// The link's absolute URL.
+        url: Option<String>,
     },
     /// The document's `load` event fired: loading is over (spec 0008,
     /// AC-25).

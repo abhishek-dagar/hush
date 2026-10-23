@@ -180,6 +180,12 @@ impl Document {
         &self.url
     }
 
+    /// Changes the document's URL without a new document: a move to
+    /// another fragment of it (spec 0008, AC-20).
+    pub fn set_url(&mut self, url: &str) {
+        url.clone_into(&mut self.url);
+    }
+
     /// The character encoding's name.
     pub fn encoding(&self) -> &'static str {
         self.encoding

@@ -72,6 +72,8 @@ impl PageView {
     }
 
     /// Paint holding ran out: show white until the new page paints (AC-12).
+    /// The browser now keeps the old frame instead, so only tests use it.
+    #[cfg(test)]
     pub(crate) fn clear(&mut self) {
         self.list = None;
     }

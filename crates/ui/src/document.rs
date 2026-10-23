@@ -10,16 +10,17 @@
 //! markup string is ever parsed into it after the load.
 
 use base::atoms::{Atom, LocalName, QualName};
-use display_list::{DisplayList, PageId, SpatialKind};
+use display_list::{ColorF, DisplayList, PageId, SpatialKind};
 use dom::{Document, FrameId, NodeId, NodeRef};
 use ipc::{
     CursorKind, DocumentKind, FetchError, FetchId, FocusDirection, InputEvent, Key, NavigationId,
     PointerButton, ToBrowser,
 };
-use navigation::{Security, display_host};
+use navigation::{Intent, Security, display_host};
 use page::{FontContext, Page};
 use url::Url;
 
+use crate::address::{AddressBar, AddressStyle, MAX_ADDRESS_BYTES, SearchEngine};
 use crate::appearance::{ButtonLayout, CaptionButton, Os, Side};
 use crate::assets::{ORIGIN, asset};
 use crate::command::{ChromeCommand, WindowAction, ZoomStep, parse_command};
@@ -46,6 +47,27 @@ const CHECK_GLYPH: &str = "\u{E00F}";
 const LOCK_GLYPH: &str = "\u{E007}";
 const WARNING_GLYPH: &str = "\u{E009}";
 const GLOBE_GLYPH: &str = "\u{E017}";
+/// The intent row's search icon, and reload's and stop's (AC-7, AC-25).
+const SEARCH_GLYPH: &str = "\u{E006}";
+const RELOAD_GLYPH: &str = "\u{E002}";
+const STOP_GLYPH: &str = "\u{E003}";
+/// The palette's width, centered in the window (spec 0008, AC-6, as
+/// the engineer asked: in the middle of the window, both ways).
+const PALETTE_MAX_WIDTH: f32 = 600.0;
+const PALETTE_MARGIN: f32 = 32.0;
+/// How far below the card's top the loading track sits, in chrome px.
+const LOADING_TOP: f32 = 12.0;
+/// One sweep of the loading shimmer across its track, in ms.
+const SHIMMER_PERIOD_MS: f64 = 1200.0;
+/// The shimmer's share of the track's width (`frame.css`).
+const SHIMMER_SHARE: f32 = 0.4;
+/// The overlay ids whose boxes take the pointer before the page (spec
+/// 0008, Interface surface, Paint and render).
+const POINTER_OVERLAY: [&str; 2] = ["palette", "palette-scrim"];
+/// The address fields: the sidebar's (inline style) and the palette's.
+const FIELDS: [&str; 2] = ["address-field", "palette-field"];
+/// The intent rows under them (AC-7).
+const INTENT_ROWS: [&str; 2] = ["address-intent", "palette-intent"];
 /// Segoe's maximize and restore glyphs (spec 0003, Value sourcing).
 const MAXIMIZE_GLYPH: &str = "\u{E922}";
 const RESTORE_GLYPH: &str = "\u{E923}";
@@ -81,6 +103,9 @@ pub struct ChromeFrame {
     pub adds: Vec<ToBrowser>,
     /// `DeleteFont` and `DeleteImage` messages, for after it.
     pub deletes: Vec<ToBrowser>,
+    /// The overlay layer, drawn after the page (spec 0008, Decision);
+    /// `None` for a document without one.
+    pub overlay: Option<DisplayList>,
 }
 
 /// What one input event led to.
@@ -93,6 +118,9 @@ pub struct ChromeOutcome {
     pub focus_left: Option<FocusDirection>,
     /// The pointer shape, when it changed.
     pub cursor: Option<CursorKind>,
+    /// Text a copy or cut in a chrome field took, for the OS clipboard
+    /// (spec 0008, AC-15). The chrome is trusted, so no request id.
+    pub copied: Option<String>,
 }
 
 /// What the navigation controls show (spec 0008, Interface surface).
@@ -102,8 +130,14 @@ pub struct NavView {
     pub can_back: bool,
     /// There is an entry to go forward to.
     pub can_forward: bool,
-    /// The URL the address shows; `None` before the first commit.
+    /// The committed URL; `None` before the first commit.
     pub url: Option<Url>,
+    /// The URL the user asked for, while it loads: the address shows it
+    /// instead (AC-11). Never set for a load a page started.
+    pub pending: Option<Url>,
+    /// A load runs, from its start until the new document's `load`
+    /// event: reload shows as stop and the loading bar shows (AC-25).
+    pub loading: bool,
 }
 
 /// The app menu while it is open (Linux, AC-9).
@@ -132,6 +166,21 @@ pub struct ChromeDocument {
     pending: Option<ChromeFrame>,
     /// The `≡` button's box from the last layout.
     menu_button: Option<RectF>,
+    /// The tokens, for the values the chrome sets from Rust (the field
+    /// selection color).
+    tokens: Tokens,
+    /// The address's state (spec 0008).
+    address: AddressBar,
+    /// While the palette is open: what had focus before it, to give it
+    /// back (AC-6). `Some(None)` means the page had it.
+    palette: Option<Option<NodeId>>,
+    /// A primary press began on an intent row; its release there does
+    /// what Enter does (AC-7).
+    intent_pressed: bool,
+    /// `--loading-width`: the loading track's width.
+    loading_width: f32,
+    /// The OS asks for reduced motion: the shimmer holds still.
+    reduce_motion: bool,
 }
 
 impl ChromeDocument {
@@ -187,8 +236,31 @@ impl ChromeDocument {
             content: viewport,
             pending: None,
             menu_button: None,
+            tokens,
+            address: AddressBar::new(SearchEngine::default()),
+            palette: None,
+            intent_pressed: false,
+            loading_width: 0.0,
+            reduce_motion: false,
         };
+        document.loading_width = document
+            .tokens
+            .resolve(&[])
+            .px("--loading-width")
+            .unwrap_or_default();
         document.serve();
+        // Every chrome text input is capped like the address (AC-10).
+        document.page.set_text_cap(Some(MAX_ADDRESS_BYTES));
+        let overlay: Vec<NodeId> = {
+            let doc = document.doc();
+            doc.node_ids()
+                .filter(|&id| attribute(doc, id, "data-layer") == Some("overlay"))
+                .collect()
+        };
+        if !overlay.is_empty() {
+            document.page.set_overlay_roots(&overlay);
+        }
+        document.show_address();
         document.init_roving();
         Ok(document)
     }
@@ -254,6 +326,20 @@ impl ChromeDocument {
         }
         let style = format!("font-size: {}px", theme.root_font_px);
         set_attr(self.doc_mut(), root, "style", &style);
+        self.reduce_motion = theme.motion == crate::theme::Motion::Reduce;
+        // Selected field text sits on `--selection` (spec 0008, AC-14).
+        if let Ok(color) = self
+            .tokens
+            .resolve(&theme.attributes())
+            .color("--selection")
+        {
+            self.page.set_selection_color(ColorF {
+                r: color.r,
+                g: color.g,
+                b: color.b,
+                a: color.a,
+            });
+        }
     }
 
     /// Puts the window buttons on the side and in the order `buttons`
@@ -334,10 +420,11 @@ impl ChromeDocument {
         }
     }
 
-    /// Shows the navigation state (spec 0008, AC-1, AC-3): back and
-    /// forward `aria-disabled` when there is no entry that way, and the
-    /// address's security icon and display host. `about:start`,
-    /// `about:blank` and no URL at all show the placeholder instead.
+    /// Shows the navigation state (spec 0008, AC-1, AC-3, AC-11, AC-25):
+    /// back and forward `aria-disabled` when there is no entry that way,
+    /// reload as stop and the loading bar while a load runs, and the
+    /// address showing the committed URL, or the user's own pending one.
+    /// While the user edits, the address text stays as typed (AC-12).
     pub fn set_navigation(&mut self, view: &NavView) {
         for (id, enabled) in [
             ("nav-back", view.can_back),
@@ -352,36 +439,325 @@ impl ChromeDocument {
                 set_attr(self.doc_mut(), button, "aria-disabled", "true");
             }
         }
-        let shown = view
-            .url
-            .as_ref()
-            .filter(|url| !matches!(url.as_str(), "about:start" | "about:blank"))
-            .map(display_host);
-        let glyph = match shown.as_ref().map(|d| d.icon) {
-            Some(Security::Lock) => LOCK_GLYPH,
-            Some(Security::Warning) => WARNING_GLYPH,
-            Some(Security::Globe) | None => GLOBE_GLYPH,
+        let (label, command, glyph) = if view.loading {
+            ("Stop", "nav.stop", STOP_GLYPH)
+        } else {
+            ("Reload", "nav.reload", RELOAD_GLYPH)
         };
-        self.set_text("address-icon", glyph);
-        let (Some(host), Some(placeholder)) = (
-            self.by_id("address-host"),
-            self.by_id("address-placeholder"),
-        ) else {
+        if let Some(reload) = self.by_id("nav-reload") {
+            set_attr(self.doc_mut(), reload, "aria-label", label);
+            set_attr(self.doc_mut(), reload, "data-command", command);
+        }
+        self.set_text("nav-reload-icon", glyph);
+        self.set_hidden("loading-bar", !view.loading);
+        match &view.pending {
+            Some(url) => self.address.show_pending(Some(url.clone())),
+            None => self.address.show(view.url.clone()),
+        }
+        self.show_address();
+        self.page.end_task();
+    }
+
+    /// Shows the link under the pointer or with keyboard focus in the
+    /// status bubble, or hides it (spec 0008, AC-19): its display host
+    /// (AC-4) and the rest of the URL. The URL comes from the page, so it
+    /// is only shown, never loaded.
+    pub fn set_link_hover(&mut self, url: Option<&str>) {
+        let shown = url.map(|url| match Url::parse(url) {
+            Ok(url) => {
+                let display = display_host(&url);
+                format!("{}{}", display.host, display.rest)
+            }
+            Err(_) => url.to_owned(),
+        });
+        match shown {
+            Some(text) => {
+                self.set_text("status-text", &text);
+                self.set_hidden("status-bubble", false);
+            }
+            None => self.set_hidden("status-bubble", true),
+        }
+        self.page.end_task();
+    }
+
+    /// Picks the address style (spec 0008, AC-2); a change shows on the
+    /// next frame. Leaving palette style closes an open palette.
+    pub fn set_address_style(&mut self, style: AddressStyle) {
+        if style == self.address.style() {
+            return;
+        }
+        if self.palette.is_some() {
+            self.close_palette(true, true);
+        }
+        self.address.set_style(style);
+        self.show_address();
+        self.page.end_task();
+    }
+
+    /// Uses `engine` for searches from now on (AC-9).
+    pub fn set_search_engine(&mut self, engine: SearchEngine) {
+        if *self.address.engine() != engine {
+            self.address.set_engine(engine);
+            self.show_address();
             self.page.end_task();
+        }
+    }
+
+    /// Installs the check AC-8 needs for typed absolute paths; `embed`
+    /// passes one that asks the disk, so this crate never does.
+    pub fn set_file_check(&mut self, file_exists: Box<dyn Fn(&std::path::Path) -> bool>) {
+        self.address.set_file_check(file_exists);
+    }
+
+    /// The address's state, for the host and tests.
+    pub fn address(&self) -> &AddressBar {
+        &self.address
+    }
+
+    /// Whether the palette is open (AC-6).
+    pub fn palette_open(&self) -> bool {
+        self.palette.is_some()
+    }
+
+    /// A press anywhere in the window outside the open palette, by any
+    /// button (spec 0008, AC-6, widened by the engineer to the whole
+    /// window): it closes, the shown URL comes back, and focus returns.
+    /// Returns whether it was open and `at` (chrome px) is outside it, so
+    /// the press is used up.
+    pub fn dismiss_palette(&mut self, at: PointF) -> bool {
+        if self.palette.is_none()
+            || self
+                .element_box("palette")
+                .is_some_and(|palette| palette.contains(at))
+        {
+            return false;
+        }
+        self.close_palette(true, true);
+        true
+    }
+
+    /// Whether the user is typing in the address, in either style: then
+    /// Escape belongs to it, not to Stop (AC-5, AC-26).
+    pub fn address_editing(&self) -> bool {
+        self.palette.is_some() || self.address.editing()
+    }
+
+    /// Focuses the address (AC-5, AC-6): the inline field with its full
+    /// URL selected, or the palette, opened over the page card. Pressed
+    /// again while open, the palette selects all again.
+    pub fn open_address(&mut self) {
+        match self.address.style() {
+            AddressStyle::Inline => {
+                let Some(field) = self.by_id("address-field") else {
+                    return;
+                };
+                if self.page.focused().map(|n| n.node) == Some(field) {
+                    self.page.input(InputEvent::SelectAll);
+                } else {
+                    self.relayout();
+                    self.page.move_focus(Some(field));
+                }
+                self.sync_address();
+            }
+            AddressStyle::Palette => {
+                let Some(field) = self.by_id("palette-field") else {
+                    return;
+                };
+                if self.palette.is_some() {
+                    self.page.input(InputEvent::SelectAll);
+                    self.page.end_task();
+                    return;
+                }
+                if self.menu.is_some() {
+                    self.close_menu(false);
+                }
+                self.palette = Some(self.page.focused().map(|n| n.node));
+                self.address.open();
+                self.set_hidden("palette", false);
+                self.set_hidden("palette-scrim", false);
+                self.page.end_task();
+                // The field takes focus only once it has a box.
+                self.relayout();
+                self.page.set_input_text(field, self.address.text());
+                self.page.move_focus(Some(field));
+                self.page.input(InputEvent::SelectAll);
+                self.show_address();
+                self.page.end_task();
+            }
+        }
+    }
+
+    /// F6 into the sidebar (spec 0008, AC-31): the address field in
+    /// inline style, with its URL selected; the pill in palette style.
+    pub fn focus_sidebar(&mut self) {
+        match self.address.style() {
+            AddressStyle::Inline => self.open_address(),
+            AddressStyle::Palette => {
+                let Some(pill) = self.by_id("address-pill") else {
+                    return;
+                };
+                self.relayout();
+                self.page.move_focus(Some(pill));
+                self.page.end_task();
+            }
+        }
+    }
+
+    /// Enter in the address, or a click on its intent row (AC-7, AC-8):
+    /// the URL to load, or `None` for empty text, which does nothing. The
+    /// palette closes and focus goes to the page; the address shows the
+    /// URL asked for while it loads (AC-11).
+    pub fn address_go(&mut self) -> Option<Url> {
+        let target = self.address.enter()?;
+        if self.palette.is_some() {
+            self.close_palette(false, false);
+        } else {
+            self.page.move_focus(None);
+        }
+        self.show_address();
+        self.page.end_task();
+        Some(target)
+    }
+
+    /// Closes the palette (AC-6). With `revert`, the shown URL replaces
+    /// what was typed; with `return_focus`, focus goes back to what had it
+    /// before, else nowhere in the chrome (the page keeps its own).
+    fn close_palette(&mut self, revert: bool, return_focus: bool) {
+        let Some(opener) = self.palette.take() else {
             return;
         };
+        self.address.close(revert);
+        self.set_hidden("palette", true);
+        self.set_hidden("palette-scrim", true);
+        self.set_hidden("palette-intent", true);
+        let back = if return_focus { opener } else { None };
+        if !self.page.move_focus(back) {
+            self.page.move_focus(None);
+        }
+        self.show_address();
+        self.page.end_task();
+    }
+
+    /// Follows focus into and out of the address fields, and the text
+    /// typed into them (AC-5, AC-7, AC-12): focus arriving shows the full
+    /// URL selected, each edit is read again for the intent row, and focus
+    /// leaving the inline field puts the shown URL back. Focus never
+    /// leaves an open palette but through Escape, Enter or a press outside.
+    fn sync_address(&mut self) {
+        let field = match (self.address.style(), self.palette.is_some()) {
+            (AddressStyle::Inline, _) => self.by_id("address-field"),
+            (AddressStyle::Palette, true) => self.by_id("palette-field"),
+            (AddressStyle::Palette, false) => None,
+        };
+        let focused = self.page.focused().map(|n| n.node);
+        match field {
+            Some(field) if focused == Some(field) => {
+                if self.address.editing() {
+                    let value = self.doc().input_value(field).unwrap_or_default();
+                    if value != self.address.text() {
+                        self.address.edit(&value);
+                    }
+                } else {
+                    self.address.begin_edit();
+                    self.page.set_input_text(field, self.address.text());
+                    self.page.input(InputEvent::SelectAll);
+                }
+            }
+            Some(field) if self.palette.is_some() => {
+                self.page.move_focus(Some(field));
+            }
+            _ if self.address.editing() && self.palette.is_none() => {
+                self.address.end_edit(true);
+            }
+            _ => {}
+        }
+        self.show_address();
+    }
+
+    /// Writes the address's state into the frame (AC-1 to AC-3, AC-7):
+    /// the pill or the inline field by style, the security icons, the
+    /// host or placeholder, the idle field text, and the intent row while
+    /// the user types.
+    fn show_address(&mut self) {
+        let palette = self.address.style() == AddressStyle::Palette;
+        self.set_hidden("address-pill", !palette);
+        self.set_hidden("address-inline", palette);
+        let shown = self
+            .address
+            .shown()
+            .filter(|url| !matches!(url.as_str(), "about:start" | "about:blank"))
+            .map(display_host);
+        self.set_text("address-icon", glyph(shown.as_ref().map(|d| d.icon)));
         match &shown {
             Some(display) => {
                 self.set_text("address-host", &display.host);
-                remove_attr(self.doc_mut(), host, "hidden");
-                set_attr(self.doc_mut(), placeholder, "hidden", "");
+                self.set_hidden("address-host", false);
+                self.set_hidden("address-placeholder", true);
             }
             None => {
-                set_attr(self.doc_mut(), host, "hidden", "");
-                remove_attr(self.doc_mut(), placeholder, "hidden");
+                self.set_hidden("address-host", true);
+                self.set_hidden("address-placeholder", false);
             }
         }
-        self.page.end_task();
+        let security = glyph(Some(self.address.security()));
+        self.set_text("address-field-icon", security);
+        self.set_text("palette-icon", security);
+        let editing = self.address.editing();
+        if !editing
+            && let Some(field) = self.by_id("address-field")
+            && self.doc().input_value(field).as_deref() != Some(self.address.text())
+        {
+            let text = self.address.text().to_owned();
+            self.page.set_input_text(field, &text);
+        }
+        if let Some(inline) = self.by_id("address-inline") {
+            if editing && !palette {
+                set_attr(self.doc_mut(), inline, "data-editing", "");
+            } else {
+                remove_attr(self.doc_mut(), inline, "data-editing");
+            }
+        }
+        let intent = self.address.intent_text().filter(|_| editing);
+        let icon = match self.address.intent() {
+            Some(Intent::Go(url)) => glyph(Some(display_host(url).icon)),
+            Some(Intent::Search(_)) | None => SEARCH_GLYPH,
+        };
+        let rows = [
+            (
+                "address-intent",
+                "address-intent-text",
+                "address-intent-icon",
+                !palette,
+            ),
+            (
+                "palette-intent",
+                "palette-intent-text",
+                "palette-intent-icon",
+                self.palette.is_some(),
+            ),
+        ];
+        for (row, text_id, icon_id, active) in rows {
+            match intent.as_deref().filter(|_| active) {
+                Some(text) => {
+                    self.set_text(text_id, text);
+                    self.set_text(icon_id, icon);
+                    self.set_hidden(row, false);
+                }
+                None => self.set_hidden(row, true),
+            }
+        }
+    }
+
+    /// Shows or hides the element with this `id`.
+    fn set_hidden(&mut self, id: &str, hidden: bool) {
+        let Some(node) = self.by_id(id) else {
+            return;
+        };
+        if hidden {
+            set_attr(self.doc_mut(), node, "hidden", "");
+        } else {
+            remove_attr(self.doc_mut(), node, "hidden");
+        }
     }
 
     /// Shows `settings` in the settings window (AC-12): the checked theme
@@ -393,6 +769,7 @@ impl ChromeDocument {
         let groups = [
             ("theme", settings.theme.as_str()),
             ("accent", settings.accent.as_str()),
+            ("address-style", settings.address_style.as_str()),
         ];
         for (group, value) in groups {
             let Some(container) = self.by_id(group) else {
@@ -406,6 +783,23 @@ impl ChromeDocument {
                 };
                 set_attr(doc, radio, "aria-checked", bool_attr(checked));
             }
+        }
+        // The search engine's option, and Custom's field when it is the
+        // engine (spec 0008, AC-32).
+        if let Some(list) = self.by_id("search-engine") {
+            let options: Vec<NodeId> = self.doc().children(list).collect();
+            let chosen = settings.search.as_str();
+            let doc = self.doc_mut();
+            for option in options {
+                let Some(selected) = attribute(doc, option, "data-value").map(|v| v == chosen)
+                else {
+                    continue;
+                };
+                set_attr(doc, option, "aria-selected", bool_attr(selected));
+            }
+        }
+        if let SearchEngine::Custom(template) = &settings.search {
+            self.show_custom_search(Some(template), false);
         }
         if let Some(swatch) = self.by_id("accent-system") {
             let label = AccentSetting::System.label(system_accent);
@@ -434,6 +828,24 @@ impl ChromeDocument {
         self.page.end_task();
         // The checked swatch or theme becomes its group's `Tab` stop.
         self.init_roving();
+    }
+
+    /// Shows the settings window's Custom search field (spec 0008, AC-32),
+    /// with `template` in it when given, and the error line when `error`.
+    pub fn show_custom_search(&mut self, template: Option<&str>, error: bool) {
+        self.set_hidden("search-custom", false);
+        self.set_hidden("search-custom-error", !error);
+        if let (Some(template), Some(field)) = (template, self.by_id("search-custom-field"))
+            && self.page.focused().map(|n| n.node) != Some(field)
+        {
+            self.page.set_input_text(field, template);
+        }
+        self.page.end_task();
+    }
+
+    /// The current value of the text input with this `id`.
+    pub fn input_value(&self, id: &str) -> Option<String> {
+        self.doc().input_value(self.by_id(id)?)
     }
 
     /// Makes `content` the text of the element with this `id`.
@@ -512,14 +924,20 @@ impl ChromeDocument {
     /// Takes one input event, in chrome px (spec 0006, Interface surface),
     /// and maps what it did to chrome commands and the keyboard model.
     pub fn input(&mut self, event: InputEvent) -> ChromeOutcome {
-        let primary_down = match &event {
+        let primary = match &event {
             InputEvent::PointerDown {
                 x,
                 y,
                 button: PointerButton::Primary,
-            } => Some(PointF { x: *x, y: *y }),
+            } => Some((PointF { x: *x, y: *y }, true)),
+            InputEvent::PointerUp {
+                x,
+                y,
+                button: PointerButton::Primary,
+            } => Some((PointF { x: *x, y: *y }, false)),
             _ => None,
         };
+        let primary_down = primary.filter(|(_, down)| *down).map(|(at, _)| at);
         // A press outside the open menu closes it, unless it lands on the
         // button that opened it: its own activation closes it then.
         if let Some(at) = primary_down
@@ -528,6 +946,40 @@ impl ChromeDocument {
         {
             self.close_menu(false);
         }
+        // A press of any button outside the open palette closes it and
+        // puts focus back (spec 0008, AC-6). On the card's scrim it does
+        // nothing else.
+        if let InputEvent::PointerDown { x, y, .. } = &event {
+            let at = PointF { x: *x, y: *y };
+            if self.dismiss_palette(at)
+                && (self.lands_in(at, &["palette-scrim"]) || self.lands_on_page(at))
+            {
+                return ChromeOutcome::default();
+            }
+        }
+        // The intent row does what Enter does on release over it (AC-7).
+        // Its press is kept from the engine, which would move focus off the
+        // field and lose what was typed.
+        if let Some((at, down)) = primary
+            && (down || self.intent_pressed)
+        {
+            let over = self.lands_in(at, &INTENT_ROWS);
+            if down && over {
+                self.intent_pressed = true;
+                return ChromeOutcome::default();
+            }
+            if !down {
+                self.intent_pressed = false;
+                return ChromeOutcome {
+                    command: over.then_some(Ok(ChromeCommand::AddressGo)),
+                    ..ChromeOutcome::default()
+                };
+            }
+        }
+        // Tab stays inside the open palette, a modal panel (AC-6).
+        if self.palette.is_some() && matches!(&event, InputEvent::Key { key: Key::Tab, .. }) {
+            return ChromeOutcome::default();
+        }
         let outcome = self.page.input(event);
         let mut result = ChromeOutcome {
             command: outcome
@@ -535,6 +987,7 @@ impl ChromeDocument {
                 .and_then(|node| self.command_at(node.node)),
             focus_left: outcome.focus_left,
             cursor: outcome.cursor,
+            copied: outcome.copied.map(|(_, text)| text),
         };
         if let Some(key) = outcome.unused_key {
             result.command = self.unused_key(&key);
@@ -544,7 +997,14 @@ impl ChromeDocument {
             self.close_menu(false);
         }
         self.page.end_task();
+        self.sync_address();
+        self.page.end_task();
         result
+    }
+
+    /// Whether `at` (chrome px) is on the page card.
+    fn lands_on_page(&self, at: PointF) -> bool {
+        self.layout.page.is_some_and(|page| page.contains(at))
     }
 
     /// Focus arrives from the page by `Tab` (AC-7). False when the chrome
@@ -555,12 +1015,18 @@ impl ChromeDocument {
         self.has_focus()
     }
 
-    /// The page took focus: the chrome lets go of it.
+    /// The page took focus: the chrome lets go of it, and an open palette
+    /// closes with the shown URL back (AC-6).
     pub fn blur(&mut self) {
         if self.menu.is_some() {
             self.close_menu(false);
         }
+        if self.palette.is_some() {
+            self.close_palette(true, false);
+        }
         self.page.move_focus(None);
+        self.page.end_task();
+        self.sync_address();
         self.page.end_task();
     }
 
@@ -668,10 +1134,113 @@ impl ChromeDocument {
         // no frame waits on the font's block period.
         for _ in 0..MAX_FETCH_ROUNDS {
             self.render_once();
-            if !self.serve() {
+            // The overlay sits over the card, so it is placed once the
+            // card has a box, and laid out again where it moved.
+            let placed = self.place_overlay();
+            if !self.serve() && !placed {
                 return;
             }
         }
+    }
+
+    /// Places the overlay pieces (spec 0008, AC-6, AC-19, AC-25): the
+    /// palette in the middle of the window, 600 px wide or the window less
+    /// 32 px (its height from its last box, so it is placed again once it
+    /// has one); the scrim over the whole card; the loading track centered
+    /// a little below the card's top; the status bubble in the card's
+    /// bottom left corner, at most half its width. Returns whether
+    /// anything moved.
+    fn place_overlay(&mut self) -> bool {
+        let Some(card) = self.layout.page else {
+            return false;
+        };
+        let (x, y) = (card.origin.x, card.origin.y);
+        let (width, height) = (card.size.width, card.size.height);
+        let view = self.viewport;
+        let inset = self.metrics.page_radius / 2.0;
+        let palette_width = (view.width - PALETTE_MARGIN).clamp(0.0, PALETTE_MAX_WIDTH);
+        let palette_height = self
+            .element_box("palette")
+            .map_or(0.0, |palette| palette.size.height);
+        let loading_width = self.loading_width.min(width);
+        let places = [
+            (
+                "palette",
+                format!(
+                    "left: {}px; top: {}px; width: {palette_width}px",
+                    (view.width - palette_width) / 2.0,
+                    ((view.height - palette_height) / 2.0).max(0.0)
+                ),
+            ),
+            (
+                "palette-scrim",
+                format!("left: {x}px; top: {y}px; width: {width}px; height: {height}px"),
+            ),
+            (
+                "loading-bar",
+                format!(
+                    "left: {}px; top: {}px; width: {loading_width}px",
+                    x + (width - loading_width) / 2.0,
+                    y + LOADING_TOP
+                ),
+            ),
+            (
+                "status-bubble",
+                format!(
+                    "left: {}px; bottom: {}px; max-width: {}px",
+                    x + inset,
+                    (view.height - (y + height) + inset).max(0.0),
+                    width / 2.0
+                ),
+            ),
+        ];
+        let mut moved = false;
+        for (id, style) in places {
+            moved |= self.set_style(id, &style);
+        }
+        if moved {
+            self.page.end_task();
+        }
+        moved
+    }
+
+    /// Moves the loading shimmer along its track for the time `ms` since
+    /// any fixed start (spec 0008, AC-25): one sweep every 1.2 s, from
+    /// just off the left end to just off the right. With reduced motion it
+    /// stays still in the middle. The host calls this on a timer while a
+    /// load runs; returns whether it moved, so a new frame is due.
+    pub fn tick_loading(&mut self, ms: f64) -> bool {
+        let track = self.loading_width;
+        let sweep = track * SHIMMER_SHARE;
+        let left = if self.reduce_motion {
+            (track - sweep) / 2.0
+        } else {
+            let phase = (ms.rem_euclid(SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS) as f32;
+            -sweep + phase * (track + sweep)
+        };
+        let moved = self.set_style("loading-shimmer", &format!("left: {}px", left.round()));
+        if moved {
+            self.page.end_task();
+        }
+        moved
+    }
+
+    /// Whether the shimmer moves on its own, so the host needs a timer.
+    pub fn loading_animates(&self) -> bool {
+        !self.reduce_motion
+    }
+
+    /// Sets the `style` attribute of the element with this `id`, returning
+    /// whether it changed.
+    fn set_style(&mut self, id: &str, style: &str) -> bool {
+        let Some(node) = self.by_id(id) else {
+            return false;
+        };
+        if attribute(self.doc(), node, "style") == Some(style) {
+            return false;
+        }
+        set_attr(self.doc_mut(), node, "style", style);
+        true
     }
 
     fn render_once(&mut self) {
@@ -682,6 +1251,10 @@ impl ChromeDocument {
         let list = self.page.begin_frame(0.0);
         let (adds, deletes) = self.page.take_resource_messages();
         let pending = self.pending.take();
+        let overlay = match &list {
+            Some(_) => self.page.overlay_list().cloned(),
+            None => pending.as_ref().and_then(|p| p.overlay.clone()),
+        };
         let Some(list) = list.or_else(|| pending.as_ref().map(|p| p.list.clone())) else {
             return;
         };
@@ -699,6 +1272,7 @@ impl ChromeDocument {
             list,
             adds: all_adds,
             deletes: all_deletes,
+            overlay,
         });
     }
 
@@ -717,6 +1291,11 @@ impl ChromeDocument {
             ..FrameLayout::default()
         };
         let page_slot = doc.element_by_id(&Atom::from("page-slot"));
+        let title_row = doc.element_by_id(&Atom::from("nav-row"));
+        let overlay: Vec<NodeId> = POINTER_OVERLAY
+            .iter()
+            .filter_map(|id| doc.element_by_id(&Atom::from(*id)))
+            .collect();
         let menu_button = doc.element_by_id(&Atom::from("app-menu-button"));
         let mut menu_anchor = None;
         for (node, rect) in self.page.element_boxes() {
@@ -730,8 +1309,15 @@ impl ChromeDocument {
                 layout.page = Some(rect);
                 continue;
             }
+            if Some(node) == title_row {
+                layout.title_row = Some(rect);
+            }
             if Some(node) == menu_button {
                 menu_anchor = Some(rect);
+            }
+            // Only shown pieces have boxes (spec 0008, AC-6).
+            if overlay.contains(&node) {
+                layout.overlay.push(rect);
             }
             let Some(element) = doc.node(node).and_then(|n| n.as_element()) else {
                 continue;
@@ -798,9 +1384,28 @@ impl ChromeDocument {
     /// A key the engine did not use: `Escape` closes the open menu, the
     /// rest goes to the composite around the focused element.
     fn unused_key(&mut self, key: &Key) -> Option<Result<ChromeCommand, ChromeError>> {
+        let focused = self.page.focused().map(|n| n.node);
+        let in_field =
+            focused.is_some_and(|node| FIELDS.iter().any(|id| self.by_id(id) == Some(node)));
+        if *key == Key::Enter && in_field {
+            return Some(Ok(ChromeCommand::AddressGo));
+        }
+        if *key == Key::Enter && focused.is_some() && focused == self.by_id("search-custom-field") {
+            return Some(Ok(ChromeCommand::SaveCustomSearch));
+        }
         if *key == Key::Escape {
             if self.menu.is_some() {
                 self.close_menu(true);
+            } else if self.palette.is_some() {
+                // Escape closes the palette, puts the shown URL back, and
+                // returns focus (AC-6).
+                self.close_palette(true, true);
+            } else if in_field {
+                // The inline field: the shown URL back, focus to the page
+                // (AC-5).
+                self.address.end_edit(true);
+                self.page.move_focus(None);
+                self.show_address();
             } else if self.surface == ChromeSurface::Settings {
                 // The settings window is a dialog, so `Escape` closes it (AC-7).
                 return Some(Ok(ChromeCommand::Window(WindowAction::Close)));
@@ -913,6 +1518,15 @@ impl ChromeDocument {
     /// The surface this document shows.
     pub fn surface(&self) -> ChromeSurface {
         self.surface
+    }
+}
+
+/// The icon for a security state (AC-3); the globe without a URL.
+fn glyph(security: Option<Security>) -> &'static str {
+    match security {
+        Some(Security::Lock) => LOCK_GLYPH,
+        Some(Security::Warning) => WARNING_GLYPH,
+        Some(Security::Globe) | None => GLOBE_GLYPH,
     }
 }
 

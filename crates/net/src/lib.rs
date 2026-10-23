@@ -156,6 +156,10 @@ enum Command {
     CancelNavigation {
         page: PageId,
     },
+    Stop {
+        page: PageId,
+        navigation: NavigationId,
+    },
     /// From a navigation's own task: its document is committed.
     Committed {
         page: PageId,
@@ -217,6 +221,15 @@ impl NetHandle {
             navigation,
             fetch,
         });
+    }
+
+    /// The user pressed Stop (spec 0008, AC-26). Before `navigation`
+    /// committed, its load is dropped and nothing reaches the page. After,
+    /// every load still running for it ends, and the page hears each as
+    /// `FetchFailed` with [`FetchError::Cancelled`], so it keeps what
+    /// arrived and fires `load`. A stale navigation changes nothing.
+    pub fn stop(&self, page: PageId, navigation: NavigationId) {
+        self.send(Command::Stop { page, navigation });
     }
 
     /// Stops everything the page is loading, for a page that closed.
@@ -427,6 +440,31 @@ async fn run(
                     && let Some(task) = loads.tasks.remove(&fetch)
                 {
                     task.abort();
+                }
+            }
+            Command::Stop { page, navigation } => {
+                if let Some(loads) = pages.get_mut(&page)
+                    && loads.navigation == navigation
+                {
+                    let committed = loads.document.is_some();
+                    for (fetch, task) in loads.tasks.drain() {
+                        if task.is_finished() {
+                            continue;
+                        }
+                        task.abort();
+                        if committed {
+                            let load = Load {
+                                page,
+                                navigation,
+                                fetch,
+                                sink: Arc::clone(&sink),
+                            };
+                            load.failed(FetchError::Cancelled);
+                        }
+                    }
+                    if !committed {
+                        pages.remove(&page);
+                    }
                 }
             }
             Command::CancelNavigation { page } => {

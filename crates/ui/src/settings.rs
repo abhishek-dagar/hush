@@ -8,6 +8,7 @@ use std::str::FromStr;
 use toml::{Table, Value};
 
 use crate::ChromeError;
+use crate::address::{AddressStyle, EngineKind, SearchEngine};
 use crate::command::ZoomStep;
 use crate::theme::Accent;
 
@@ -170,8 +171,9 @@ impl Default for UiZoom {
     }
 }
 
-/// The user's chrome overrides (spec 0003, `settings.toml`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// The user's chrome overrides (spec 0003, `settings.toml`; spec 0008,
+/// AC-33).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Settings {
     /// `appearance.theme`.
     pub theme: Theme,
@@ -179,6 +181,10 @@ pub struct Settings {
     pub accent: AccentSetting,
     /// `appearance.ui_zoom`.
     pub ui_zoom: UiZoom,
+    /// `navigation.address_style`.
+    pub address_style: AddressStyle,
+    /// `search.engine`, with `search.custom_url` for Custom.
+    pub search: SearchEngine,
 }
 
 /// A setting that was missing a valid value and fell back.
@@ -230,6 +236,7 @@ impl SettingsDocument {
             }),
         }
 
+        self.read_navigation(&mut settings, &mut warnings);
         let appearance = match self.table.get("appearance") {
             None => return (settings, warnings),
             Some(Value::Table(table)) => table,
@@ -280,6 +287,63 @@ impl SettingsDocument {
         (settings, warnings)
     }
 
+    /// The address style and the search engine (spec 0008, AC-33). An
+    /// invalid value is reset to its default with a warning; Custom with a
+    /// missing or invalid `search.custom_url` falls back to DuckDuckGo.
+    fn read_navigation(&self, settings: &mut Settings, warnings: &mut Vec<SettingWarning>) {
+        let table =
+            |name: &'static str, warnings: &mut Vec<SettingWarning>| match self.table.get(name) {
+                None => None,
+                Some(Value::Table(table)) => Some(table.clone()),
+                Some(other) => {
+                    warnings.push(SettingWarning {
+                        key: name,
+                        message: format!("`{other}` is not a table, using defaults"),
+                    });
+                    None
+                }
+            };
+        if let Some(navigation) = table("navigation", warnings)
+            && let Some(value) = navigation.get("address_style")
+        {
+            match value.as_str().map(str::parse::<AddressStyle>) {
+                Some(Ok(style)) => settings.address_style = style,
+                _ => warnings.push(reset(
+                    "navigation.address_style",
+                    value,
+                    AddressStyle::default().as_str(),
+                )),
+            }
+        }
+        let Some(search) = table("search", warnings) else {
+            return;
+        };
+        let Some(value) = search.get("engine") else {
+            return;
+        };
+        let default = SearchEngine::default();
+        match value.as_str().map(str::parse::<EngineKind>) {
+            Some(Ok(EngineKind::Custom)) => {
+                let custom = search
+                    .get("custom_url")
+                    .and_then(Value::as_str)
+                    .map(SearchEngine::custom);
+                match custom {
+                    Some(Ok(engine)) => settings.search = engine,
+                    _ => warnings.push(SettingWarning {
+                        key: "search.custom_url",
+                        message: format!(
+                            "missing or not an http or https address with %s, using `{}`",
+                            default.as_str()
+                        ),
+                    }),
+                }
+            }
+            Some(Ok(kind)) => settings.search = kind.preset().unwrap_or_default(),
+            _ => warnings.push(reset("search.engine", value, default.as_str())),
+        }
+    }
+
     /// Writes `settings` into the table, keeping every other key. A non
     /// table `appearance` value is replaced.
     pub fn store(&mut self, settings: &Settings) {
@@ -299,12 +363,37 @@ impl SettingsDocument {
                 Value::Integer(i64::from(settings.ui_zoom.percent())),
             );
         }
+        if let Value::Table(navigation) = section(&mut self.table, "navigation") {
+            navigation.insert(
+                "address_style".into(),
+                settings.address_style.as_str().into(),
+            );
+        }
+        if let Value::Table(search) = section(&mut self.table, "search") {
+            search.insert("engine".into(), settings.search.as_str().into());
+            // A preset keeps the last custom template, so Custom can come
+            // back to it.
+            if let SearchEngine::Custom(template) = &settings.search {
+                search.insert("custom_url".into(), template.as_str().into());
+            }
+        }
     }
 
     /// The file text to write.
     pub fn to_toml(&self) -> String {
         self.table.to_string()
     }
+}
+
+/// The `name` table of `table`, made one if it is missing or not a table.
+fn section<'t>(table: &'t mut Table, name: &str) -> &'t mut Value {
+    let value = table
+        .entry(name)
+        .or_insert_with(|| Value::Table(Table::new()));
+    if !value.is_table() {
+        *value = Value::Table(Table::new());
+    }
+    value
 }
 
 fn reset(key: &'static str, value: &Value, default: &str) -> SettingWarning {
@@ -432,5 +521,56 @@ mod tests {
         assert_eq!(max.step(ZoomStep::In), max);
         assert_eq!(UiZoom::DEFAULT.step(ZoomStep::In).percent(), 110);
         assert_eq!(max.step(ZoomStep::Reset), UiZoom::DEFAULT);
+    }
+
+    #[test]
+    fn the_navigation_keys_read_and_fall_back() {
+        // Spec 0008, AC-33
+        let (settings, warnings) =
+            read("[navigation]\naddress_style = \"inline\"\n[search]\nengine = \"brave\"\n");
+        assert_eq!(settings.address_style, AddressStyle::Inline);
+        assert_eq!(settings.search, SearchEngine::Brave);
+        assert!(warnings.is_empty());
+
+        let (settings, warnings) =
+            read("[navigation]\naddress_style = \"floating\"\n[search]\nengine = \"yahoo\"\n");
+        assert_eq!(settings.address_style, AddressStyle::Palette);
+        assert_eq!(settings.search, SearchEngine::DuckDuckGo);
+        let keys: Vec<_> = warnings.iter().map(|w| w.key).collect();
+        assert_eq!(keys, ["navigation.address_style", "search.engine"]);
+
+        let (settings, warnings) =
+            read("[search]\nengine = \"custom\"\ncustom_url = \"https://kagi.com/search?q=%s\"\n");
+        assert_eq!(
+            settings.search,
+            SearchEngine::custom("https://kagi.com/search?q=%s").unwrap()
+        );
+        assert!(warnings.is_empty());
+        for bad in ["", "custom_url = \"ftp://x/%s\"\n"] {
+            let (settings, warnings) = read(&format!("[search]\nengine = \"custom\"\n{bad}"));
+            assert_eq!(settings.search, SearchEngine::DuckDuckGo, "{bad}");
+            assert_eq!(warnings[0].key, "search.custom_url");
+        }
+    }
+
+    #[test]
+    fn the_navigation_keys_round_trip_and_a_preset_keeps_the_template() {
+        // Spec 0008, AC-33
+        let mut document = SettingsDocument::parse("").unwrap();
+        let custom = Settings {
+            address_style: AddressStyle::Inline,
+            search: SearchEngine::custom("https://kagi.com/search?q=%s").unwrap(),
+            ..Settings::default()
+        };
+        document.store(&custom);
+        let reread = SettingsDocument::parse(&document.to_toml()).unwrap();
+        assert_eq!(reread.settings().0, custom);
+        document.store(&Settings {
+            search: SearchEngine::Google,
+            ..custom.clone()
+        });
+        let text = document.to_toml();
+        assert!(text.contains("engine = \"google\""), "{text}");
+        assert!(text.contains("kagi.com"), "the template stays: {text}");
     }
 }

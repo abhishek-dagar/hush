@@ -14,7 +14,9 @@ use base::atoms::{LocalName, QualName};
 use base::ns;
 use css::MatchContext;
 use dom::{Document, FrameId, NodeData, NodeId, NodeRef};
-use script::{ConsoleLevel, DomException, NodeKind, ReadyState, ScriptHost, TimerId};
+use script::{
+    ConsoleLevel, DomException, LocationAction, NodeKind, ReadyState, ScriptHost, TimerId,
+};
 use tracing::{debug, error, info, warn};
 
 /// Timer nesting past which short delays are raised (HTML, timer
@@ -24,6 +26,15 @@ const NESTING_CLAMP_LEVEL: u32 = 5;
 const NESTED_MIN_DELAY_MS: f64 = 4.0;
 /// The longest delay, as browsers cap it (2^31 - 1 ms).
 const MAX_DELAY_MS: f64 = 2_147_483_647.0;
+
+/// A navigation a script asked for (spec 0008, AC-27), for the browser.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ScriptNavigation {
+    /// `location`: load this absolute URL.
+    Load(String, LocationAction),
+    /// `history.back`, `forward` or `go`.
+    Go(i32),
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Timer {
@@ -44,6 +55,10 @@ pub(crate) struct PageHost {
     /// The nesting level of the timer whose callback is running, 0 outside
     /// one.
     pub(crate) running_nesting: u32,
+    /// What scripts asked to load since the page last took it.
+    pub(crate) navigations: Vec<ScriptNavigation>,
+    /// `history.length`, as the browser last said.
+    pub(crate) history_length: u32,
 }
 
 impl PageHost {
@@ -54,6 +69,8 @@ impl PageHost {
             timers: BTreeMap::new(),
             next_timer: 1,
             running_nesting: 0,
+            navigations: Vec::new(),
+            history_length: 1,
         }
     }
 
@@ -432,6 +449,32 @@ impl ScriptHost for PageHost {
             ConsoleLevel::Warn => warn!(target: "console", "{message}"),
             ConsoleLevel::Error => error!(target: "console", "{message}"),
         }
+    }
+
+    fn location(&self) -> String {
+        self.document.url().to_owned()
+    }
+
+    fn navigate(&mut self, url: &str, action: LocationAction) -> Result<(), DomException> {
+        let url = match action {
+            LocationAction::Reload => self.document.url().to_owned(),
+            LocationAction::Push | LocationAction::Replace => {
+                crate::links::base_url(&self.document)
+                    .and_then(|base| base.join(url.trim()).ok())
+                    .ok_or(DomException::Syntax)?
+                    .into()
+            }
+        };
+        self.navigations.push(ScriptNavigation::Load(url, action));
+        Ok(())
+    }
+
+    fn history_go(&mut self, delta: i32) {
+        self.navigations.push(ScriptNavigation::Go(delta));
+    }
+
+    fn history_length(&self) -> u32 {
+        self.history_length
     }
 }
 

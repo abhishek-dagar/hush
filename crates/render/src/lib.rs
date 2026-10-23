@@ -13,7 +13,8 @@
 //!
 //! The browser app also draws its chrome: the chrome document's own list
 //! over the whole window, with the page composited into the `#page-slot`
-//! rect under a rounded clip (spec 0003, milestone 3). A headless renderer
+//! rect under a rounded clip (spec 0003, milestone 3), then the chrome's
+//! overlay layer over the page (spec 0008). A headless renderer
 //! draws into an offscreen texture instead of a window, for pixel tests
 //! (AC-27).
 
@@ -60,6 +61,9 @@ pub struct Chrome<'a> {
     /// The page card, or `None` when the chrome shows no page (the
     /// gallery).
     pub slot: Option<PageSlot>,
+    /// The chrome's overlay layer, in chrome px, drawn after the page
+    /// (spec 0008, Decision). It shares `list`'s spatial nodes and clips.
+    pub overlay: Option<&'a DisplayList>,
 }
 
 /// Where the page is composited: `#page-slot`'s box and its corner radius,
@@ -418,8 +422,8 @@ impl Renderer {
 
     /// Draws one frame: `list` (or a blank page without one) at `scale`
     /// device pixels per CSS px, and the scroll `indicator` over it. With
-    /// `chrome`, its list draws first and the page goes into its slot;
-    /// without, the page fills the target. Frames a window's surface cannot
+    /// `chrome`, its list draws first, the page goes into its slot, and the
+    /// chrome's overlay draws last; without, the page fills the target. Frames a window's surface cannot
     /// take right now are skipped, not errors.
     pub fn render(
         &mut self,

@@ -372,6 +372,34 @@ pub(crate) fn natives<'js>(ctx: &Ctx<'js>, host: &Host, unpins: &Unpins) -> Resu
     define(&native, "console", move |name: String, message: String| {
         h.borrow_mut().console(level(&name), &message);
     })?;
+
+    // Navigation (spec 0008, AC-27).
+    let h = Rc::clone(host);
+    define(&native, "location", move || h.borrow().location())?;
+    let h = Rc::clone(host);
+    define(
+        &native,
+        "navigate",
+        move |ctx: Ctx<'js>, url: String, action: String| -> Result<Value<'js>> {
+            let action = match action.as_str() {
+                "replace" => script::LocationAction::Replace,
+                "reload" => script::LocationAction::Reload,
+                _ => script::LocationAction::Push,
+            };
+            let done = h.borrow_mut().navigate(&url, action).map(|()| true);
+            fallible(&ctx, done)
+        },
+    )?;
+    let h = Rc::clone(host);
+    define(&native, "historyGo", move |delta: f64| {
+        // Out of range values do nothing in the browser anyway.
+        let delta = delta.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+        h.borrow_mut().history_go(delta);
+    })?;
+    let h = Rc::clone(host);
+    define(&native, "historyLength", move || {
+        h.borrow().history_length()
+    })?;
     Ok(native)
 }
 
