@@ -430,14 +430,14 @@ impl Renderer {
         list: Option<&DisplayList>,
         scale: f32,
         chrome: Option<&Chrome<'_>>,
-        indicator: Option<&ScrollIndicator>,
+        indicators: Option<&[ScrollIndicator]>,
     ) -> Result<(), RenderError> {
         let (width, height) = self.size();
         let scene = Scene {
             list,
             scale,
             chrome,
-            indicator,
+            indicator: indicators,
             width,
             height,
         };

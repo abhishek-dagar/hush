@@ -40,6 +40,10 @@ pub enum ListError {
     UnknownImage(ImageKey),
     /// Two scroll frames share an id.
     DuplicateScrollId(ScrollId),
+    /// A sticky node is malformed: a bad parent index, a non-finite rect or
+    /// inset, or a limit whose min is over its max (spec 0009, child 0003,
+    /// AC-23).
+    StickyBad(usize),
     /// A stacking context pop with no push, or a push left open.
     UnbalancedStackingContext(usize),
     /// An image is wider or taller than [`MAX_IMAGE_SIDE`].
@@ -71,6 +75,7 @@ impl fmt::Display for ListError {
             Self::UnknownFont(key) => write!(f, "unregistered font key {}", key.0),
             Self::UnknownImage(key) => write!(f, "unregistered image key {}", key.0),
             Self::DuplicateScrollId(id) => write!(f, "scroll id {id:?} appears twice"),
+            Self::StickyBad(i) => write!(f, "sticky node {i} is malformed"),
             Self::UnbalancedStackingContext(i) => {
                 write!(f, "stacking contexts unbalanced at item {i}")
             }
@@ -180,6 +185,23 @@ pub fn validate(list: &DisplayList, page: PageId, keys: &ResourceKeys) -> Result
         {
             return Err(ListError::DuplicateScrollId(scroll_id));
         }
+        if let SpatialKind::Sticky {
+            sticky_rect,
+            margins,
+            vertical_limits,
+            horizontal_limits,
+            ..
+        } = node.kind
+            && (!sticky_rect.origin.x.is_finite()
+                || !sticky_rect.origin.y.is_finite()
+                || !sticky_rect.size.width.is_finite()
+                || !sticky_rect.size.height.is_finite()
+                || margins.iter().any(|m| m.is_some_and(|v| !v.is_finite()))
+                || vertical_limits.0 > vertical_limits.1
+                || horizontal_limits.0 > horizontal_limits.1)
+        {
+            return Err(ListError::StickyBad(index));
+        }
     }
 
     let spatial_count = list.spatial.len();
@@ -226,8 +248,8 @@ pub fn validate(list: &DisplayList, page: PageId, keys: &ResourceKeys) -> Result
 mod tests {
     use super::*;
     use crate::{
-        BlendMode, ClipId, ClipNode, ColorF, DisplayItem, Epoch, RectF, ScrollOffset, SizeF,
-        SpatialId, SpatialNode,
+        BlendMode, ClipId, ClipNode, ColorF, DisplayItem, Epoch, PointF, RectF, ScrollOffset,
+        SizeF, SpatialId, SpatialNode,
     };
 
     const PAGE: PageId = PageId(1);
@@ -254,6 +276,7 @@ mod tests {
             frame_rect: RectF::default(),
             content_size: SizeF::default(),
             offset: ScrollOffset::default(),
+            user_scrollable: [false, false],
         }
     }
 
@@ -398,6 +421,42 @@ mod tests {
                     .insert(0, item(0, None, ItemKind::PopStackingContext))
             },
             ListError::UnbalancedStackingContext(0),
+        );
+    }
+
+    #[test]
+    fn a_malformed_sticky_node_is_rejected() {
+        // Spec 0009, child 0003, AC-23: a sticky node whose limits run the
+        // wrong way is rejected without panicking, and the last good frame
+        // stays on screen.
+        rejects(
+            |l| {
+                l.push_spatial(
+                    SpatialId(1),
+                    SpatialKind::Sticky {
+                        sticky_rect: RectF {
+                            origin: PointF { x: 10.0, y: 20.0 },
+                            size: SizeF {
+                                width: 100.0,
+                                height: 50.0,
+                            },
+                        },
+                        margins: [Some(10.0), None, None, None],
+                        vertical_limits: (0.0, 100.0),
+                        horizontal_limits: (0.0, 100.0),
+                        offset: PointF::default(),
+                    },
+                );
+                // min over max on vertical limits is malformed.
+                if let SpatialKind::Sticky {
+                    ref mut vertical_limits,
+                    ..
+                } = l.spatial[2].kind
+                {
+                    *vertical_limits = (100.0, 0.0);
+                }
+            },
+            ListError::StickyBad(2),
         );
     }
 

@@ -289,6 +289,28 @@ pub enum Display {
     /// formatting context, so its `height: auto` holds its floats
     /// (spec 0009, child 0001).
     FlowRoot,
+    /// `display: table`: a block level table wrapper (spec 0009, child 0004,
+    /// AC-14).
+    Table,
+    /// `display: inline-table`: an inline level table wrapper (AC-14).
+    InlineTable,
+    /// `display: table-caption`: a table's caption (AC-14).
+    TableCaption,
+    /// `display: table-column-group`: a `<colgroup>` (AC-14).
+    TableColumnGroup,
+    /// `display: table-column`: a `<col>` (AC-14).
+    TableColumn,
+    /// `display: table-row-group`: a `<thead>`, `<tbody>` or `<tfoot>`
+    /// (AC-14).
+    TableRowGroup,
+    /// `display: table-header-group`: a `<thead>` (AC-14).
+    TableHeaderGroup,
+    /// `display: table-footer-group`: a `<tfoot>` (AC-14).
+    TableFooterGroup,
+    /// `display: table-row`: a `<tr>` (AC-14).
+    TableRow,
+    /// `display: table-cell`: a `<td>` or `<th>` (AC-14).
+    TableCell,
     /// `display: none`: no box at all.
     None,
 }
@@ -720,6 +742,78 @@ pub struct Flex {
     pub order: i32,
 }
 
+/// `table-layout`: `auto` sizes columns from cell content; `fixed` sizes
+/// them from `<col>` widths and the first row only (spec 0009, child 0004,
+/// AC-16).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TableLayout {
+    /// `auto`, the initial value.
+    #[default]
+    Auto,
+    /// `fixed`: columns are sized from `<col>` widths and the first row only
+    /// (spec 0009, child 0004, AC-16).
+    Fixed,
+}
+
+/// `border-collapse` (AC-17), `border-spacing` (AC-17), `caption_side`
+/// (AC-14) and `empty_cells` (AC-17). Inherited so a table's cells and rows
+/// read them from the table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BorderCollapse {
+    /// `separate`, the initial value: each cell has its own borders, with
+    /// `border-spacing` between them.
+    #[default]
+    Separate,
+    /// `collapse`: adjoining cell borders merge into one (CSS 2.2 §17.6.2).
+    Collapse,
+}
+
+/// `caption-side`: `top` puts captions above the table, `bottom` below it
+/// (spec 0009, child 0004, AC-14).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CaptionSide {
+    /// `top`, the initial value: captions above the table.
+    #[default]
+    Top,
+    /// `bottom`: captions below the table.
+    Bottom,
+}
+
+/// `empty-cells`: `show` paints borders and backgrounds of empty cells;
+/// `hide` leaves them unpainted (spec 0009, child 0004, AC-17).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EmptyCells {
+    /// `show`, the initial value: borders and backgrounds of empty cells
+    /// paint.
+    #[default]
+    Show,
+    /// `hide`: empty cells paint nothing.
+    Hide,
+}
+
+/// Reset group: `table-layout` (spec 0009, child 0004, Data model). Most
+/// elements share the initial `Rc`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Table {
+    /// `table-layout`.
+    pub table_layout: TableLayout,
+}
+
+/// Inherited group: `border_collapse`, `border_spacing`, `caption_side`,
+/// `empty_cells` (spec 0009, child 0004, Data model). Cells and rows read
+/// these from the table they sit in.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InheritedTable {
+    /// `border-collapse`.
+    pub border_collapse: BorderCollapse,
+    /// `border-spacing`, one length per axis (or one for both).
+    pub border_spacing: (Au, Au),
+    /// `caption-side`.
+    pub caption_side: CaptionSide,
+    /// `empty-cells`.
+    pub empty_cells: EmptyCells,
+}
+
 impl Default for Flex {
     fn default() -> Self {
         Self {
@@ -785,6 +879,24 @@ pub struct Effects {
     pub opacity: f32,
     /// `z-index`; `None` is `auto`.
     pub z_index: Option<i32>,
+    /// `clip: rect(...)`, or `None` for `auto` / no clip. Applied only to
+    /// absolute and fixed boxes (spec 0009, child 0003, AC-12).
+    pub clip: Option<ClipRect>,
+}
+
+/// One edge of a `clip: rect(...)` rectangle, measured from the box's border
+/// box top left corner. `None` means `auto`, i.e. the border box's edge
+/// (spec 0009, child 0003, AC-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClipRect {
+    /// The top edge, or `None` for the border box's top edge (`auto`).
+    pub top: Option<Au>,
+    /// The right edge, or `None` for the border box's right edge (`auto`).
+    pub right: Option<Au>,
+    /// The bottom edge, or `None` for the border box's bottom edge (`auto`).
+    pub bottom: Option<Au>,
+    /// The left edge, or `None` for the border box's left edge (`auto`).
+    pub left: Option<Au>,
 }
 
 impl Default for Effects {
@@ -792,6 +904,7 @@ impl Default for Effects {
         Self {
             opacity: 1.0,
             z_index: None,
+            clip: None,
         }
     }
 }
@@ -830,10 +943,15 @@ pub struct ComputedStyle {
     pub effects: Rc<Effects>,
     /// Reset: flex container and flex item properties.
     pub flex: Rc<Flex>,
+    /// Reset: `table-layout`.
+    pub table: Rc<Table>,
     /// Reset: the outline.
     pub outline: Rc<Outline>,
     /// Inherited: custom properties, for `var()`.
     pub custom: Rc<CustomProperties>,
+    /// Inherited: `border-collapse`, `border-spacing`, `caption-side`,
+    /// `empty-cells` (spec 0009, child 0004).
+    pub inherited_table: Rc<InheritedTable>,
 }
 
 thread_local! {
@@ -855,8 +973,10 @@ thread_local! {
         background: Rc::default(),
         effects: Rc::default(),
         flex: Rc::default(),
+        table: Rc::default(),
         outline: Rc::default(),
         custom: Rc::default(),
+        inherited_table: Rc::default(),
     });
 }
 
@@ -877,6 +997,7 @@ impl ComputedStyle {
             inherited_box: Rc::clone(&parent.inherited_box),
             list: Rc::clone(&parent.list),
             custom: Rc::clone(&parent.custom),
+            inherited_table: Rc::clone(&parent.inherited_table),
             ..Self::default()
         }
     }

@@ -1,0 +1,16 @@
+{
+  "recorded": "2026-10-21",
+  "machine": {
+    "cpu": "Apple M4",
+    "ram_gb": 16,
+    "os_version": "macOS 26.0"
+  },
+  "values": {
+    "bundle_size.browser.macos": 4.0,
+    "bundle_size.browser.linux": 4.0,
+    "bundle_size.browser.windows": 4.0,
+    "bundle_size.shell.macos": 3.8,
+    "bundle_size.shell.linux": 3.8,
+    "bundle_size.shell.windows": 3.8
+  }
+}

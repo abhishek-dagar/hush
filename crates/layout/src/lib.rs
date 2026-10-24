@@ -88,8 +88,8 @@ pub struct ConstraintSpace {
     /// The box's border box top left corner in its BFC's coordinates, or
     /// `None` while its margins have not settled (spec 0009, child 0001).
     pub bfc_offset: Option<Point>,
-    /// The floats in this BFC that can reach this box, in BFC coordinates,
-    /// or `None` when none can (spec 0009, child 0001).
+    /// The floats in this BFC that can reach this box, from its border box
+    /// top left corner, or `None` when none can (spec 0009, child 0001).
     pub exclusions: Option<Rc<ExclusionSpace>>,
     /// How far above the box's hypothetical position `clear` moves it, or
     /// `None` when the box has no `clear` (spec 0009, child 0001).
@@ -269,7 +269,9 @@ fn step(
         return Some(Step::Reuse(fragment));
     }
     cx.stats.laid_out += 1;
-    let shrinks = layout_box.inline_level
+    // Inline blocks and floats shrink to fit (CSS 2.2 sections 10.3.9 and
+    // 10.3.5; spec 0009, child 0001).
+    let shrinks = (layout_box.inline_level || layout_box.is_float())
         && layout_box.kind == BoxKind::BlockContainer
         && layout_box.style.size.width.is_none_or(|width| {
             matches!(width, css::Length::Percent(_)) && space.percentage_basis.width.is_none()
@@ -387,9 +389,15 @@ fn lay_out_box(
         if let Some(child_id) = next {
             top.next_child += 1;
             // An absolute box leaves only its static position in flow; its
-            // containing block lays it out (spec 0006, AC-5).
+            // containing block lays it out (spec 0006, AC-5). A fixed box
+            // leaves its static position too, then hoists to the viewport's
+            // containing block (spec 0009, child 0003, AC-10).
             if tree.get(child_id).is_some_and(LayoutBox::is_absolute) {
-                top.place_absolute(child_id);
+                top.place_absolute(child_id, false);
+                continue;
+            }
+            if tree.get(child_id).is_some_and(LayoutBox::is_fixed) {
+                top.place_absolute(child_id, true);
                 continue;
             }
             // A float leaves only its placement in flow; it is laid out by
@@ -398,7 +406,9 @@ fn lay_out_box(
                 top.place_float(tree, child_id, cx);
                 continue;
             }
-            let space = top.child_space();
+            let Some(space) = tree.get(child_id).map(|child| top.block_child_space(child)) else {
+                continue;
+            };
             match step(tree, child_id, space, cx) {
                 Some(Step::Reuse(fragment)) => top.place(tree, fragment),
                 Some(Step::Run(in_progress)) => stack.push(in_progress),
@@ -415,6 +425,13 @@ fn lay_out_box(
             && let Some(cb) = positioned::containing_block(tree, id, &fragment, space.clone())
         {
             positioned::lay_out_absolutes(tree, &mut fragment, cb, cx);
+        }
+        // Fixed boxes hoist to the viewport's initial containing block, so
+        // only the root lays them out; they add nothing to scrollable
+        // overflow (spec 0009, child 0003, AC-10).
+        if tree.root() == Some(id) && fragment.absolutes.iter().any(|absolute| absolute.fixed) {
+            let cb = positioned::viewport_containing_block(&fragment.margins, &space);
+            positioned::lay_out_fixed(tree, &mut fragment, cb, cx);
         }
         let fragment = Rc::new(Fragment::Box(fragment));
         if let Some(layout_box) = tree.boxes.get_mut(id) {
@@ -441,7 +458,7 @@ fn lay_out_box(
 mod tests {
     use base::atoms::QualName;
     use base::local_name;
-    use css::{Clear, Display, Float, Length, Margin, Padding};
+    use css::{Clear, Display, Float, Length, Margin, Padding, Position};
     use dom::{Document, NodeId};
 
     use super::*;
@@ -548,6 +565,57 @@ mod tests {
             "cleared block's top edge below the float"
         );
         assert_eq!(cleared_pos.x, px(0.0));
+    }
+
+    #[test]
+    fn user_scrollable_is_per_axis_from_overflow() {
+        // Spec 0009, child 0002, AC-6 and AC-7: `scroll`/`auto` are user
+        // scrollable on that axis; `hidden` and `clip` are not.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+
+        let mut scroll_xy = block(0.0, 0.0, Some(40.0));
+        {
+            let s = Rc::make_mut(&mut scroll_xy);
+            Rc::make_mut(&mut s.display_box).overflow_x = css::Overflow::Scroll;
+            Rc::make_mut(&mut s.display_box).overflow_y = css::Overflow::Auto;
+        }
+        add(&mut doc, html, scroll_xy);
+
+        let mut hidden = block(0.0, 0.0, Some(40.0));
+        {
+            let s = Rc::make_mut(&mut hidden);
+            Rc::make_mut(&mut s.display_box).overflow_x = css::Overflow::Hidden;
+            Rc::make_mut(&mut s.display_box).overflow_y = css::Overflow::Clip;
+        }
+        add(&mut doc, html, hidden);
+
+        let mut boxes = BoxTree::build(&mut doc);
+        let (tree, _) = layout(
+            &mut boxes,
+            Size::new(px(800.0), px(600.0)),
+            &mut FontContext::new(),
+            &text::WebFontLayer::default(),
+        );
+        let (_, fragment) = tree.root.unwrap();
+        let html_fragment = fragment.as_box().unwrap();
+        assert_eq!(
+            html_fragment.children[0]
+                .1
+                .as_box()
+                .unwrap()
+                .user_scrollable,
+            [true, true]
+        );
+        assert_eq!(
+            html_fragment.children[1]
+                .1
+                .as_box()
+                .unwrap()
+                .user_scrollable,
+            [false, false]
+        );
     }
 
     fn styled(doc: &mut Document, parent: NodeId, name: &str, display: Display) -> NodeId {
@@ -1014,5 +1082,44 @@ mod tests {
                 cache_hits: 0
             }
         );
+    }
+
+    #[test]
+    fn a_fixed_box_lays_out_against_the_viewport_and_stays_in_flow_spot() {
+        // Spec 0009, child 0003, AC-10: `position: fixed` lays the box out
+        // against the viewport and it stays in place while the page scrolls,
+        // adding nothing to the viewport's scrollable overflow.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+        let mut fixed = block(0.0, 0.0, Some(50.0));
+        {
+            let s = Rc::make_mut(&mut fixed);
+            Rc::make_mut(&mut s.display_box).position = Position::Fixed;
+            Rc::make_mut(&mut s.position_offsets).top = Some(Length::px(0.0));
+            Rc::make_mut(&mut s.position_offsets).left = Some(Length::px(0.0));
+            Rc::make_mut(&mut s.size).width = Some(Length::px(100.0));
+        }
+        add(&mut doc, html, fixed);
+
+        let mut boxes = BoxTree::build(&mut doc);
+        let (tree, _) = layout(
+            &mut boxes,
+            Size::new(px(800.0), px(600.0)),
+            &mut FontContext::new(),
+            &text::WebFontLayer::default(),
+        );
+        let (origin, fragment) = tree.root.unwrap();
+        assert_eq!(origin, Point::default());
+        let root_fragment = fragment.as_box().unwrap();
+        let fixed_child = root_fragment
+            .children
+            .iter()
+            .find(|(_, f)| {
+                f.as_box()
+                    .is_some_and(|b| b.size == Size::new(px(100.0), px(50.0)))
+            })
+            .expect("the fixed box is a child of the root fragment");
+        assert_eq!(fixed_child.0, Point::default());
     }
 }

@@ -15,7 +15,7 @@ mod validate;
 
 use serde::{Deserialize, Serialize};
 
-pub use scroll::ScrollState;
+pub use scroll::{ScrollState, sticky_offset};
 pub use validate::{ListError, ResourceKeys, validate};
 
 /// The largest encoded list either side accepts (spec 0002, Security model).
@@ -186,12 +186,33 @@ pub enum SpatialKind {
         content_size: SizeF,
         /// The current offset, as the content process knows it.
         offset: ScrollOffset,
+        /// Whether the user may scroll this frame on each axis (x, y).
+        /// `scroll` and `auto` are scrollable; `hidden` and `clip` are not
+        /// (spec 0009, child 0002, AC-6 and AC-7).
+        user_scrollable: [bool; 2],
     },
     /// A transformed space: `transform` maps points in it to the parent
     /// space. A 4 by 4 matrix, column major.
     ReferenceFrame {
         /// The matrix.
         transform: [f32; 16],
+    },
+    /// A sticky box: laid out in flow, then shifted at full frame rate to
+    /// stay inside its nearest scroll frame while that frame scrolls
+    /// (spec 0009, child 0003, AC-11).
+    Sticky {
+        /// Where the box sits in its parent space before the shift.
+        sticky_rect: RectF,
+        /// The remaining inset to keep on each side (top, right, bottom,
+        /// left); `None` means that edge has no inset.
+        margins: [Option<f32>; 4],
+        /// How far the box may move along each axis, min then max.
+        vertical_limits: (f32, f32),
+        /// How far the box may move along the inline axis, min then max.
+        horizontal_limits: (f32, f32),
+        /// The shift to apply, computed by [`sticky_offset`] from this
+        /// node's scroll frame and written by the render side on each frame.
+        offset: PointF,
     },
 }
 
@@ -209,6 +230,10 @@ impl SpatialKind {
             Self::ReferenceFrame { transform: m } => PointF {
                 x: m[0] * point.x + m[4] * point.y + m[12],
                 y: m[1] * point.x + m[5] * point.y + m[13],
+            },
+            Self::Sticky { sticky_rect, .. } => PointF {
+                x: sticky_rect.origin.x + point.x,
+                y: sticky_rect.origin.y + point.y,
             },
         }
     }
@@ -496,6 +521,7 @@ mod tests {
                     y: 30.0,
                     generation: 0,
                 },
+                user_scrollable: [true, true],
             },
         );
         assert_eq!(

@@ -56,6 +56,7 @@ fn list_with(items: usize) -> DisplayList {
                 y: 12.5,
                 generation: 2,
             },
+            user_scrollable: [true, true],
         },
     );
     let mut transform = [0.0; 16];

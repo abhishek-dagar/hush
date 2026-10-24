@@ -10,6 +10,7 @@ use toml::{Table, Value};
 use crate::ChromeError;
 use crate::address::{AddressStyle, EngineKind, SearchEngine};
 use crate::command::ZoomStep;
+use crate::frame::SizeF;
 use crate::theme::Accent;
 
 /// The largest `settings.toml` the browser reads. A bigger file counts as
@@ -173,7 +174,7 @@ impl Default for UiZoom {
 
 /// The user's chrome overrides (spec 0003, `settings.toml`; spec 0008,
 /// AC-33).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Settings {
     /// `appearance.theme`.
     pub theme: Theme,
@@ -185,6 +186,9 @@ pub struct Settings {
     pub address_style: AddressStyle,
     /// `search.engine`, with `search.custom_url` for Custom.
     pub search: SearchEngine,
+    /// The last window size the user left, in logical px, or `None` when the
+    /// OS default should be used (spec 0003, AC-11).
+    pub window_size: Option<SizeF>,
 }
 
 /// A setting that was missing a valid value and fell back.
@@ -284,6 +288,23 @@ impl SettingsDocument {
                 )),
             }
         }
+        if let Some(value) = appearance.get("window_size") {
+            let as_f32 = |v: &Value| -> Option<f32> {
+                v.as_float()
+                    .map(|v| v as f32)
+                    .or_else(|| v.as_integer().map(|v| v as f32))
+                    .filter(|v| v.is_finite())
+            };
+            match value.as_array() {
+                Some(items) if items.len() == 2 => match (as_f32(&items[0]), as_f32(&items[1])) {
+                    (Some(width), Some(height)) if width > 0.0 && height > 0.0 => {
+                        settings.window_size = Some(SizeF { width, height });
+                    }
+                    _ => warnings.push(reset("appearance.window_size", value, "unset")),
+                },
+                _ => warnings.push(reset("appearance.window_size", value, "unset")),
+            }
+        }
         (settings, warnings)
     }
 
@@ -362,6 +383,20 @@ impl SettingsDocument {
                 "ui_zoom".into(),
                 Value::Integer(i64::from(settings.ui_zoom.percent())),
             );
+            match settings.window_size {
+                Some(size) => {
+                    appearance.insert(
+                        "window_size".into(),
+                        Value::Array(vec![
+                            Value::Float(f64::from(size.width)),
+                            Value::Float(f64::from(size.height)),
+                        ]),
+                    );
+                }
+                None => {
+                    appearance.remove("window_size");
+                }
+            }
         }
         if let Value::Table(navigation) = section(&mut self.table, "navigation") {
             navigation.insert(
@@ -458,6 +493,49 @@ mod tests {
             200
         );
         assert_eq!(read("[appearance]\nui_zoom = -3\n").0.ui_zoom.percent(), 80);
+    }
+
+    #[test]
+    fn window_size_reads_the_saved_size() {
+        let (settings, warnings) = read("[appearance]\nwindow_size = [900, 700]\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            settings.window_size,
+            Some(SizeF {
+                width: 900.0,
+                height: 700.0
+            })
+        );
+    }
+
+    #[test]
+    fn window_size_ignores_bad_values() {
+        let (settings, warnings) = read("[appearance]\nwindow_size = [900, -700]\n");
+        assert_eq!(settings.window_size, None);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].key, "appearance.window_size");
+    }
+
+    #[test]
+    fn window_size_round_trips_through_store() {
+        let mut doc = SettingsDocument::parse("").unwrap();
+        doc.store(&Settings {
+            window_size: Some(SizeF {
+                width: 1280.0,
+                height: 800.0,
+            }),
+            ..Settings::default()
+        });
+        let again = SettingsDocument::parse(&doc.to_toml()).unwrap();
+        let (settings, warnings) = again.settings();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            settings.window_size,
+            Some(SizeF {
+                width: 1280.0,
+                height: 800.0
+            })
+        );
     }
 
     #[test]

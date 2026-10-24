@@ -50,6 +50,16 @@ impl DisplayList {
                     let values: Vec<String> = transform.iter().map(|v| num(*v)).collect();
                     writeln!(out, "reference-frame transform=[{}]", values.join(" "))?;
                 }
+                SpatialKind::Sticky {
+                    sticky_rect,
+                    margins,
+                    ..
+                } => writeln!(
+                    out,
+                    "sticky rect={} margins={:?} offset=...",
+                    rect(*sticky_rect),
+                    margins
+                )?,
             }
         }
         writeln!(out, "clips")?;

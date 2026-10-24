@@ -271,6 +271,7 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
         .extend(absolute_ids.into_iter().map(|box_id| PendingAbsolute {
             box_id,
             static_position: Point::default(),
+            fixed: false,
         }));
     let height = if row { container_cross } else { inner_main };
     container.set_flex_items(FlexItems { height, ..placed }, child_ids.len());

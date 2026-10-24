@@ -21,7 +21,7 @@ use crate::properties::{
 use crate::values::SpecifiedLength;
 use crate::{
     BorderStyle, Color, ComputedStyle, CustomProperties, Display, FlexBasis, Float, Font, Length,
-    LineHeight, Overflow, OutlineStyle, Position,
+    LineHeight, OutlineStyle, Overflow, Position,
 };
 
 /// The longest text a `var()` substitution may produce. Past it the
@@ -806,6 +806,9 @@ impl Computer<'_> {
             (L::ZIndex, Value::ZIndex(z_index)) => {
                 Rc::make_mut(&mut style.effects).z_index = *z_index;
             }
+            (L::Clip, Value::Clip(clip)) => {
+                Rc::make_mut(&mut style.effects).clip = *clip;
+            }
             (L::OutlineStyle, Value::OutlineStyle(outline_style)) => {
                 Rc::make_mut(&mut style.outline).style = *outline_style;
             }
@@ -825,6 +828,21 @@ impl Computer<'_> {
             }
             (L::UserSelect, Value::UserSelect(user_select)) => {
                 Rc::make_mut(&mut style.inherited_box).user_select = *user_select;
+            }
+            (L::TableLayout, Value::TableLayout(table_layout)) => {
+                Rc::make_mut(&mut self.style.table).table_layout = *table_layout;
+            }
+            (L::BorderCollapse, Value::BorderCollapse(border_collapse)) => {
+                Rc::make_mut(&mut self.style.inherited_table).border_collapse = *border_collapse;
+            }
+            (L::BorderSpacing, Value::BorderSpacing(spacing)) => {
+                Rc::make_mut(&mut self.style.inherited_table).border_spacing = *spacing;
+            }
+            (L::CaptionSide, Value::CaptionSide(caption_side)) => {
+                Rc::make_mut(&mut self.style.inherited_table).caption_side = *caption_side;
+            }
+            (L::EmptyCells, Value::EmptyCells(empty_cells)) => {
+                Rc::make_mut(&mut self.style.inherited_table).empty_cells = *empty_cells;
             }
             // Font properties are computed together first; a value of the
             // wrong kind cannot come out of the parsers.
@@ -985,6 +1003,7 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::Bottom => copy!(position_offsets.bottom),
         L::Left => copy!(position_offsets.left),
         L::ZIndex => copy!(effects.z_index),
+        L::Clip => copy!(effects.clip),
         // The width is settled in `finish_outline`.
         L::OutlineWidth => {}
         L::OutlineStyle => copy!(outline.style),
@@ -995,6 +1014,11 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::TextOverflow => copy!(display_box.text_overflow),
         L::Cursor => copy!(inherited_box.cursor),
         L::UserSelect => copy!(inherited_box.user_select),
+        L::TableLayout => copy!(table.table_layout),
+        L::BorderCollapse => copy!(inherited_table.border_collapse),
+        L::BorderSpacing => copy!(inherited_table.border_spacing),
+        L::CaptionSide => copy!(inherited_table.caption_side),
+        L::EmptyCells => copy!(inherited_table.empty_cells),
     }
 }
 

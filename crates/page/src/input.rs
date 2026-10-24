@@ -17,9 +17,10 @@
 //! per role keyboard model is not here: keys the page does not use go back
 //! to the caller as `unused_key`. Nothing here needs a script engine.
 
-use display_list::PointF;
+use css::Overflow;
+use display_list::{PointF, ScrollId};
 use dom::{Document, ElementState, FrameId, NodeId, NodeRef};
-use ipc::{CursorKind, FocusDirection, InputEvent, Key, Modifiers, PointerButton};
+use ipc::{CursorKind, FocusDirection, InputEvent, Key, KeyScroll, Modifiers, PointerButton};
 use layout::HitTestResult;
 
 use crate::Page;
@@ -35,6 +36,10 @@ pub struct InputOutcome {
     pub focus_left: Option<FocusDirection>,
     /// The pointer shape, when it changed.
     pub cursor: Option<CursorKind>,
+    /// A key down the page did not use: the key and the frame (or the
+    /// viewport when `None`) the browser should scroll with it (spec 0009,
+    /// child 0002, AC-9).
+    pub scroll: Option<(KeyScroll, Option<ScrollId>)>,
     /// A key down the page did not use, for the caller's keyboard model.
     pub unused_key: Option<Key>,
     /// The answer to a `Copy` or `Cut`: its request id and the selected
@@ -97,6 +102,10 @@ pub(crate) struct InputState {
     cursor: CursorKind,
     /// `cursor` changed since the caller last took it.
     cursor_changed: bool,
+    /// The last element pressed with the pointer, the fallback scroll target
+    /// when nothing focused can scroll (spec 0009, child 0002, Value
+    /// sourcing, Key scroll target). Cleared when its node disconnects.
+    scroll_origin: Option<NodeRef>,
 }
 
 impl Default for InputState {
@@ -114,6 +123,7 @@ impl Default for InputState {
             window_focused: true,
             cursor: CursorKind::default(),
             cursor_changed: false,
+            scroll_origin: None,
         }
     }
 }
@@ -161,6 +171,7 @@ impl InputState {
         self.active.clear();
         self.pressed = None;
         self.focus_visible = false;
+        self.scroll_origin = None;
         self.pending_move = self.pointer;
     }
 
@@ -385,6 +396,42 @@ fn common_ancestor(doc: &Document, a: NodeId, b: NodeId) -> Option<NodeId> {
     inclusive_ancestors(doc, b).find(|id| of_a.contains(id))
 }
 
+/// Which scroll key a key press means, or `None` when it is not a scroll
+/// key (spec 0009, child 0002, AC-9). Moved here from
+/// `embed::scrolling::key_scroll_for`.
+pub(crate) fn scroll_key(key: &Key, modifiers: Modifiers) -> Option<KeyScroll> {
+    // Cmd+Up and Cmd+Down are Home and End on macOS.
+    if cfg!(target_os = "macos")
+        && modifiers.meta
+        && !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.shift
+    {
+        return match key {
+            Key::ArrowUp => Some(KeyScroll::Home),
+            Key::ArrowDown => Some(KeyScroll::End),
+            _ => None,
+        };
+    }
+    // Other chords belong to the app and the OS.
+    if modifiers.ctrl || modifiers.alt || modifiers.meta {
+        return None;
+    }
+    let shift = modifiers.shift;
+    match key {
+        Key::ArrowUp => Some(KeyScroll::LineUp),
+        Key::ArrowDown => Some(KeyScroll::LineDown),
+        Key::ArrowLeft => Some(KeyScroll::LineLeft),
+        Key::ArrowRight => Some(KeyScroll::LineRight),
+        Key::Space if shift => Some(KeyScroll::PageUp),
+        Key::Space | Key::PageDown => Some(KeyScroll::PageDown),
+        Key::PageUp => Some(KeyScroll::PageUp),
+        Key::Home => Some(KeyScroll::Home),
+        Key::End => Some(KeyScroll::End),
+        _ => None,
+    }
+}
+
 impl Page {
     /// Takes one input event from the browser (spec 0006, AC-12 to AC-16,
     /// AC-21). A move is kept until the next frame; everything else acts at
@@ -559,6 +606,10 @@ impl Page {
         let focus =
             target.and_then(|t| inclusive_ancestors(doc, t).find(|&id| is_focusable(doc, id)));
         self.input.modality = Modality::Pointer;
+        self.input.scroll_origin = target.map(|node| NodeRef {
+            frame: FrameId::MAIN,
+            node,
+        });
         self.focus(focus);
         // A press on a text input's own box puts the caret where it landed
         // (AC-13).
@@ -687,8 +738,48 @@ impl Page {
                     });
                 }
             }
-            key => outcome.unused_key = Some(key),
+            key => {
+                // A key the page did not use: if it scrolls, name the frame
+                // (or the viewport) the browser should move with it.
+                if let Some(scroll) = scroll_key(&key, modifiers) {
+                    outcome.scroll = Some((scroll, self.scroll_target(scroll)));
+                } else {
+                    outcome.unused_key = Some(key);
+                }
+            }
         }
+    }
+
+    /// The frame a scroll key should move: the nearest inclusive flat tree
+    /// ancestor of the focused element (else `scroll_origin`) that is a user
+    /// scrollable container on the key's axis, else `None` for the viewport
+    /// (spec 0009, child 0002, Value sourcing, Key scroll target).
+    fn scroll_target(&self, key: KeyScroll) -> Option<ScrollId> {
+        let horizontal = matches!(key, KeyScroll::LineLeft | KeyScroll::LineRight);
+        let doc = &self.main_frame.document;
+        let mut node = doc.focused();
+        while let Some(id) = node {
+            let overflow = doc
+                .node(id)
+                .and_then(|n| n.as_element())
+                .and_then(|e| e.style())
+                .map(|style| {
+                    if horizontal {
+                        style.display_box.overflow_x
+                    } else {
+                        style.display_box.overflow_y
+                    }
+                });
+            // `scroll` and `auto` are user scrollable on that axis; `hidden`
+            // and `clip` are not (spec 0009, child 0002, AC-6 and AC-7).
+            if let Some(overflow) = overflow
+                && matches!(overflow, Overflow::Scroll | Overflow::Auto)
+            {
+                return Some(paint::scroll_id(FrameId::MAIN.0, id));
+            }
+            node = doc.flat_parent(id);
+        }
+        None
     }
 
     /// The focused text input the editor works on, if any (AC-13).
@@ -912,5 +1003,53 @@ mod tests {
         assert_eq!(parse(""), None);
         assert_eq!(parse("x1"), None);
         assert_eq!(parse("99999999999"), None);
+    }
+
+    #[test]
+    fn scroll_key_maps_plain_keys_to_scroll_amounts() {
+        // Spec 0009, child 0002, AC-9: arrows, space and page keys scroll,
+        // shifted space pages up; chords and other keys do not.
+        let none = Modifiers {
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: false,
+        };
+        let shift = Modifiers {
+            shift: true,
+            ctrl: false,
+            alt: false,
+            meta: false,
+        };
+        assert_eq!(scroll_key(&Key::ArrowDown, none), Some(KeyScroll::LineDown));
+        assert_eq!(scroll_key(&Key::ArrowUp, none), Some(KeyScroll::LineUp));
+        assert_eq!(scroll_key(&Key::ArrowLeft, none), Some(KeyScroll::LineLeft));
+        assert_eq!(
+            scroll_key(&Key::ArrowRight, none),
+            Some(KeyScroll::LineRight)
+        );
+        assert_eq!(scroll_key(&Key::Space, none), Some(KeyScroll::PageDown));
+        assert_eq!(scroll_key(&Key::Space, shift), Some(KeyScroll::PageUp));
+        assert_eq!(scroll_key(&Key::PageDown, none), Some(KeyScroll::PageDown));
+        assert_eq!(scroll_key(&Key::PageUp, none), Some(KeyScroll::PageUp));
+        assert_eq!(scroll_key(&Key::Home, none), Some(KeyScroll::Home));
+        assert_eq!(scroll_key(&Key::End, none), Some(KeyScroll::End));
+        assert_eq!(scroll_key(&Key::Character("a".into()), none), None);
+        assert_eq!(scroll_key(&Key::Tab, none), None);
+        let meta = Modifiers {
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: true,
+        };
+        assert_eq!(
+            scroll_key(&Key::ArrowDown, Modifiers { alt: true, ..none }),
+            None
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(scroll_key(&Key::ArrowDown, meta), Some(KeyScroll::End));
+        } else {
+            assert_eq!(scroll_key(&Key::ArrowDown, meta), None);
+        }
     }
 }

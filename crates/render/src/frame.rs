@@ -467,8 +467,8 @@ pub(crate) struct Scene<'a> {
     pub(crate) scale: f32,
     /// The browser chrome around the page, if the app draws one.
     pub(crate) chrome: Option<&'a Chrome<'a>>,
-    /// The overlay scroll indicator, drawn over the page.
-    pub(crate) indicator: Option<&'a ScrollIndicator>,
+    /// The overlay scroll indicators, drawn over the page.
+    pub(crate) indicator: Option<&'a [ScrollIndicator]>,
     /// The target size in pixels.
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -800,10 +800,12 @@ pub(crate) fn build(
                 ItemKind::PushStackingContext { .. } | ItemKind::PopStackingContext => {}
             }
         }
-        if *is_page && let Some(indicator) = scene.indicator {
-            let edges = geometry.edges(indicator.rect, PointF::default());
-            let radius = (edges[2] - edges[0]) / 2.0;
-            builder.fill(edges, indicator.color, [radius; 4], geometry.page_clip);
+        if *is_page && let Some(indicators) = scene.indicator {
+            for indicator in indicators.iter() {
+                let edges = geometry.edges(indicator.rect, PointF::default());
+                let radius = (edges[2] - edges[0]) / 2.0;
+                builder.fill(edges, indicator.color, [radius; 4], geometry.page_clip);
+            }
         }
     }
     Built {

@@ -46,8 +46,32 @@ pub enum BoxKind {
     /// end items in the inline content give it edges on each line it
     /// spans.
     InlineBox,
-    /// A replaced element (`<img>`), sized from its natural size.
+    /// A replaced element (``), sized from its natural size.
     Replaced,
+    /// A table wrapper: holds the table and its captions, takes the table's
+    /// `position`, `float`, margins and `z-index` (spec 0009, child 0004,
+    /// AC-14).
+    TableWrapper,
+    /// A table box: carries borders, padding and background, sizes its
+    /// columns and rows (AC-14).
+    Table,
+    /// A table row group (`thead`, `tbody`, `tfoot`): a block of rows.
+    TableRowGroup,
+    /// A table header row group (`thead`).
+    TableHeaderGroup,
+    /// A table footer row group (`tfoot`).
+    TableFooterGroup,
+    /// A table row (`tr`): holds cells side by side.
+    TableRow,
+    /// A table column group (`colgroup`).
+    TableColumnGroup,
+    /// A table column (`col`).
+    TableColumn,
+    /// A table cell (`td`, `th`): a BFC root, sized at its column widths.
+    TableCell,
+    /// A table caption (`caption`): above or below the table by
+    /// `caption-side` (AC-14).
+    TableCaption,
 }
 
 /// Which side a float sits on (CSS 2.2 section 9.5; spec 0009, child 0001).
@@ -790,6 +814,19 @@ impl LayoutBox {
         self.style.display_box.position == Position::Absolute
     }
 
+    /// Whether the box is fixed positioned: out of flow, laid out against
+    /// the viewport and scrolled with it (spec 0009, child 0003, AC-10).
+    pub fn is_fixed(&self) -> bool {
+        self.style.display_box.position == Position::Fixed
+    }
+
+    /// Whether the box is sticky positioned: laid out in flow, then shifted
+    /// to stay inside its nearest scroll frame while that frame scrolls
+    /// (spec 0009, child 0003, AC-11).
+    pub fn is_sticky(&self) -> bool {
+        self.style.display_box.position == Position::Sticky
+    }
+
     /// Whether the box is a float: out of flow, placed to the side by its
     /// block formatting context (spec 0009, child 0001).
     pub fn is_float(&self) -> bool {
@@ -942,10 +979,18 @@ fn clear_children(doc: &mut Document, node: NodeId) {
 
 /// The kind of box a block level, non replaced element makes.
 fn container_kind(style: &ComputedStyle) -> BoxKind {
-    if style.display_box.display == Display::Flex {
-        BoxKind::FlexContainer
-    } else {
-        BoxKind::BlockContainer
+    match style.display_box.display {
+        Display::Flex => BoxKind::FlexContainer,
+        Display::Table | Display::InlineTable => BoxKind::Table,
+        Display::TableRowGroup => BoxKind::TableRowGroup,
+        Display::TableHeaderGroup => BoxKind::TableHeaderGroup,
+        Display::TableFooterGroup => BoxKind::TableFooterGroup,
+        Display::TableRow => BoxKind::TableRow,
+        Display::TableColumn => BoxKind::TableColumn,
+        Display::TableColumnGroup => BoxKind::TableColumnGroup,
+        Display::TableCell => BoxKind::TableCell,
+        Display::TableCaption => BoxKind::TableCaption,
+        _ => BoxKind::BlockContainer,
     }
 }
 

@@ -26,7 +26,9 @@ use winit::application::ApplicationHandler;
 #[cfg(feature = "chrome")]
 use winit::dpi::LogicalSize;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
@@ -213,6 +215,8 @@ pub(crate) fn run(config: Config) -> Result<(), EmbedError> {
         pointer_in_page: false,
         pressed_in_page: false,
         page_cursor: CursorKind::Default,
+        latest_bars: Vec::new(),
+        bar_pressed: false,
         viewport_sent: None,
         throttle: ScriptThrottle::default(),
         #[cfg(feature = "chrome")]
@@ -293,6 +297,13 @@ struct App {
     /// The pointer shape the page asked for, shown while the pointer is
     /// over it (AC-18).
     page_cursor: CursorKind,
+    /// The latest bar geometry reported by the render thread, so the main
+    /// thread can hit test presses against bars before forwarding them to
+    /// the page (spec 0009, child 0002, AC-8).
+    latest_bars: Vec<scrolling::BarHit>,
+    /// A bar thumb press is in progress, so the matching release goes to
+    /// the render thread, not the page.
+    bar_pressed: bool,
     /// The last viewport and scale sent to the page, to skip repeats.
     viewport_sent: Option<(SizeF, f32)>,
     /// The page's recent script started loads (spec 0008, AC-28).
@@ -1006,6 +1017,9 @@ impl App {
             page: MAIN_PAGE,
             event,
         });
+        // Tell the render thread where the pointer is, so it can show and
+        // widen the bar under it (spec 0009, child 0002, AC-8).
+        self.render(RenderMsg::Pointer { at: over_page });
     }
 
     /// A button press or release: to the page while the pointer is over
@@ -1019,34 +1033,60 @@ impl App {
             return;
         };
         let primary = button == ipc::PointerButton::Primary;
-        let event = match state {
+        match state {
             ElementState::Pressed if self.pointer_in_page => {
                 self.pressed_in_page |= primary;
+                // A press on a scroll bar is handled by the render thread
+                // and never reaches the page (spec 0009, child 0002, AC-8).
+                if primary && self.bar_hit(at) {
+                    self.bar_pressed = true;
+                    self.render(RenderMsg::BarPress { at });
+                    return;
+                }
                 // Keyboard focus follows the press into the page.
                 #[cfg(feature = "chrome")]
                 self.chrome.page_pressed();
-                InputEvent::PointerDown {
-                    x: at.x,
-                    y: at.y,
-                    button,
-                }
+                self.send(ToContent::Input {
+                    page: MAIN_PAGE,
+                    event: InputEvent::PointerDown {
+                        x: at.x,
+                        y: at.y,
+                        button,
+                    },
+                });
             }
             ElementState::Released if self.pointer_in_page || (primary && self.pressed_in_page) => {
                 if primary {
                     self.pressed_in_page = false;
                 }
-                InputEvent::PointerUp {
-                    x: at.x,
-                    y: at.y,
-                    button,
+                if self.bar_pressed {
+                    self.bar_pressed = false;
+                    self.render(RenderMsg::BarRelease);
+                    return;
                 }
+                self.send(ToContent::Input {
+                    page: MAIN_PAGE,
+                    event: InputEvent::PointerUp {
+                        x: at.x,
+                        y: at.y,
+                        button,
+                    },
+                });
             }
-            _ => return,
-        };
-        self.send(ToContent::Input {
-            page: MAIN_PAGE,
-            event,
-        });
+            _ => {}
+        }
+    }
+
+    /// Whether `at` (page CSS px) lies on a scroll bar track, so the press
+    // belongs to the render thread, not the page (spec 0009, child 0002,
+    // AC-8).
+    fn bar_hit(&self, at: PointF) -> bool {
+        self.latest_bars.iter().any(|hit| {
+            at.x >= hit.track.origin.x
+                && at.x < hit.track.origin.x + hit.track.size.width
+                && at.y >= hit.track.origin.y
+                && at.y < hit.track.origin.y + hit.track.size.height
+        })
     }
 
     /// A key that is no browser shortcut (spec 0008, AC-26, AC-29): Escape
@@ -1080,9 +1120,10 @@ impl App {
             return;
         }
         self.forward_key(event);
-        if let Some(key) = scrolling::key_scroll(event, self.modifiers) {
-            self.render(RenderMsg::ScrollKey(key));
-        }
+        // Key scrolling no longer happens here: the page gets the key first,
+        // and answers with `ToBrowser::ScrollKey` for the key it did not use,
+        // which `user_event` forwards to the render thread (spec 0009,
+        // child 0002, AC-9).
     }
 
     /// Forwards a key the browser did not use to the page (spec 0006,
@@ -1111,7 +1152,7 @@ impl App {
 
     /// Scrolls whatever is under the pointer, on the render thread, which
     /// tells the page where it ended up (spec 0002, Scrolling).
-    fn wheel(&mut self, delta: MouseScrollDelta) {
+    fn wheel(&mut self, delta: MouseScrollDelta, phase: TouchPhase) {
         #[cfg(feature = "chrome")]
         if let Some(app_window) = &self.window
             && self.chrome.wheel(&app_window.window, delta)
@@ -1128,7 +1169,13 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (-x * scrolling::LINE, -y * scrolling::LINE),
             MouseScrollDelta::PixelDelta(p) => (-p.x as f32 / scale, -p.y as f32 / scale),
         };
-        self.render(RenderMsg::Scroll { at, dx, dy });
+        let phase = match phase {
+            TouchPhase::Started => scrolling::GesturePhase::Start,
+            TouchPhase::Moved => scrolling::GesturePhase::Move,
+            TouchPhase::Ended => scrolling::GesturePhase::End,
+            TouchPhase::Cancelled => scrolling::GesturePhase::None,
+        };
+        self.render(RenderMsg::Scroll { at, dx, dy, phase });
     }
 
     /// Carries out what the chrome asked for.
@@ -1220,6 +1267,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 return;
             }
+            UserEvent::Render(RenderEvent::Bars { hits }) => {
+                self.latest_bars = hits;
+                return;
+            }
             UserEvent::Render(RenderEvent::ScrollSaved { entry, offset }) => {
                 self.history.save_scroll(entry, offset);
                 return;
@@ -1277,6 +1328,13 @@ impl ApplicationHandler<UserEvent> for App {
                 {
                     app_window.window.set_cursor(input::cursor_icon(cursor));
                 }
+            }
+            FromContent::Message(ToBrowser::ScrollKey { page, key, target })
+                if page == MAIN_PAGE =>
+            {
+                // The page did not use this scroll key: move the frame it
+                // names, or the viewport, on the render thread (AC-9).
+                self.render(RenderMsg::ScrollKey { key, target });
             }
             // Tab past the page's end goes into the chrome, or straight back
             // into the page from the other end when the chrome has nothing
@@ -1451,7 +1509,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.cursor = None;
                 self.pointer_moved();
             }
-            WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
+            WindowEvent::MouseWheel { delta, phase, .. } => self.wheel(delta, phase),
             WindowEvent::RedrawRequested => self.render(RenderMsg::Redraw),
             _ => {}
         }

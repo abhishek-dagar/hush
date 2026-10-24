@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use base::Au;
 use base::atoms::Atom;
 use cssparser::{Delimiter, ParseError, Parser, Token, parse_important};
 
@@ -17,9 +18,10 @@ use crate::values::{
     parse_font_family, parse_keyword, parse_length, parse_url,
 };
 use crate::{
-    AlignItems, BorderStyle, BoxSizing, Clear, Cursor, Display, FlexDirection, FlexWrap, Float,
-    FontStyle, JustifyContent, ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position,
-    TextAlign, TextDecorationLine, TextOverflow, UserSelect, Visibility, WhiteSpace,
+    AlignItems, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect, Cursor,
+    Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, JustifyContent,
+    ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position, TableLayout, TextAlign,
+    TextDecorationLine, TextOverflow, UserSelect, Visibility, WhiteSpace,
 };
 
 macro_rules! longhands {
@@ -119,6 +121,7 @@ longhands! {
     Right = "right", false;
     Bottom = "bottom", false;
     Left = "left", false;
+    Clip = "clip", false;
     ZIndex = "z-index", false;
     OutlineWidth = "outline-width", false;
     OutlineStyle = "outline-style", false;
@@ -127,6 +130,11 @@ longhands! {
     TextOverflow = "text-overflow", false;
     Cursor = "cursor", true;
     UserSelect = "user-select", true;
+    TableLayout = "table-layout", false;
+    BorderCollapse = "border-collapse", true;
+    BorderSpacing = "border-spacing", true;
+    CaptionSide = "caption-side", true;
+    EmptyCells = "empty-cells", true;
 }
 
 impl Longhand {
@@ -365,10 +373,17 @@ pub(crate) enum Value {
     Position(Position),
     /// `z-index`; `None` is `auto`.
     ZIndex(Option<i32>),
+    /// `clip: rect(...)`, or `None` for `auto`.
+    Clip(Option<ClipRect>),
     OutlineStyle(OutlineStyle),
     TextOverflow(TextOverflow),
     Cursor(Cursor),
     UserSelect(UserSelect),
+    TableLayout(TableLayout),
+    BorderCollapse(BorderCollapse),
+    BorderSpacing((Au, Au)),
+    CaptionSide(CaptionSide),
+    EmptyCells(EmptyCells),
 }
 
 impl Value {
@@ -752,6 +767,7 @@ fn parse_longhand(
         L::Top | L::Right | L::Bottom | L::Left => {
             Value::Size(parse_or_keyword(input, "auto", LengthRules::ANY)?)
         }
+        L::Clip => Value::Clip(parse_clip(input)?),
         L::ZIndex => {
             if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
                 Value::ZIndex(None)
@@ -781,6 +797,38 @@ fn parse_longhand(
                 ("all", UserSelect::Auto),
                 ("contain", UserSelect::Auto),
             ],
+        )?),
+        L::TableLayout => Value::TableLayout(parse_mapped_keyword(
+            input,
+            context,
+            longhand,
+            &[("auto", TableLayout::Auto)],
+            &[("fixed", TableLayout::Fixed)],
+        )?),
+        L::BorderCollapse => Value::BorderCollapse(parse_mapped_keyword(
+            input,
+            context,
+            longhand,
+            &[
+                ("separate", BorderCollapse::Separate),
+                ("collapse", BorderCollapse::Collapse),
+            ],
+            &[],
+        )?),
+        L::BorderSpacing => Value::BorderSpacing(parse_border_spacing(input)?),
+        L::CaptionSide => Value::CaptionSide(parse_mapped_keyword(
+            input,
+            context,
+            longhand,
+            &[("top", CaptionSide::Top)],
+            &[("bottom", CaptionSide::Bottom)],
+        )?),
+        L::EmptyCells => Value::EmptyCells(parse_mapped_keyword(
+            input,
+            context,
+            longhand,
+            &[("show", EmptyCells::Show)],
+            &[("hide", EmptyCells::Hide)],
         )?),
     })
 }
@@ -1102,13 +1150,20 @@ fn parse_display(input: &mut Parser<'_>) -> ParseResult<Display> {
         // block until inline flex layout exists.
         "inline-flex" => Display::InlineBlock,
         // Inline level keywords whose layout arrives later.
-        "inline-grid" | "inline-table" | "contents" | "ruby" | "ruby-text" | "ruby-base" => {
-            Display::Inline
-        }
-        // Block level ones, table parts included (feature 11).
-        "grid" | "table" | "run-in" | "table-row-group" | "table-header-group"
-        | "table-footer-group" | "table-row" | "table-cell" | "table-column-group"
-        | "table-column" | "table-caption" => Display::Block,
+        "inline-grid" | "contents" | "ruby" | "ruby-text" | "ruby-base" => Display::Inline,
+        // Block level ones (spec 0006, AC-3).
+        "grid" | "run-in" => Display::Block,
+        // Table parts (spec 0009, child 0004, AC-14).
+        "inline-table" => Display::InlineTable,
+        "table" => Display::Table,
+        "table-caption" => Display::TableCaption,
+        "table-column-group" => Display::TableColumnGroup,
+        "table-column" => Display::TableColumn,
+        "table-row-group" => Display::TableRowGroup,
+        "table-header-group" => Display::TableHeaderGroup,
+        "table-footer-group" => Display::TableFooterGroup,
+        "table-row" => Display::TableRow,
+        "table-cell" => Display::TableCell,
         // `flow-root` is a block that always makes a BFC (spec 0009, child
         // 0001).
         "flow-root" => Display::FlowRoot,
@@ -1200,6 +1255,67 @@ fn parse_opacity(input: &mut Parser<'_>) -> ParseResult<f32> {
         _ => return invalid(),
     };
     Ok(value.clamp(0.0, 1.0))
+}
+
+/// `clip: auto` or `clip: rect(top, right, bottom, left)` (CSS 2.2 section
+/// 11.1.2; spec 0009, child 0003, AC-12). `auto` and a missing edge are
+/// `None` (the border box's edge). Definite lengths resolve here; em, rem
+/// and percent edges cannot be resolved without layout and read as `None`.
+fn parse_clip(input: &mut Parser<'_>) -> ParseResult<Option<ClipRect>> {
+    if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+        return Ok(None);
+    }
+    let name = input.expect_function()?.to_ascii_lowercase();
+    if name != "rect" {
+        return invalid();
+    }
+    input.parse_nested_block(|input| {
+        let edge = |input: &mut Parser<'_>| -> ParseResult<Option<Au>> {
+            if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+                Ok(None)
+            } else {
+                Ok(match parse_length(input, LengthRules::ANY)? {
+                    SpecifiedLength::Px(px) => Some(Au::from_px(px)),
+                    // Non-px edges need the font size or border box to
+                    // resolve; treat as `auto` for now.
+                    _ => None,
+                })
+            }
+        };
+        let top = edge(input)?;
+        input.expect_comma()?;
+        let right = edge(input)?;
+        input.expect_comma()?;
+        let bottom = edge(input)?;
+        input.expect_comma()?;
+        let left = edge(input)?;
+        Ok(Some(ClipRect {
+            top,
+            right,
+            bottom,
+            left,
+        }))
+    })
+}
+
+/// `border-spacing`: one or two non negative lengths. One length applies to
+/// both axes; two set horizontal then vertical (spec 0009, child 0004, AC-17).
+fn parse_border_spacing(input: &mut Parser<'_>) -> ParseResult<(Au, Au)> {
+    let first = match parse_length(input, LengthRules::ABSOLUTE)? {
+        SpecifiedLength::Px(px) => Au::from_px(px),
+        // Percentages resolve against the containing block at layout time;
+        // treat as zero until then.
+        _ => Au::ZERO,
+    };
+    let second = if input.try_parse(|i| i.expect_comma()).is_ok() {
+        match parse_length(input, LengthRules::ABSOLUTE)? {
+            SpecifiedLength::Px(px) => Au::from_px(px),
+            _ => Au::ZERO,
+        }
+    } else {
+        first
+    };
+    Ok((first, second))
 }
 
 fn parse_font_size(input: &mut Parser<'_>) -> ParseResult<FontSize> {
@@ -1964,10 +2080,7 @@ mod tests {
             Value::Position(Position::Absolute)
         );
         assert_eq!(value("position: fixed"), Value::Position(Position::Fixed));
-        assert_eq!(
-            value("position: sticky"),
-            Value::Position(Position::Sticky)
-        );
+        assert_eq!(value("position: sticky"), Value::Position(Position::Sticky));
         assert!(parse("position: float").is_empty());
         assert_eq!(value("top: auto"), Value::Size(None));
         assert_eq!(
@@ -2089,5 +2202,38 @@ mod tests {
             Value::Display(Display::InlineBlock),
             "inline flex lays out as an inline block (spec 0006, AC-1)"
         );
+    }
+
+    #[test]
+    fn clip_parses_auto_and_rect_edges() {
+        // Spec 0009, child 0003, AC-12: `clip: auto` is no clip, and
+        // `clip: rect(...)` clips absolute and fixed boxes to the rectangle.
+        assert_eq!(
+            value("clip: auto"),
+            Value::Clip(None),
+            "`clip: auto` is no clip"
+        );
+        assert_eq!(
+            value("clip: rect(10px, 20px, 30px, 4px)"),
+            Value::Clip(Some(ClipRect {
+                top: Some(Au::from_px(10.0)),
+                right: Some(Au::from_px(20.0)),
+                bottom: Some(Au::from_px(30.0)),
+                left: Some(Au::from_px(4.0)),
+            })),
+            "each edge is a definite length"
+        );
+        assert_eq!(
+            value("clip: rect(auto, 5px, auto, auto)"),
+            Value::Clip(Some(ClipRect {
+                top: None,
+                right: Some(Au::from_px(5.0)),
+                bottom: None,
+                left: None,
+            })),
+            "auto edges read as None"
+        );
+        assert!(parse("clip: rect(1px 2px 3px 4px)").is_empty());
+        assert!(parse("clip: banana").is_empty());
     }
 }

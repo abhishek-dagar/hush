@@ -7,8 +7,10 @@ use display_list::{
     DisplayList, Epoch, FontKey, ImageFormat, ImageKey, MAX_ENCODED_LEN, PageId, PointF, RectF,
     ResourceKeys, ScrollId, ScrollOffset, ScrollState, SizeF, SpatialKind,
 };
-use ipc::NavigationId;
+use ipc::{KeyScroll, NavigationId};
 use tracing::{debug, error};
+
+use crate::scrolling;
 
 /// What the browser knows about one page in the content process.
 pub(crate) struct PageView {
@@ -58,6 +60,12 @@ impl PageView {
 
     pub(crate) fn list(&self) -> Option<&DisplayList> {
         self.list.as_ref()
+    }
+
+    /// The mutable list on screen, for the render thread to move scroll
+    // frames during user and smooth scrolling.
+    pub(crate) fn list_mut(&mut self) -> Option<&mut DisplayList> {
+        self.list.as_mut()
     }
 
     /// A new navigation started. The list on screen stays (paint holding,
@@ -194,15 +202,69 @@ impl PageView {
         self.scroll.scroll_by(list, at, dx, dy)
     }
 
-    /// A key scroll of the root viewport (AC-30): `to` picks the offset
-    /// from the viewport's offset, scrollport and content size. Moves the
-    /// list on screen at once, as [`PageView::scroll_by`] does.
-    pub(crate) fn scroll_viewport(
+    /// A key scroll of the frame `target`, or the viewport when it is
+    /// `None`, by `key`'s distance (spec 0009, child 0002, AC-9). Moves the
+    /// list on screen at once and returns what to tell the page with
+    /// `ScrollChanged`.
+    #[allow(
+        dead_code,
+        reason = "kept as a query helper; key scroll now drives a smooth scroll on the render thread"
+    )]
+    pub(crate) fn scroll_key(
         &mut self,
+        key: KeyScroll,
+        target: Option<ScrollId>,
+    ) -> Option<(ScrollId, ScrollOffset)> {
+        let list = self.list.as_mut()?;
+        let index = match target {
+            Some(id) => list
+                .spatial
+                .iter()
+                .position(|node| {
+                    matches!(
+                        node.kind,
+                        SpatialKind::ScrollFrame { scroll_id: sid, .. } if sid == id
+                    )
+                })
+                .map(|index| index as u32)?,
+            None => list.viewport_frame()?.0,
+        } as usize;
+        self.scroll
+            .scroll_frame(list, index, |offset, frame, content| {
+                scrolling::key_scroll_target(key, offset, frame, content)
+            })
+    }
+
+    /// Scrolls the frame at `index` by `to`, clamped to its range
+    /// (spec 0009, child 0002, AC-7/AC-9).
+    pub(crate) fn scroll_frame_by_index(
+        &mut self,
+        index: usize,
         to: impl FnOnce(ScrollOffset, RectF, SizeF) -> (f32, f32),
     ) -> Option<(ScrollId, ScrollOffset)> {
         let list = self.list.as_mut()?;
-        self.scroll.scroll_viewport(list, to)
+        self.scroll.scroll_frame(list, index, to)
+    }
+
+    /// The index of the scroll frame `scroll_id` in the list on screen.
+    pub(crate) fn scroll_frame_index(&self, scroll_id: ScrollId) -> Option<usize> {
+        let list = self.list.as_ref()?;
+        list.spatial.iter().position(|node| {
+            matches!(
+                node.kind,
+                SpatialKind::ScrollFrame { scroll_id: sid, .. } if sid == scroll_id
+            )
+        })
+    }
+
+    /// The scroll id of the root viewport's frame, if there is one.
+    pub(crate) fn viewport_scroll_id(&self) -> Option<ScrollId> {
+        let list = self.list.as_ref()?;
+        let spatial_id = list.viewport_frame()?;
+        match &list.spatial[spatial_id.0 as usize].kind {
+            SpatialKind::ScrollFrame { scroll_id, .. } => Some(*scroll_id),
+            _ => None,
+        }
     }
 
     /// The root viewport on screen: its scrollport, content size and
@@ -447,6 +509,7 @@ mod tests {
                         y,
                         generation,
                     },
+                    user_scrollable: [true, true],
                 },
             );
             encode(&list)

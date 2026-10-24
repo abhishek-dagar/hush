@@ -87,6 +87,10 @@ pub struct PendingAbsolute {
     /// have been in flow, from the border box corner of the fragment that
     /// carries it.
     pub static_position: Point,
+    /// Whether the box is `position: fixed`. Fixed boxes hoist to the
+    /// viewport's containing block instead of the nearest positioned
+    /// ancestor (spec 0009, child 0003, AC-10).
+    pub fixed: bool,
 }
 
 impl PendingAbsolute {
@@ -97,6 +101,21 @@ impl PendingAbsolute {
             ..self
         }
     }
+}
+
+/// Where a `position: sticky` box may shift while its nearest scroll frame
+/// scrolls (spec 0009, child 0003, AC-11). Layout resolves the sticky
+/// insets against the scrollport size and the containing block's limits;
+/// the render side applies the shift at full frame rate with
+/// [`display_list::sticky_offset`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StickyInfo {
+    /// The sticky inset to keep on each edge against the scrollport size
+    /// (top, right, bottom, left); `None` means that edge has no inset.
+    pub insets: SideOffsets<Option<Au>>,
+    /// The containing block's content box, in this box's parent space.
+    /// Together with `insets` it sets how far the box may shift.
+    pub containing_block: Rect,
 }
 
 /// A laid out box. Immutable once made; children are placed relative to
@@ -125,6 +144,10 @@ pub struct BoxFragment {
     /// Whether the box scrolls its overflow (`overflow` is `hidden`,
     /// `scroll` or `auto`); paint gives it a scroll frame.
     pub is_scroll_container: bool,
+    /// Whether the user may scroll this box on each axis (x, y). `scroll`
+    /// and `auto` are user scrollable; `hidden` and `clip` are not
+    /// (spec 0009, child 0002, AC-6 and AC-7).
+    pub user_scrollable: [bool; 2],
     /// The used margins, for the parent to place it by.
     pub margins: BlockMargins,
     /// The used padding, so paint finds the padding and content boxes
@@ -141,12 +164,17 @@ pub struct BoxFragment {
     /// would place it. The parent adds it when placing, so no other box
     /// moves (spec 0006, AC-5).
     pub relative_offset: Point,
+    /// Where a `position: sticky` box may shift while its nearest scroll
+    /// frame scrolls. `None` unless the box is sticky (spec 0009, child
+    /// 0003, AC-11).
+    pub sticky: Option<StickyInfo>,
     /// Absolute descendants whose containing block is above this box, so
     /// a cached fragment still hands them on. A containing block lays its
     /// own out and adds them to its children, after the in flow ones.
     pub absolutes: Vec<PendingAbsolute>,
-    /// The exclusion space after this box's content, for the next sibling
-    /// in its BFC (spec 0009, child 0001).
+    /// The exclusion space after this box's content, from its border box
+    /// top left corner, for the next sibling in its BFC. `None` for a BFC
+    /// root, whose floats stay inside it (spec 0009, child 0001).
     pub exclusions_out: Option<Rc<ExclusionSpace>>,
 }
 

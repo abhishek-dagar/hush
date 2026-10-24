@@ -38,11 +38,12 @@ impl BoxTree {
                 continue;
             };
             let kind = match (layout_box.kind, layout_box.inline_level) {
-                (BoxKind::BlockContainer, false) => "block",
-                (BoxKind::BlockContainer, true) => "inline-block",
-                (BoxKind::FlexContainer, _) => "flex",
-                (BoxKind::InlineBox, _) => "inline",
-                (BoxKind::Replaced, _) => "replaced",
+                (BoxKind::BlockContainer, false) => "block".to_owned(),
+                (BoxKind::BlockContainer, true) => "inline-block".to_owned(),
+                (BoxKind::FlexContainer, _) => "flex".to_owned(),
+                (BoxKind::InlineBox, _) => "inline".to_owned(),
+                (BoxKind::Replaced, _) => "replaced".to_owned(),
+                (kind, _) => format!("{kind:?}"),
             };
             let _ = write!(
                 out,

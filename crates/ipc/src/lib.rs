@@ -264,6 +264,28 @@ pub struct Modifiers {
     pub meta: bool,
 }
 
+/// A key the page did not use, so the browser scrolls a frame with it
+/// (spec 0009, child 0002, AC-9; moved here from `embed::scrolling`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum KeyScroll {
+    /// One line up (40 CSS px).
+    LineUp,
+    /// One line down (40 CSS px).
+    LineDown,
+    /// One line left (40 CSS px).
+    LineLeft,
+    /// One line right (40 CSS px).
+    LineRight,
+    /// One viewport-sized page up (minus 40 px overlap).
+    PageUp,
+    /// One viewport-sized page down (minus 40 px overlap).
+    PageDown,
+    /// The top of the scrollable content.
+    Home,
+    /// The bottom of the scrollable content.
+    End,
+}
+
 /// A key, by what it means rather than where it sits (spec 0006,
 /// Interface surface).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -679,6 +701,17 @@ pub enum ToBrowser {
         page: PageId,
         /// The shape.
         cursor: CursorKind,
+    },
+    /// The page did not use a scroll key, so the browser scrolls the target
+    /// frame, or the viewport when `target` is `None`, with a smooth scroll
+    /// (spec 0009, child 0002, AC-9).
+    ScrollKey {
+        /// Which page.
+        page: PageId,
+        /// Which key.
+        key: KeyScroll,
+        /// Which frame to scroll, or `None` for the viewport.
+        target: Option<ScrollId>,
     },
     /// Tab or Shift+Tab went past the end of the page's Tab order; the page
     /// cleared its focus. The browser decides where focus goes next (spec

@@ -1,3 +1,5 @@
 [alias]
 # Runs the WPT conformance harness (spec 0005).
 conformance = "run -p conformance --profile conformance --"
+# Runs the performance budget gate (spec 0007).
+perf = "run -p perf --"

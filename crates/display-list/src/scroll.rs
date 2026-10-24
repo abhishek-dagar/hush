@@ -5,6 +5,48 @@ use std::collections::HashMap;
 
 use crate::{DisplayList, PointF, RectF, ScrollId, ScrollOffset, SizeF, SpatialId, SpatialKind};
 
+/// How far a sticky box shifts to stay inside its scrollport while its
+/// nearest scroll frame scrolls (spec 0009, child 0003, AC-11).
+///
+/// `sticky_rect` is where the box was laid out, in the scroll frame's
+/// content space. `insets` is the box's sticky insets resolved against the
+/// scrollport size (`top`, `right`, `bottom`, `left`). `limits` is how far
+/// the box may shift on each axis, min then max, from its containing
+/// block's content box minus the box's margin box, in content space.
+/// Returns the shift to add to the box's laid out position.
+///
+/// The box never moves up from its flow position. `top` pulls it down to
+/// stay `top` px below the scrollport's top edge once scrolling passes it;
+/// `bottom` caps how far down via `max_y`. With no `top` inset the box
+/// stays put (behaves like `relative`). Paint calls this once per frame to
+/// apply the shift at full frame rate (spec 0009, child 0003, AC-11).
+#[allow(
+    dead_code,
+    reason = "paint builds sticky nodes and calls this; wired in the next slice"
+)]
+pub fn sticky_offset(
+    sticky_rect: RectF,
+    insets: [Option<f32>; 4],
+    limits: ((f32, f32), (f32, f32)),
+    frame_offset: PointF,
+) -> PointF {
+    let [top, _right, _bottom, left] = insets;
+    let ((min_y, max_y), (min_x, max_x)) = limits;
+    // Scrollport top edge in content space is at frame_offset.y; the box
+    // wants its top edge `top` px below it.
+    // The box never moves up from its flow position. `top` pulls it down to
+    // stay `top` px below the scrollport's top edge once scrolling passes it;
+    // `bottom` caps how far down via `max_y`. With no `top` inset the box
+    // stays put (behaves like `relative`).
+    let y = top
+        .map(|t| (frame_offset.y - sticky_rect.origin.y + t).clamp(min_y, max_y))
+        .unwrap_or(0.0);
+    let x = left
+        .map(|l| (frame_offset.x - sticky_rect.origin.x + l).clamp(min_x, max_x))
+        .unwrap_or(0.0);
+    PointF { x, y }
+}
+
 /// What the render side last applied to one scroll frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Applied {
@@ -40,6 +82,7 @@ impl ScrollState {
                 frame_rect,
                 content_size,
                 offset,
+                user_scrollable: _,
             } = &mut node.kind
             else {
                 continue;
@@ -93,16 +136,15 @@ impl ScrollState {
         })
     }
 
-    /// A user scroll of the page's root viewport (keys scroll it wherever
-    /// the pointer is, spec 0004, AC-30): `to` picks the new offset from the
-    /// frame's offset, scrollport and content size, and it is clamped as
-    /// usual. Returns as [`ScrollState::scroll_by`].
-    pub fn scroll_viewport(
+    /// Moves the scroll frame at `index` to the offset `to` picks, clamped,
+    /// and records it. `None` when it is no scroll frame or did not move.
+    /// Used for key scrolling, where the frame is already known.
+    pub fn scroll_frame(
         &mut self,
         list: &mut DisplayList,
+        index: usize,
         to: impl FnOnce(ScrollOffset, RectF, SizeF) -> (f32, f32),
     ) -> Option<(ScrollId, ScrollOffset)> {
-        let index = list.viewport_frame()?.0 as usize;
         self.move_frame(list, index, to)
     }
 
@@ -119,6 +161,7 @@ impl ScrollState {
             frame_rect,
             content_size,
             offset,
+            user_scrollable: _,
         } = &mut list.spatial.get_mut(index)?.kind
         else {
             return None;
@@ -222,6 +265,7 @@ mod tests {
                     y,
                     generation,
                 },
+                user_scrollable: [true, true],
             },
         );
         list
@@ -328,6 +372,7 @@ mod tests {
                     height: 60.0,
                 },
                 offset: ScrollOffset::default(),
+                user_scrollable: [true, true],
             },
         );
         let mut state = ScrollState::default();
@@ -337,5 +382,47 @@ mod tests {
         assert_eq!(first.map(|(id, o)| (id, o.y)), Some((inner_id, 10.0)));
         let second = state.scroll_by(&mut shown, at, 0.0, 100.0);
         assert_eq!(second.map(|(id, o)| (id, o.y)), Some((ID, 100.0)));
+    }
+
+    #[test]
+    fn sticky_shift_stays_put_until_scrolled_past_it() {
+        let rect = RectF {
+            origin: PointF { x: 0.0, y: 100.0 },
+            size: SizeF::default(),
+        };
+        let limits = ((0.0, 1000.0), (0.0, 1000.0));
+        // Not scrolled: the box stays at its flow position.
+        let not_scrolled = sticky_offset(
+            rect,
+            [Some(10.0), None, None, None],
+            limits,
+            PointF { x: 0.0, y: 0.0 },
+        );
+        assert_eq!(not_scrolled, PointF { x: 0.0, y: 0.0 });
+        // Scrolled 150 px: the box shifts down to stay 10 px below the
+        // scrollport's top edge.
+        let scrolled = sticky_offset(
+            rect,
+            [Some(10.0), None, None, None],
+            limits,
+            PointF { x: 0.0, y: 150.0 },
+        );
+        assert_eq!(scrolled, PointF { x: 0.0, y: 60.0 });
+        // No `top` inset: the box never sticks.
+        let no_inset = sticky_offset(
+            rect,
+            [None, None, None, None],
+            limits,
+            PointF { x: 0.0, y: 150.0 },
+        );
+        assert_eq!(no_inset, PointF::default());
+        // The shift never pushes past the max limit.
+        let clamped = sticky_offset(
+            rect,
+            [Some(10.0), None, None, None],
+            ((0.0, 30.0), (0.0, 1000.0)),
+            PointF { x: 0.0, y: 150.0 },
+        );
+        assert_eq!(clamped, PointF { x: 0.0, y: 30.0 });
     }
 }

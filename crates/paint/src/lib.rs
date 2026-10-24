@@ -20,10 +20,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use base::{Au, Id, Point, Size};
+use css::Position;
 use display_list::{
     BlendMode, BorderStyle, ClipId, ClipNode, ColorF, DisplayItem, DisplayList, Epoch,
     GlyphInstance, ImageKey, ItemKind, PageId, PointF, RectF, ScrollId, ScrollOffset, SizeF,
-    SpatialId, SpatialKind,
+    SpatialId, SpatialKind, sticky_offset,
 };
 use layout::stacking::{self, Placed, Step, Walker};
 use layout::{BoxFragment, BoxTree, FragmentTree, InlineEdges, TextFragment};
@@ -118,12 +119,9 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
         let Some(style) = self.boxes.get(fragment.box_id).map(|b| &b.style) else {
             return Some((origin, (spatial, clip)));
         };
-        // `overflow` does not apply to an inline box's pieces, and the root
-        // element's is the viewport's.
-        if fragment.inline_edges.is_some()
-            || !style.display_box.clips_overflow()
-            || self.boxes.root() == Some(fragment.box_id)
-        {
+        // Inline boxes and the root element don't get their own space; the
+        // root's overflow is the viewport's.
+        if fragment.inline_edges.is_some() || self.boxes.root() == Some(fragment.box_id) {
             return Some((origin, (spatial, clip)));
         }
         let border = layout::border_widths(style);
@@ -140,6 +138,88 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
         let radii = layout::corner_radii(style, fragment.size, None)
             .map(|outer| layout::inner_radii(outer, border))
             .map(|inner| display_list::clamp_radii(port, inner));
+        // A `position: sticky` box stays inside its nearest scroll frame:
+        // paint pushes a sticky spatial node whose offset the render side
+        // applies each frame (spec 0009, child 0003, AC-11).
+        if style.display_box.position == Position::Sticky
+            && let Some(sticky) = fragment.sticky
+        {
+            let sticky_rect = RectF {
+                origin: point_f(origin),
+                size: size_f(fragment.size),
+            };
+            let margins = [
+                sticky.insets.top.map(|t| t.to_f32_px()),
+                sticky.insets.right.map(|r| r.to_f32_px()),
+                sticky.insets.bottom.map(|b| b.to_f32_px()),
+                sticky.insets.left.map(|l| l.to_f32_px()),
+            ];
+            let cb = sticky.containing_block;
+            let margin_box = Size::new(
+                fragment.size.width + border.horizontal(),
+                fragment.size.height + border.vertical(),
+            );
+            let limits = (
+                (
+                    0.0,
+                    (cb.size.height.to_f32_px() - margin_box.height.to_f32_px()).max(0.0),
+                ),
+                (
+                    0.0,
+                    (cb.size.width.to_f32_px() - margin_box.width.to_f32_px()).max(0.0),
+                ),
+            );
+            let frame_offset = self.nearest_scroll_offset(spatial);
+            let offset = sticky_offset(sticky_rect, margins, limits, frame_offset);
+            let sticky_spatial = self.list.push_spatial(
+                spatial,
+                SpatialKind::Sticky {
+                    sticky_rect,
+                    margins,
+                    vertical_limits: limits.0,
+                    horizontal_limits: limits.1,
+                    offset,
+                },
+            );
+            // Children draw inside the sticky box, shifted by the sticky
+            // offset, and clipped by its padding box.
+            let clip = Some(self.list.push_clip(ClipNode {
+                parent: None,
+                spatial: sticky_spatial,
+                rect: port,
+                radii,
+            }));
+            return Some((Point::default(), (sticky_spatial, clip)));
+        }
+        // `clip: rect()` clips absolute and fixed boxes (and their
+        // descendants) to a rectangle measured from the border box's top
+        // left corner (spec 0009, child 0003, AC-12).
+        if (style.display_box.position == Position::Absolute
+            || style.display_box.position == Position::Fixed)
+            && let Some(clip_rect) = style.effects.clip
+        {
+            let left = clip_rect.left.unwrap_or(Au::ZERO);
+            let top = clip_rect.top.unwrap_or(Au::ZERO);
+            let right = clip_rect.right.unwrap_or(fragment.size.width);
+            let bottom = clip_rect.bottom.unwrap_or(fragment.size.height);
+            let rect = RectF {
+                origin: point_f(origin.offset_by(Point::new(left, top))),
+                size: size_f(Size::new(
+                    (right - left).max(Au::ZERO),
+                    (bottom - top).max(Au::ZERO),
+                )),
+            };
+            let clip = Some(self.list.push_clip(ClipNode {
+                parent: clip,
+                spatial,
+                rect,
+                radii: None,
+            }));
+            return Some((origin, (spatial, clip)));
+        }
+        if !style.display_box.clips_overflow() {
+            return Some((origin, (spatial, clip)));
+        }
         let clip = Some(self.list.push_clip(ClipNode {
             parent: clip,
             spatial,
@@ -170,11 +250,43 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
                     .get(&scroll_id)
                     .copied()
                     .unwrap_or_default(),
+                user_scrollable: fragment.user_scrollable,
             },
         );
         // Children are placed relative to the border box; inside the scroll
         // frame they are relative to the padding box.
         Some((Point::new(-border.left, -border.top), (spatial, clip)))
+    }
+}
+
+/// The current offset of the nearest scroll frame ancestor of `spatial`,
+/// walking up the spatial tree. The viewport's own scroll frame is the
+/// fallback, so a sticky box at the page root sticks against the viewport
+/// (spec 0009, child 0003, AC-11).
+impl<'a, 'b> PaintWalker<'a, 'b> {
+    fn nearest_scroll_offset(&self, spatial: SpatialId) -> PointF {
+        let mut current = Some(spatial);
+        for _ in 0..=self.list.spatial.len() {
+            let Some(node) = current.and_then(|id| self.list.spatial.get(id.0 as usize)) else {
+                break;
+            };
+            if let SpatialKind::ScrollFrame {
+                scroll_id, offset, ..
+            } = node.kind
+            {
+                return self
+                    .context
+                    .scroll_offsets
+                    .get(&scroll_id)
+                    .map(|o| PointF { x: o.x, y: o.y })
+                    .unwrap_or(PointF {
+                        x: offset.x,
+                        y: offset.y,
+                    });
+            }
+            current = node.parent;
+        }
+        PointF::default()
     }
 }
 
@@ -504,6 +616,7 @@ fn viewport_frame(
                 .get(&scroll_id)
                 .copied()
                 .unwrap_or_default(),
+            user_scrollable: [true, true],
         },
     )
 }
@@ -761,6 +874,7 @@ mod tests {
     use base::local_name;
     use css::{
         Background, BorderSide, Color, ComputedStyle, Display, Float, Length, Margin, Overflow,
+        Position,
     };
     use dom::{Document, NodeId};
 
@@ -967,6 +1081,7 @@ mod tests {
                     height: 120.0
                 },
                 offset,
+                user_scrollable: [false, true],
             }
         );
         assert_eq!(list.clips[0].rect, port);
@@ -1013,6 +1128,7 @@ mod tests {
                     height: 300.0
                 },
                 offset,
+                user_scrollable: [true, true],
             }
         );
         assert!(list.clips.is_empty(), "the root clips nothing itself");
@@ -1343,5 +1459,102 @@ mod tests {
             display_list::validate(&list, PageId(1), &display_list::ResourceKeys::default()),
             Ok(())
         );
+    }
+
+    #[test]
+    fn a_sticky_box_pushes_a_sticky_node_that_shifts_with_scroll() {
+        // Spec 0009, child 0003, AC-11: a sticky box shifts to stay inside
+        // its scroll frame as it scrolls.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let mut html_style = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut html_style.size).height = Some(Length::px(2000.0));
+        let html = add(&mut doc, root, html_style);
+        let mut sticky = style(Color::rgb8(0, 255, 0), 0.0, Some(50.0));
+        Rc::make_mut(&mut sticky.display_box).position = Position::Sticky;
+        Rc::make_mut(&mut sticky.position_offsets).top = Some(Length::px(0.0));
+        add(&mut doc, html, sticky);
+
+        // Not scrolled: the sticky offset is zero.
+        let unscrolled = paint_doc(&mut doc, &HashMap::new());
+        let sticky_node_id = spatial_sticky(&unscrolled).expect("a sticky spatial node is pushed");
+        assert_eq!(
+            sticky_offset_of(&unscrolled, sticky_node_id),
+            PointF { x: 0.0, y: 0.0 }
+        );
+
+        // Scrolled down 200 px: the sticky box shifts down to follow.
+        let mut scrolled_map = HashMap::new();
+        let scroll_id = scroll_id(0, html);
+        scrolled_map.insert(
+            scroll_id,
+            ScrollOffset {
+                x: 0.0,
+                y: 200.0,
+                generation: 0,
+            },
+        );
+        let scrolled = paint_doc(&mut doc, &scrolled_map);
+        let sticky_node_id = spatial_sticky(&scrolled).expect("a sticky spatial node");
+        assert!(sticky_offset_of(&scrolled, sticky_node_id).y > 0.0);
+    }
+
+    #[test]
+    fn clip_rect_clips_an_absolute_box_and_its_descendants() {
+        // Spec 0009, child 0003, AC-12: `clip: rect(...)` clips absolute and
+        // fixed boxes to the rectangle measured from the border box top left.
+        use css::ClipRect;
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
+        let mut abs = style(Color::rgb8(0, 255, 0), 0.0, Some(200.0));
+        Rc::make_mut(&mut abs.display_box).position = Position::Absolute;
+        let mut offsets = (*abs.position_offsets).clone();
+        offsets.top = Some(Length::px(0.0));
+        offsets.left = Some(Length::px(0.0));
+        abs.position_offsets = Rc::new(offsets);
+        Rc::make_mut(&mut abs.effects).clip = Some(ClipRect {
+            top: Some(Au::from_px(10.0)),
+            right: Some(Au::from_px(50.0)),
+            bottom: Some(Au::from_px(60.0)),
+            left: Some(Au::from_px(20.0)),
+        });
+        let abs_node = add(&mut doc, html, abs);
+        add(
+            &mut doc,
+            abs_node,
+            style(Color::rgb8(255, 0, 0), 0.0, Some(100.0)),
+        );
+
+        let list = paint_doc(&mut doc, &HashMap::new());
+        let clip = list.clips.last().expect("a clip node is pushed");
+        assert_eq!(
+            clip.rect,
+            RectF {
+                origin: PointF { x: 20.0, y: 10.0 },
+                size: SizeF {
+                    width: 30.0,
+                    height: 50.0
+                }
+            }
+        );
+        // The inner box draws inside the clip.
+        let inner = list.items.iter().find(|item| item.clip == Some(ClipId(0)));
+        assert!(inner.is_some(), "inner box is drawn inside the clip");
+    }
+
+    /// The spatial index of the first `SpatialKind::Sticky` node, if any.
+    fn spatial_sticky(list: &DisplayList) -> Option<usize> {
+        list.spatial
+            .iter()
+            .position(|n| matches!(n.kind, SpatialKind::Sticky { .. }))
+    }
+
+    /// The offset of the sticky node at `index`.
+    fn sticky_offset_of(list: &DisplayList, index: usize) -> PointF {
+        match &list.spatial[index].kind {
+            SpatialKind::Sticky { offset, .. } => *offset,
+            _ => PointF::default(),
+        }
     }
 }

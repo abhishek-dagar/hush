@@ -24,7 +24,7 @@ use css::{BoxSizing, ComputedStyle, Length, Position};
 
 use crate::block::{clamp, overflow_of, resolve, union};
 use crate::box_tree::{BoxKind, BoxTree};
-use crate::fragment::{BoxFragment, Fragment, PendingAbsolute};
+use crate::fragment::{BlockMargins, BoxFragment, Fragment, PendingAbsolute};
 use crate::{
     AvailableSize, ConstraintSpace, LayoutContext, MAX_NESTING, border_widths, intrinsic,
     lay_out_box,
@@ -88,9 +88,21 @@ pub(crate) fn containing_block(
     ))
 }
 
+/// The initial containing block (the viewport), anchored at the root's
+/// border box corner. Fixed boxes lay out against this and add nothing to
+/// the viewport's scrollable overflow (spec 0009, child 0003, AC-10).
+pub(crate) fn viewport_containing_block(margins: &BlockMargins, space: &ConstraintSpace) -> Rect {
+    let viewport = Size::new(
+        space.available_inline.definite().unwrap_or(Au::ZERO),
+        space.available_block.definite().unwrap_or(Au::ZERO),
+    );
+    Rect::new(Point::new(-margins.left, -margins.top.resolve()), viewport)
+}
+
 /// Lays out the absolute boxes waiting in `fragment` against `cb` and adds
 /// them to its children and its scrollable overflow. Past the nesting cap
-/// they are left out.
+/// they are left out. Fixed boxes are not laid out here: they hoist to the
+/// viewport and are laid out by [`lay_out_fixed`] at the root.
 pub(crate) fn lay_out_absolutes(
     tree: &mut BoxTree,
     fragment: &mut BoxFragment,
@@ -103,11 +115,47 @@ pub(crate) fn lay_out_absolutes(
     }
     cx.depth += 1;
     for absolute in pending {
+        if absolute.fixed {
+            // Fixed boxes hoist to the viewport: keep them so the root lays
+            // them out against the initial containing block.
+            fragment.absolutes.push(absolute);
+            continue;
+        }
         if let Some(placed) = lay_out_absolute(tree, absolute, cb, cx) {
             let (at, child) = &placed;
             let area = overflow_of(child);
             let area = Rect::new(at.offset_by(area.origin), area.size);
             fragment.scrollable_overflow = union(fragment.scrollable_overflow, area);
+            fragment.children.push(placed);
+        }
+    }
+    cx.depth -= 1;
+}
+
+/// Lays out the fixed boxes waiting in `fragment` against `cb` (the
+/// viewport's initial containing block) and adds them to its children.
+/// Fixed boxes paint in root space and add nothing to the viewport's
+/// scrollable overflow (spec 0009, child 0003, AC-10). Past the nesting cap
+/// they are left out.
+pub(crate) fn lay_out_fixed(
+    tree: &mut BoxTree,
+    fragment: &mut BoxFragment,
+    cb: Rect,
+    cx: &mut LayoutContext<'_>,
+) {
+    let pending = std::mem::take(&mut fragment.absolutes);
+    if pending.is_empty() || cx.depth >= MAX_NESTING {
+        return;
+    }
+    cx.depth += 1;
+    for absolute in pending {
+        if !absolute.fixed {
+            // Non fixed boxes were already laid out at their containing
+            // block; keep them for any ancestor that needs them.
+            fragment.absolutes.push(absolute);
+            continue;
+        }
+        if let Some(placed) = lay_out_absolute(tree, absolute, cb, cx) {
             fragment.children.push(placed);
         }
     }

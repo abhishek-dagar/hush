@@ -1,0 +1,74 @@
+# Performance budgets (spec 0007). One row per metric; every row carries a
+# reason. Change a row by hand, never by accepting a run: acceptance only
+# refreshes baseline.json from measured values.
+#
+# Metrics: bundle_size | cold_start | memory_total | memory_content | scroll_frame_cpu_p95 | script_load
+# Targets: browser | shell (only bundle_size may use shell)
+# OSes: macos | linux | windows (runtime metrics may list only macos for now)
+# Units: MB (10^6 bytes) | ms
+# alarm_pct: size and memory only; forbidden on timing metrics
+
+[machine]
+cpu = "Apple M4"
+ram_gb = 16
+os = "macos"
+
+[[budget]]
+metric = "bundle_size"
+target = "browser"
+os = ["macos", "linux", "windows"]
+limit = 20.0
+unit = "MB"
+alarm_pct = 3.0
+reason = "Spec 0001's 20 to 30 MB promise: low end for the browser app"
+
+[[budget]]
+metric = "bundle_size"
+target = "shell"
+os = ["macos", "linux", "windows"]
+limit = 15.0
+unit = "MB"
+alarm_pct = 3.0
+reason = "Spec 0001's 20 to 30 MB promise: low end for the shell hello world"
+
+[[budget]]
+metric = "cold_start"
+target = "browser"
+os = ["macos"]
+limit = 200.0
+unit = "MS"
+reason = "A page should appear within a fifth of a second on the reference Mac"
+
+[[budget]]
+metric = "memory_total"
+target = "browser"
+os = ["macos"]
+limit = 80.0
+unit = "MB"
+alarm_pct = 10.0
+reason = "Browser plus content must stay under 80 MB with one article open"
+
+[[budget]]
+metric = "memory_content"
+target = "browser"
+os = ["macos"]
+limit = 40.0
+unit = "MB"
+alarm_pct = 10.0
+reason = "The content process alone must stay under 40 MB with one article open"
+
+[[budget]]
+metric = "scroll_frame_cpu_p95"
+target = "browser"
+os = ["macos"]
+limit = 8.0
+unit = "MS"
+reason = "p95 frame CPU under 8 ms fits the 8.3 ms a 120 Hz frame allows"
+
+[[budget]]
+metric = "script_load"
+target = "browser"
+os = ["macos"]
+limit = 1500.0
+unit = "MS"
+reason = "The Octane-plus-DOM workload should load in 1.5 s on the reference Mac"

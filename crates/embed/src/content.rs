@@ -291,6 +291,12 @@ fn send_outcome(
             None => trace!(?node, "activation dropped until DOM events"),
         }
     }
+    // A scroll key the page did not use: the browser scrolls the frame it
+    // names, or the viewport when the target is `None` (spec 0009, child
+    // 0002, AC-9).
+    if let Some((key, target)) = outcome.scroll {
+        channel.send(ToBrowser::ScrollKey { page, key, target })?;
+    }
     if let Some(key) = outcome.unused_key {
         trace!(?key, "unused key dropped until the keyboard model");
     }

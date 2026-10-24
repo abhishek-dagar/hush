@@ -22,6 +22,7 @@ members = [
     "crates/text",
     "crates/ui",
     "tools/conformance",
+    "tools/perf",
 ]
 
 [workspace.package]

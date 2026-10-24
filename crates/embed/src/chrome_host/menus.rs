@@ -106,7 +106,7 @@ mod native {
                 command.id(),
                 label,
                 true,
-                shortcut.map(accelerator),
+                shortcut.and_then(accelerator),
             )),
             MenuItem::Command {
                 label,
@@ -118,7 +118,7 @@ mod native {
                 label,
                 true,
                 *checked,
-                shortcut.map(accelerator),
+                shortcut.and_then(accelerator),
             )),
             MenuItem::Submenu { label, items } => {
                 let submenu = Submenu::new(label, true);
@@ -149,7 +149,7 @@ mod native {
         }
     }
 
-    fn accelerator(shortcut: Shortcut) -> Accelerator {
+    fn accelerator(shortcut: Shortcut) -> Option<Accelerator> {
         let mut modifiers = Modifiers::empty();
         if shortcut.modifiers.primary {
             modifiers |= if cfg!(target_os = "macos") {
@@ -169,15 +169,104 @@ mod native {
             ShortcutKey::Equal => Code::Equal,
             ShortcutKey::Minus => Code::Minus,
             ShortcutKey::Digit0 => Code::Digit0,
-            ShortcutKey::Letter('m') => Code::KeyM,
-            ShortcutKey::Letter('o') => Code::KeyO,
-            ShortcutKey::Letter('s') => Code::KeyS,
-            ShortcutKey::Letter('w') => Code::KeyW,
-            // The model only uses the letters above; an unknown one gets no
-            // key, which muda shows as no shortcut.
-            ShortcutKey::Letter(_) => Code::Unidentified,
+            ShortcutKey::Letter(c) => match c {
+                'a' => Code::KeyA,
+                'b' => Code::KeyB,
+                'c' => Code::KeyC,
+                'd' => Code::KeyD,
+                'e' => Code::KeyE,
+                'f' => Code::KeyF,
+                'g' => Code::KeyG,
+                'h' => Code::KeyH,
+                'i' => Code::KeyI,
+                'j' => Code::KeyJ,
+                'k' => Code::KeyK,
+                'l' => Code::KeyL,
+                'm' => Code::KeyM,
+                'n' => Code::KeyN,
+                'o' => Code::KeyO,
+                'p' => Code::KeyP,
+                'q' => Code::KeyQ,
+                'r' => Code::KeyR,
+                's' => Code::KeyS,
+                't' => Code::KeyT,
+                'u' => Code::KeyU,
+                'v' => Code::KeyV,
+                'w' => Code::KeyW,
+                'x' => Code::KeyX,
+                'y' => Code::KeyY,
+                'z' => Code::KeyZ,
+                // A non ASCII letter has no physical key code; the menu model
+                // only uses ASCII letters, so this arm is defensive. Returning
+                // None leaves the menu item without a shortcut instead of
+                // failing to build it, which muda does for Code::Unidentified.
+                _ => return None,
+            },
         };
-        Accelerator::new(modifiers, code)
+        Some(Accelerator::new(modifiers, code))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A primary shortcut on `key`.
+        fn shortcut(key: ShortcutKey) -> Shortcut {
+            Shortcut {
+                modifiers: ui::Modifiers {
+                    primary: true,
+                    ..Default::default()
+                },
+                key,
+            }
+        }
+
+        #[test]
+        fn accelerator_builds_every_letter_used_in_the_menu_model() {
+            // These are the letters the model actually uses: m, o, s, w from
+            // app_menu and x, c, v, a from the Edit menu. Each used to fall
+            // through to Code::Unidentified, which muda rejects, so the menu
+            // item failed to build. Now they must all produce an accelerator.
+            for key in [
+                ShortcutKey::Letter('m'),
+                ShortcutKey::Letter('o'),
+                ShortcutKey::Letter('s'),
+                ShortcutKey::Letter('w'),
+                ShortcutKey::Letter('x'),
+                ShortcutKey::Letter('c'),
+                ShortcutKey::Letter('v'),
+                ShortcutKey::Letter('a'),
+                ShortcutKey::Comma,
+                ShortcutKey::Equal,
+                ShortcutKey::Minus,
+                ShortcutKey::Digit0,
+            ] {
+                assert!(
+                    super::accelerator(shortcut(key)).is_some(),
+                    "accelerator should build a shortcut for {key:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn accelerator_never_produces_unidentified() {
+            // Code::Unidentified is what muda refuses to recognize, so the
+            // accelerator must never return it. An unmappable key gets None
+            // (no shortcut) instead of a failing menu item.
+            for key in [
+                ShortcutKey::Letter('m'),
+                ShortcutKey::Letter('o'),
+                ShortcutKey::Letter('s'),
+                ShortcutKey::Letter('w'),
+                ShortcutKey::Letter('x'),
+                ShortcutKey::Letter('c'),
+                ShortcutKey::Letter('v'),
+                ShortcutKey::Letter('a'),
+            ] {
+                let accel = super::accelerator(shortcut(key)).expect("a shortcut is built");
+                assert_ne!(accel.key(), Code::Unidentified, "for {key:?}");
+            }
+        }
     }
 }
 

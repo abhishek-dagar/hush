@@ -20,7 +20,7 @@ use crate::Fonts;
 use crate::box_tree::{BoxKind, BoxTree, FloatSide, LayoutBox, NaturalSize};
 use crate::exclusion::{Exclusion, ExclusionSpace};
 use crate::fragment::{
-    BlockMargins, BoxFragment, Fragment, MarginStrut, PendingAbsolute, TextFragment,
+    BlockMargins, BoxFragment, Fragment, MarginStrut, PendingAbsolute, StickyInfo, TextFragment,
 };
 use crate::inline::{Lines, font_descriptor, text_fragment};
 use crate::{
@@ -44,6 +44,8 @@ pub(crate) struct InProgress {
     own_top: Au,
     own_bottom: Au,
     is_scroll_container: bool,
+    /// Whether the user may scroll this box on each axis (x, y).
+    user_scrollable: [bool; 2],
     /// It centers its content in a taller content box: an `<input>` or
     /// `<button>` laid out as a block (spec 0006, AC-17).
     centers_content: bool,
@@ -82,11 +84,14 @@ pub(crate) struct InProgress {
     marker: Option<String>,
     /// How far `position: relative` moves the box.
     relative_offset: Point,
+    /// Sticky insets resolved against the containing block, for a
+    /// `position: sticky` box (spec 0009, child 0003, AC-11).
+    sticky_insets: Option<SideOffsets<Option<Au>>>,
     /// Absolute descendants waiting for their containing block, from the
     /// border box corner.
     absolutes: Vec<PendingAbsolute>,
-    /// The floats placed in this BFC so far, as an exclusion space, in BFC
-    /// coordinates from the content box top left.
+    /// The floats placed in this BFC so far, as an exclusion space, from
+    /// this box's content box top left.
     pub(crate) exclusions: ExclusionSpace,
     /// The floats placed in this BFC, as fragments to hand to the parent as
     /// `exclusions_out` and to paint (spec 0009, child 0001).
@@ -208,8 +213,8 @@ impl InProgress {
                     - margin_right.unwrap_or(Au::ZERO)
                     - edges_x)
                     .max(Au::ZERO);
-                match (inline_level, intrinsic) {
-                    // Shrink to fit (CSS 2.2 section 10.3.9).
+                match (inline_level || layout_box.float.is_some(), intrinsic) {
+                    // Shrink to fit (CSS 2.2 sections 10.3.9 and 10.3.5).
                     (true, Some((min, max))) => fill.max(min).min(max),
                     _ => fill,
                 }
@@ -226,23 +231,38 @@ impl InProgress {
             .or(height);
 
         let is_absolute = layout_box.is_absolute();
-        let (left, right) = if inline_level || is_flex_item || is_absolute {
-            // `auto` margins of an inline level box are zero; a flex item's
-            // and an absolute box's are resolved by whatever places it.
-            (
-                margin_left.unwrap_or(Au::ZERO),
-                margin_right.unwrap_or(Au::ZERO),
-            )
-        } else {
-            used_margins(
-                available,
-                content_width + edges_x,
-                margin_left,
-                margin_right,
-            )
-        };
+        let (left, right) =
+            if inline_level || is_flex_item || is_absolute || layout_box.float.is_some() {
+                // `auto` margins of an inline level box are zero; a flex item's
+                // and an absolute box's are resolved by whatever places it. A
+                // float does not center: auto horizontal margins resolve to zero
+                // (CSS 2.2 section 10.3.5), its width stays definite.
+                (
+                    margin_left.unwrap_or(Au::ZERO),
+                    margin_right.unwrap_or(Au::ZERO),
+                )
+            } else {
+                used_margins(
+                    available,
+                    content_width + edges_x,
+                    margin_left,
+                    margin_right,
+                )
+            };
 
         let is_scroll_container = style.display_box.is_scroll_container();
+        // `scroll` and `auto` are user scrollable; `hidden` and `clip` are
+        // not (spec 0009, child 0002, AC-6 and AC-7).
+        let user_scrollable = [
+            matches!(
+                style.display_box.overflow_x,
+                css::Overflow::Scroll | css::Overflow::Auto
+            ),
+            matches!(
+                style.display_box.overflow_y,
+                css::Overflow::Scroll | css::Overflow::Auto
+            ),
+        ];
         let is_flex = layout_box.kind == BoxKind::FlexContainer;
         let starts_context = is_root
             || inline_level
@@ -255,14 +275,40 @@ impl InProgress {
         let bottom_open =
             !starts_context && border.bottom == Au::ZERO && padding.bottom == Au::ZERO;
         // The exclusion space this box passes to its children: a BFC root
-        // starts fresh, otherwise it inherits its parent's floats (spec 0009,
-        // child 0001). Computed before `space` is moved into the struct.
+        // starts fresh, otherwise it inherits its parent's floats, given
+        // from its border box top and moved here to its content box corner
+        // (spec 0009, child 0001). Computed before `space` is moved into the
+        // struct.
         let exclusions = if starts_context {
             ExclusionSpace::empty()
         } else {
-            space.exclusions.as_deref().cloned().unwrap_or_default()
+            space
+                .exclusions
+                .as_deref()
+                .map(|e| {
+                    e.translated(Point::new(
+                        -(left + border.left + padding.left),
+                        -(border.top + padding.top),
+                    ))
+                })
+                .unwrap_or_default()
         };
         let relative_offset = positioned::relative_offset(style, space.percentage_basis);
+        // A sticky box keeps its insets inside its nearest scroll frame's
+        // scrollport; resolve them against the containing block's size
+        // (spec 0009, child 0003, AC-11).
+        let sticky_insets = if layout_box.is_sticky() {
+            let insets = &style.position_offsets;
+            let resolve_inset = |length: Option<Length>, basis: Option<Au>| resolve(length, basis);
+            Some(SideOffsets {
+                top: resolve_inset(insets.top, space.percentage_basis.height),
+                right: resolve_inset(insets.right, space.percentage_basis.width),
+                bottom: resolve_inset(insets.bottom, space.percentage_basis.height),
+                left: resolve_inset(insets.left, space.percentage_basis.width),
+            })
+        } else {
+            None
+        };
         Self {
             id,
             node: layout_box.node,
@@ -280,6 +326,7 @@ impl InProgress {
             own_top,
             own_bottom,
             is_scroll_container,
+            user_scrollable,
             centers_content: layout_box.centers_content
                 && layout_box.kind == BoxKind::BlockContainer,
             content_width,
@@ -302,6 +349,7 @@ impl InProgress {
             last_baseline: None,
             marker: layout_box.marker.clone(),
             relative_offset,
+            sticky_insets,
             absolutes: Vec::new(),
             exclusions,
             floats: Vec::new(),
@@ -324,9 +372,33 @@ impl InProgress {
             stretch_inline: None,
             stretch_block: None,
             bfc_offset: None,
-            exclusions: self.space.exclusions.clone(),
+            exclusions: Some(Rc::new(self.exclusions.clone())),
             clearance: self.space.clearance,
         }
+    }
+
+    /// The space for an in flow block child: `child_space` with the
+    /// exclusion space moved to the child's border box top, where its top
+    /// margin would put it. A margin that collapses through it from its
+    /// own first child can still move it lower (spec 0009, child 0001).
+    pub(crate) fn block_child_space(&self, child: &LayoutBox) -> ConstraintSpace {
+        let mut space = self.child_space();
+        let margin_top = child
+            .style
+            .margin
+            .top
+            .map_or(Au::ZERO, |l| l.resolve(Some(self.content_width)));
+        let y = if self.at_top {
+            self.cursor
+        } else {
+            let mut strut = self.pending;
+            strut.push(margin_top);
+            self.cursor + strut.resolve()
+        };
+        space.exclusions = Some(Rc::new(
+            self.exclusions.translated(Point::new(Au::ZERO, -y)),
+        ));
+        space
     }
 
     /// The sizes a flex container lays its items out in.
@@ -384,8 +456,10 @@ impl InProgress {
 
     /// Records an absolute child's static position: where the next block's
     /// top margin edge would be (spec 0006, Value sourcing, Static
-    /// position).
-    pub(crate) fn place_absolute(&mut self, id: BoxId) {
+    /// position). A fixed child does the same, but hoists to the viewport's
+    /// containing block instead of its nearest positioned ancestor
+    /// (spec 0009, child 0003, AC-10).
+    pub(crate) fn place_absolute(&mut self, id: BoxId, fixed: bool) {
         let origin = self.content_origin();
         let y = if self.at_top {
             self.cursor
@@ -395,6 +469,7 @@ impl InProgress {
         self.absolutes.push(PendingAbsolute {
             box_id: id,
             static_position: Point::new(origin.x, origin.y + y),
+            fixed,
         });
     }
 
@@ -429,6 +504,7 @@ impl InProgress {
                 self.cursor + self.pending.resolve()
             };
             self.pending.append(margins.bottom);
+            self.take_floats(child, Point::new(margins.left, y));
             self.push_child(Point::new(x, origin.y + y), fragment);
             return;
         }
@@ -467,7 +543,26 @@ impl InProgress {
         }
         self.cursor = y + child.size.height;
         self.pending = margins.bottom;
+        self.take_floats(child, Point::new(margins.left, y));
         self.push_child(Point::new(x, origin.y + y), fragment);
+    }
+
+    /// Adds the floats a block child placed inside it to this box's
+    /// exclusion space, so later siblings flow around them. `at` is the
+    /// child's border box corner from this box's content box. The child's
+    /// space starts with this box's floats, in order, so the ones after
+    /// them are its own (spec 0009, child 0001).
+    fn take_floats(&mut self, child: &BoxFragment, at: Point) {
+        let Some(out) = &child.exclusions_out else {
+            return;
+        };
+        let known = self.exclusions.exclusions.len();
+        for exclusion in out.exclusions.iter().skip(known) {
+            self.exclusions = self.exclusions.add(Exclusion {
+                rect: Rect::new(exclusion.rect.origin.offset_by(at), exclusion.rect.size),
+                side: exclusion.side,
+            });
+        }
     }
 
     /// Places a floated child out of flow, beside the floats already placed,
@@ -505,12 +600,20 @@ impl InProgress {
         let opp = self
             .exclusions
             .opportunity(self.cursor, self.content_width, margin_box_width);
-        let at = origin.offset_by(Point::new(opp.rect.origin.x, opp.rect.origin.y));
+        // A left float sits at the left edge of the free band; a right float
+        // sits at its right edge (CSS 2.2 section 9.5.1).
+        let float_x = match float_side {
+            FloatSide::Left => opp.rect.origin.x,
+            FloatSide::Right => {
+                (opp.rect.origin.x + opp.rect.size.width - margin_box_width).max(Au::ZERO)
+            }
+        };
+        let at = origin.offset_by(Point::new(float_x, opp.rect.origin.y));
         self.floats.push((at, Rc::clone(&fragment)));
         self.push_child(at, fragment);
         self.exclusions = self.exclusions.add(Exclusion {
             rect: Rect::new(
-                opp.rect.origin,
+                Point::new(float_x, opp.rect.origin.y),
                 Size::new(margin_box_width, margin_box_height),
             ),
             side: float_side,
@@ -547,7 +650,10 @@ impl InProgress {
         // A BFC root's `height: auto` grows to hold its floats
         // (CSS 2.2 section 10.6.7; spec 0009, child 0001).
         let auto_height = if self.bfc_root {
-            auto_height.max(self.float_bottom)
+            // Floats its children placed count too.
+            auto_height
+                .max(self.float_bottom)
+                .max(self.exclusions.clearance_both())
         } else {
             auto_height
         };
@@ -569,6 +675,22 @@ impl InProgress {
         self.margins.collapses_through = collapses_through;
         self.add_marker(fonts);
         let scrollable_overflow = self.scrollable_overflow(size);
+        // A sticky box keeps its insets inside its nearest scroll frame's
+        // scrollport; the containing block is the space it was laid out in
+        // (spec 0009, child 0003, AC-11).
+        let sticky = self.sticky_insets.map(|insets| {
+            let cb = Rect::new(
+                Point::default(),
+                Size::new(
+                    self.space.available_inline.definite().unwrap_or(size.width),
+                    self.space.available_block.definite().unwrap_or(size.height),
+                ),
+            );
+            StickyInfo {
+                insets,
+                containing_block: cb,
+            }
+        });
         BoxFragment {
             box_id: self.id,
             node: self.node,
@@ -578,13 +700,22 @@ impl InProgress {
             baseline: self.baseline,
             last_baseline: self.last_baseline,
             is_scroll_container: self.is_scroll_container,
+            user_scrollable: self.user_scrollable,
             margins: self.margins,
             padding: self.padding,
             inline_edges: None,
             auto_height,
             relative_offset: self.relative_offset,
+            sticky,
             absolutes: self.absolutes,
-            exclusions_out: Some(Rc::new(self.exclusions)),
+            // A BFC root keeps its floats; any other box hands them on
+            // from its border box corner.
+            exclusions_out: (!self.bfc_root).then(|| {
+                Rc::new(self.exclusions.translated(Point::new(
+                    self.border.left + self.padding.left,
+                    self.border.top + self.padding.top,
+                )))
+            }),
         }
     }
 

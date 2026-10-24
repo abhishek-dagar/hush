@@ -39,12 +39,13 @@ pub use sheet::{
     Origin, Rule, Stylesheet, decode_stylesheet, parse_declarations, parse_stylesheet,
 };
 pub use style::{
-    AlignItems, Background, Border, BorderRadius, BorderSide, BorderStyle, BoxSizing, Clear,
-    ComputedStyle, Cursor, CustomProperties, Direction, Display, DisplayBox, Effects, Flex,
-    FlexBasis, FlexDirection, FlexWrap, Float, Font, FontStyle, InheritedBox, InheritedText,
-    JustifyContent, LineHeight, List, ListStylePosition, ListStyleType, Margin, Outline,
-    OutlineStyle, Overflow, Padding, Position, PositionOffsets, Sizes, TextAlign,
-    TextDecorationLine, TextOverflow, UserSelect, Visibility, WhiteSpace, WritingMode,
+    AlignItems, Background, Border, BorderCollapse, BorderRadius, BorderSide, BorderStyle,
+    BoxSizing, CaptionSide, Clear, ClipRect, ComputedStyle, Cursor, CustomProperties, Direction,
+    Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis, FlexDirection, FlexWrap, Float,
+    Font, FontStyle, InheritedBox, InheritedTable, InheritedText, JustifyContent, LineHeight, List,
+    ListStylePosition, ListStyleType, Margin, Outline, OutlineStyle, Overflow, Padding, Position,
+    PositionOffsets, Sizes, Table, TableLayout, TextAlign, TextDecorationLine, TextOverflow,
+    UserSelect, Visibility, WhiteSpace, WritingMode,
 };
 pub use stylist::Stylist;
 pub use ua::ua_stylesheet;

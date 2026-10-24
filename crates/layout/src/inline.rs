@@ -493,6 +493,7 @@ pub(crate) fn lay_out_lines(
                     PieceKind::Absolute(box_id) => lines.absolutes.push(PendingAbsolute {
                         box_id,
                         static_position: Point::new(Au::ZERO, lines.height),
+                        fixed: false,
                     }),
                     _ => {}
                 }
@@ -550,12 +551,17 @@ pub(crate) fn lay_out_lines(
         }
 
         let used = used_width(line) + shown.map_or(Au::ZERO, |(e, _)| e.width);
-        let x0 = match style.inherited_text.text_align {
-            TextAlign::Start | TextAlign::Left | TextAlign::Justify => Au::ZERO,
-            TextAlign::End | TextAlign::Right => (available - used).max(Au::ZERO),
-            TextAlign::Center => Au((available - used).max(Au::ZERO).0 / 2),
-        };
         let top = lines.height;
+        // A line beside the floats starts at the free band's left edge, not
+        // at the content box's left edge (spec 0009, child 0001).
+        let band = exclusions.opportunity(top, available, Au::ZERO);
+        let free_x = band.rect.origin.x;
+        let free_width = band.rect.size.width;
+        let x0 = match style.inherited_text.text_align {
+            TextAlign::Start | TextAlign::Left | TextAlign::Justify => free_x,
+            TextAlign::End | TextAlign::Right => free_x + (free_width - used).max(Au::ZERO),
+            TextAlign::Center => free_x + Au((free_width - used).max(Au::ZERO).0 / 2),
+        };
         let mut absolutes = Vec::new();
         let mut line_fragment = build_line(
             &mut cx,
@@ -852,6 +858,7 @@ fn build_line(
             PieceKind::Absolute(box_id) => absolutes.push(PendingAbsolute {
                 box_id: *box_id,
                 static_position: Point::new(x, Au::ZERO),
+                fixed: false,
             }),
             PieceKind::Float(_) => {}
             PieceKind::Break => {}
@@ -929,6 +936,7 @@ fn close_box(
         baseline: None,
         last_baseline: None,
         is_scroll_container: false,
+        user_scrollable: [false, false],
         margins: Default::default(),
         padding,
         inline_edges: Some(InlineEdges {
@@ -937,6 +945,7 @@ fn close_box(
         }),
         auto_height: Au::ZERO,
         relative_offset: Point::default(),
+        sticky: None,
         absolutes: Vec::new(),
         exclusions_out: None,
     };

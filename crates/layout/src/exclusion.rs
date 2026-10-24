@@ -1,5 +1,7 @@
 //! The exclusion space: an immutable list of the rectangles floats occupy,
-//! in BFC coordinates (spec 0009, child 0001). It is carried in the
+//! in one BFC, from the corner of the box that holds it: each box shifts
+//! its parent's space to its own corner before using it (spec 0009, child
+//! 0001). It is carried in the
 //! constraint space so that only boxes a float can reach see it in their
 //! layout cache key, and boxes past the floats still reuse their fragment.
 
@@ -66,6 +68,28 @@ impl ExclusionSpace {
             exclusions: exclusions.into(),
             clear_left,
             clear_right,
+        }
+    }
+
+    /// The same floats moved by `by`: a box sees its parent's floats from
+    /// its own corner with `by` the negated offset of that corner in the
+    /// parent, and hands its floats back up with the offset itself
+    /// (spec 0009, child 0001).
+    pub fn translated(&self, by: Point) -> Self {
+        if self.exclusions.is_empty() || by == Point::default() {
+            return self.clone();
+        }
+        Self {
+            exclusions: self
+                .exclusions
+                .iter()
+                .map(|e| Exclusion {
+                    rect: Rect::new(e.rect.origin.offset_by(by), e.rect.size),
+                    side: e.side,
+                })
+                .collect(),
+            clear_left: self.clear_left + by.y,
+            clear_right: self.clear_right + by.y,
         }
     }
 
