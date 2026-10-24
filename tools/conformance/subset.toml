@@ -19,3 +19,23 @@ paths = ["css/CSS2/text", "css/CSS2/linebox"]
 [[area]]
 name = "normal-flow"
 paths = ["css/CSS2/normal-flow", "css/CSS2/visudet"]
+
+[[area]]
+name = "floats"
+paths = ["css/CSS2/normal-flow"]
+
+[[area]]
+name = "positioning"
+paths = ["css/CSS2/visuren"]
+
+[[area]]
+name = "stacking"
+paths = ["css/CSS2/visuren"]
+
+[[area]]
+name = "overflow"
+paths = ["css/CSS2/visufx"]
+
+[[area]]
+name = "tables"
+paths = ["css/CSS2/tables"]

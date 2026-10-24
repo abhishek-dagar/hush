@@ -75,14 +75,17 @@ pub fn run(wpt_dir: &Path, no_render: bool, subset_path: &Path) -> Result<()> {
                     images: None,
                     parsed_as: "html".to_owned(),
                 };
-                writeln!(out, "{}", serde_json::to_string(&resp).expect("serialization should not fail"))?;
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string(&resp).expect("serialization should not fail")
+                )?;
                 out.flush()?;
                 continue;
             }
         };
         let started = Instant::now();
-        let (status, message, images, parsed_as) =
-            run_test(wpt_dir, no_render, &subset, &req.test);
+        let (status, message, images, parsed_as) = run_test(wpt_dir, no_render, &subset, &req.test);
         let resp = Response {
             status: status.as_str().to_owned(),
             message,
@@ -90,7 +93,11 @@ pub fn run(wpt_dir: &Path, no_render: bool, subset_path: &Path) -> Result<()> {
             images,
             parsed_as,
         };
-        writeln!(out, "{}", serde_json::to_string(&resp).expect("serialization should not fail"))?;
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string(&resp).expect("serialization should not fail")
+        )?;
         out.flush()?;
     }
     Ok(())
@@ -110,7 +117,7 @@ fn run_test(
                 "test is not in any area".to_owned(),
                 None,
                 "html".to_owned(),
-            )
+            );
         }
     };
     let _xhtml = path.ends_with(".xht") || path.ends_with(".xhtml");
@@ -118,7 +125,12 @@ fn run_test(
     let bytes = match std::fs::read(wpt_dir.join(path)) {
         Ok(b) => b,
         Err(e) => {
-            return (Status::Error, format!("could not read test: {e}"), None, parsed_as);
+            return (
+                Status::Error,
+                format!("could not read test: {e}"),
+                None,
+                parsed_as,
+            );
         }
     };
     let meta = discover::parse_meta(&serve::url_for(path), &bytes);
@@ -132,7 +144,7 @@ fn run_test(
                 "reference or support file".to_owned(),
                 None,
                 parsed_as,
-            )
+            );
         }
     };
     let kind = match kind {
@@ -201,7 +213,14 @@ fn run_crashtest(
     if !no_render {
         let mut renderer = match render {
             Some(r) => r,
-            None => return (Status::Error, "renderer missing".to_owned(), None, parsed_as),
+            None => {
+                return (
+                    Status::Error,
+                    "renderer missing".to_owned(),
+                    None,
+                    parsed_as,
+                );
+            }
         };
         let list = page.begin_frame(0.0);
         let (adds, deletes) = page.take_resource_messages();
@@ -238,7 +257,14 @@ fn run_reftest(
     }
     let test_pixels = match test_render.pixels {
         Some(p) => p,
-        None => return (Status::Error, "pixels missing after render".to_owned(), None, parsed_as),
+        None => {
+            return (
+                Status::Error,
+                "pixels missing after render".to_owned(),
+                None,
+                parsed_as,
+            );
+        }
     };
     // references
     let mut images_for_failure: Option<ImagePaths> = None;
@@ -248,7 +274,12 @@ fn run_reftest(
         let ref_path = match serve::path_for(ref_url) {
             Some(p) => p,
             None => {
-                return (Status::Error, "bad reference url".to_owned(), None, parsed_as);
+                return (
+                    Status::Error,
+                    "bad reference url".to_owned(),
+                    None,
+                    parsed_as,
+                );
             }
         };
         let ref_render = match render_page(wpt_dir, &ref_path, timeout) {
@@ -260,7 +291,14 @@ fn run_reftest(
         }
         let ref_pixels = match ref_render.pixels {
             Some(p) => p,
-            None => return (Status::Error, "pixels missing after render".to_owned(), None, parsed_as),
+            None => {
+                return (
+                    Status::Error,
+                    "pixels missing after render".to_owned(),
+                    None,
+                    parsed_as,
+                );
+            }
         };
         // fuzzy
         let fuzzy = find_fuzzy(meta, ref_url, &ref_render.meta);
@@ -290,12 +328,7 @@ fn run_reftest(
     if all_ok {
         (Status::Pass, "ok".to_owned(), None, parsed_as)
     } else {
-        (
-            Status::Fail,
-            fail_msg,
-            images_for_failure,
-            parsed_as,
-        )
+        (Status::Fail, fail_msg, images_for_failure, parsed_as)
     }
 }
 
@@ -335,7 +368,7 @@ fn render_page(wpt_dir: &Path, path: &str, timeout: Duration) -> Result<Rendered
                 message: "did not settle".to_owned(),
                 pixels: None,
                 meta,
-            })
+            });
         }
     }
     let mut renderer = Renderer::new_headless(800, 600).map_err(|e| format!("{e}"))?;
@@ -397,10 +430,13 @@ fn settle(
         }
         // check done
         let ready = page.ready_state();
-        let root_has_wait = root_has_class(page, "reftest-wait") || root_has_class(page, "test-wait");
+        let root_has_wait =
+            root_has_class(page, "reftest-wait") || root_has_class(page, "test-wait");
         if ready == ReadyState::Complete && !root_has_wait {
             // run due timers just in case
-            if let Some(t) = page.next_timer() && t <= Instant::now() {
+            if let Some(t) = page.next_timer()
+                && t <= Instant::now()
+            {
                 page.run_timers(Instant::now());
                 page.end_task();
                 continue;
@@ -442,11 +478,25 @@ fn root_has_class(page: &Page, class: &str) -> bool {
 fn apply_resources(renderer: &mut Renderer, page: PageId, msgs: &[ToBrowser]) {
     for msg in msgs {
         match msg {
-            ToBrowser::AddFont { key, data, index, variations, .. } => {
+            ToBrowser::AddFont {
+                key,
+                data,
+                index,
+                variations,
+                ..
+            } => {
                 renderer.add_font(page, *key, data, *index, variations);
             }
-            ToBrowser::AddImage { key, size, pixels, .. } => {
-                renderer.add_image(page, *key, (size.0, size.1), display_list::ImageFormat::Rgba8, pixels);
+            ToBrowser::AddImage {
+                key, size, pixels, ..
+            } => {
+                renderer.add_image(
+                    page,
+                    *key,
+                    (size.0, size.1),
+                    display_list::ImageFormat::Rgba8,
+                    pixels,
+                );
             }
             _ => {}
         }
@@ -471,13 +521,16 @@ fn find_fuzzy(test_meta: &Meta, ref_url: &Url, ref_meta: &Meta) -> Option<compar
     // test's fuzzy wins
     for f in &test_meta.fuzzy {
         if let Ok(parsed) = compare::Fuzzy::parse(f)
-            && (parsed.ref_url.is_none() || parsed.ref_url.as_ref() == serve::path_for(ref_url).as_ref())
+            && (parsed.ref_url.is_none()
+                || parsed.ref_url.as_ref() == serve::path_for(ref_url).as_ref())
         {
             return Some(parsed);
         }
     }
     for f in &ref_meta.fuzzy {
-        if let Ok(parsed) = compare::Fuzzy::parse(f) && parsed.ref_url.is_none() {
+        if let Ok(parsed) = compare::Fuzzy::parse(f)
+            && parsed.ref_url.is_none()
+        {
             return Some(parsed);
         }
     }

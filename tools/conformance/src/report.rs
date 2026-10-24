@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-
 /// The target directory: `CARGO_TARGET_DIR` or `target`.
 pub fn target_dir() -> PathBuf {
     std::env::var("CARGO_TARGET_DIR")

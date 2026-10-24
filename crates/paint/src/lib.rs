@@ -759,7 +759,9 @@ fn size_f(size: Size) -> SizeF {
 mod tests {
     use base::atoms::QualName;
     use base::local_name;
-    use css::{Background, BorderSide, Color, ComputedStyle, Display, Length, Margin, Overflow};
+    use css::{
+        Background, BorderSide, Color, ComputedStyle, Display, Float, Length, Margin, Overflow,
+    };
     use dom::{Document, NodeId};
 
     use super::*;
@@ -1062,6 +1064,49 @@ mod tests {
         }
         expected.extend(["push", "rect 1", "pop"]);
         assert_eq!(kinds, expected);
+    }
+
+    #[test]
+    fn a_float_paints_after_block_backgrounds_and_before_inline_content() {
+        // Spec 0009, child 0001, AC-4: floats paint as their own layer after
+        // in-flow block backgrounds and before inline content.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
+        let body = add(&mut doc, html, style(Color::TRANSPARENT, 0.0, None));
+        let _block_a = add(
+            &mut doc,
+            body,
+            style(Color::rgb8(255, 0, 0), 0.0, Some(20.0)),
+        );
+        let mut float_b = style(Color::rgb8(0, 255, 0), 0.0, Some(20.0));
+        Rc::make_mut(&mut float_b.size).width = Some(Length::px(40.0));
+        Rc::make_mut(&mut float_b.display_box).float = Float::Left;
+        add(&mut doc, body, float_b);
+        let text = doc.create_text("words");
+        doc.append_child(body, text).unwrap();
+        let list = paint_doc(&mut doc, &HashMap::new());
+
+        let rects: Vec<_> = list
+            .items
+            .iter()
+            .filter_map(|item| match item.kind {
+                ItemKind::Rect { color, .. } => Some((color.r, color.g, color.b)),
+                _ => None,
+            })
+            .collect();
+        // block_a's red bg, then float_b's green bg (floats layer after blocks).
+        let red = rects
+            .iter()
+            .position(|(r, g, b)| *r > 0.5 && *g < 0.1 && *b < 0.1);
+        let green = rects
+            .iter()
+            .position(|(r, g, b)| *r < 0.1 && *g > 0.5 && *b < 0.1);
+        assert!(
+            red.is_some() && green.is_some() && red.unwrap() < green.unwrap(),
+            "float paints after the in-flow block: {:?}",
+            rects
+        );
     }
 
     #[test]

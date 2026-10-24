@@ -23,6 +23,8 @@ use render::Renderer;
 use tracing::{debug, error, info, info_span, warn};
 use url::Url;
 use winit::application::ApplicationHandler;
+#[cfg(feature = "chrome")]
+use winit::dpi::LogicalSize;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -320,6 +322,16 @@ impl App {
         let attributes = Window::default_attributes().with_title(&self.config.title);
         #[cfg(feature = "chrome")]
         let attributes = self.chrome.window_attributes(attributes);
+        #[cfg(feature = "chrome")]
+        let attributes = if let Some(size) = self.chrome.window_size() {
+            // Open at the size the user last left it, not the OS default.
+            attributes.with_inner_size(LogicalSize::new(
+                f64::from(size.width),
+                f64::from(size.height),
+            ))
+        } else {
+            attributes
+        };
         let window = Arc::new(event_loop.create_window(attributes)?);
         let size = window.inner_size();
         let renderer = Renderer::new(Arc::clone(&window), size.width, size.height)?;
@@ -1476,6 +1488,19 @@ impl ApplicationHandler<UserEvent> for App {
     // The one hook every exit path reaches. On macOS, Quit (⌘Q) ends the
     // process right after this returns, so `run_app` never gets to return.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "chrome")]
+        if let Some(app_window) = &self.window
+            && !app_window.window.is_maximized()
+        {
+            let size = app_window
+                .window
+                .inner_size()
+                .to_logical::<f32>(app_window.window.scale_factor());
+            self.chrome.remember_window_size(ui::SizeF {
+                width: size.width,
+                height: size.height,
+            });
+        }
         self.stop();
     }
 }

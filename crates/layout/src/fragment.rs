@@ -8,6 +8,8 @@ use css::ComputedStyle;
 use dom::NodeId;
 use text::FontKey;
 
+use crate::exclusion::ExclusionSpace;
+
 /// Margins that meet and collapse into one (CSS 2.2 section 8.3.1): the
 /// largest positive margin plus the most negative one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -143,6 +145,9 @@ pub struct BoxFragment {
     /// a cached fragment still hands them on. A containing block lays its
     /// own out and adds them to its children, after the in flow ones.
     pub absolutes: Vec<PendingAbsolute>,
+    /// The exclusion space after this box's content, for the next sibling
+    /// in its BFC (spec 0009, child 0001).
+    pub exclusions_out: Option<Rc<ExclusionSpace>>,
 }
 
 impl Drop for BoxFragment {

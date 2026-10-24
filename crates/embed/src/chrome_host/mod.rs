@@ -190,6 +190,18 @@ impl ChromeHost {
         platform::window_attributes(attributes)
     }
 
+    /// The last window size the user left, in logical px, or `None` when the
+    /// OS default should be used (spec 0003, AC-11).
+    pub(crate) fn window_size(&self) -> Option<ui::SizeF> {
+        self.settings.window_size
+    }
+
+    /// Remembers `size` as the window's last size and persists it.
+    pub(crate) fn remember_window_size(&mut self, size: ui::SizeF) {
+        self.settings.window_size = Some(size);
+        self.file.save(&self.settings);
+    }
+
     /// Hooks the OS once the window is open: change signals, the frame,
     /// the menus. Then reads the OS appearance and styles the chrome.
     pub(crate) fn attach(&mut self, window: &Window, proxy: &EventLoopProxy<UserEvent>) {

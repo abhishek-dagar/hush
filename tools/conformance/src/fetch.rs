@@ -25,8 +25,7 @@ pub fn ensure(dir: &Path, commit: &str, paths: &[String], remote: &str) -> Resul
         std::fs::remove_dir_all(dir)
             .with_context(|| format!("could not clear the partial snapshot {}", dir.display()))?;
     }
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("could not create {}", dir.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     eprintln!("fetching WPT {commit} into {}", dir.display());
     let dir = Some(dir);
     git(dir, &["init", "-q"])?;
@@ -37,7 +36,15 @@ pub fn ensure(dir: &Path, commit: &str, paths: &[String], remote: &str) -> Resul
     git(dir, &sparse)?;
     git(
         dir,
-        &["fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", commit],
+        &[
+            "fetch",
+            "-q",
+            "--depth",
+            "1",
+            "--filter=blob:none",
+            "origin",
+            commit,
+        ],
     )?;
     git(dir, &["checkout", "-q", "FETCH_HEAD"])?;
     let dir = dir.unwrap_or(Path::new("."));

@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use base::atoms::{LocalName, QualName};
 use base::{Arena, Au, BoxId, BoxMarker, local_name, ns};
-use css::{ComputedStyle, Display, ListStyleType, Position, StyleDamage, WhiteSpace};
+use css::{ComputedStyle, Display, Float, ListStyleType, Position, StyleDamage, WhiteSpace};
 use dom::{Document, ImageState, NodeData, NodeId};
 
 use crate::LayoutCache;
@@ -50,6 +50,13 @@ pub enum BoxKind {
     Replaced,
 }
 
+/// Which side a float sits on (CSS 2.2 section 9.5; spec 0009, child 0001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatSide {
+    Left,
+    Right,
+}
+
 /// One piece of a block's inline content.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InlineItem {
@@ -71,6 +78,9 @@ pub enum InlineItem {
     /// An absolute box's place in the content: it takes no room, and only
     /// marks the box's static position (spec 0006, AC-5).
     Absolute(BoxId),
+    /// A float's place in inline content: it takes no room on the line, and
+    /// the float is placed where the marker is met (spec 0009, child 0001).
+    Float(BoxId),
     /// A forced line break: a `<br>`, or a preserved newline in the text
     /// node given.
     Break(NodeId),
@@ -132,6 +142,10 @@ pub struct LayoutBox {
     pub node: Option<NodeId>,
     /// What kind of box it is.
     pub kind: BoxKind,
+    /// The float this box is placed on: `Some` when `float` is `left` or
+    /// `right` and the box is not absolutely positioned (spec 0009, child
+    /// 0001).
+    pub float: Option<FloatSide>,
     /// The style it lays out and paints with.
     pub style: Rc<ComputedStyle>,
     /// The parent box: for an inline box or atomic inline, the block whose
@@ -469,6 +483,18 @@ impl BoxTree {
                     }
                 };
                 let mut layout_box = LayoutBox::new(child_node, kind, style, Some(container));
+                // A floated block level box is blockified already; a float
+                // among inline content leaves a marker instead (below).
+                if layout_box.float.is_none()
+                    && layout_box.style.display_box.float != Float::None
+                    && !layout_box.is_absolute()
+                {
+                    layout_box.float = Some(match layout_box.style.display_box.float {
+                        Float::Left => FloatSide::Left,
+                        Float::Right => FloatSide::Right,
+                        Float::None => FloatSide::Left,
+                    });
+                }
                 if let Some(child) = child_node {
                     if layout_box.style.display_box.display == Display::ListItem {
                         if let Some(value) = attribute(doc, child, local_name!("value"))
@@ -649,6 +675,15 @@ impl BoxTree {
                 continue;
             }
             if !block_level && (replaced || display == Display::InlineBlock) {
+                // A floated inline level box becomes a BFC root box and leaves
+                // a marker in the inline content where it appeared
+                // (spec 0009, child 0001).
+                let float_side = match child_style.display_box.float {
+                    Float::Left => Some(FloatSide::Left),
+                    Float::Right => Some(FloatSide::Right),
+                    Float::None => None,
+                };
+                let floated = float_side.is_some();
                 let kind = if replaced {
                     BoxKind::Replaced
                 } else {
@@ -656,7 +691,11 @@ impl BoxTree {
                 };
                 let mut layout_box =
                     LayoutBox::new(Some(child), kind, child_style, Some(container));
-                layout_box.inline_level = true;
+                if floated {
+                    layout_box.float = float_side;
+                } else {
+                    layout_box.inline_level = true;
+                }
                 if replaced {
                     (layout_box.natural, layout_box.image) = replaced_content(doc, child);
                 }
@@ -667,7 +706,11 @@ impl BoxTree {
                 } else {
                     atomics.push((id, child));
                 }
-                push(&mut run, &open, &mut reopen, InlineItem::Atomic(id));
+                if floated {
+                    push(&mut run, &open, &mut reopen, InlineItem::Float(id));
+                } else {
+                    push(&mut run, &open, &mut reopen, InlineItem::Atomic(id));
+                }
                 continue;
             }
             if display == Display::Inline {
@@ -747,6 +790,12 @@ impl LayoutBox {
         self.style.display_box.position == Position::Absolute
     }
 
+    /// Whether the box is a float: out of flow, placed to the side by its
+    /// block formatting context (spec 0009, child 0001).
+    pub fn is_float(&self) -> bool {
+        self.float.is_some()
+    }
+
     fn new(
         node: Option<NodeId>,
         kind: BoxKind,
@@ -766,6 +815,7 @@ impl LayoutBox {
             image: None,
             text_field: false,
             centers_content: false,
+            float: None,
             flags: BoxFlags::empty(),
             cache: None,
         }
@@ -778,7 +828,10 @@ fn inline_boxes(items: &[InlineItem]) -> Vec<BoxId> {
     items
         .iter()
         .filter_map(|item| match item {
-            InlineItem::Start(id) | InlineItem::Atomic(id) | InlineItem::Absolute(id) => Some(*id),
+            InlineItem::Start(id)
+            | InlineItem::Atomic(id)
+            | InlineItem::Absolute(id)
+            | InlineItem::Float(id) => Some(*id),
             _ => None,
         })
         .collect()

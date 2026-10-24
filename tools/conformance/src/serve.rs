@@ -37,7 +37,9 @@ pub fn path_for(url: &Url) -> Option<String> {
     let path = percent_decode(url.path().trim_start_matches('/'))?;
     let safe = !path.is_empty()
         && !path.contains('\\')
-        && path.split('/').all(|s| !s.is_empty() && s != "." && s != "..");
+        && path
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..");
     safe.then_some(path)
 }
 
@@ -154,13 +156,22 @@ mod tests {
 
     #[test]
     fn only_paths_on_the_origin_and_inside_the_root_are_served() {
-        assert_eq!(path(&url_for("css/a b.html")).as_deref(), Some("css/a b.html"));
+        assert_eq!(
+            path(&url_for("css/a b.html")).as_deref(),
+            Some("css/a b.html")
+        );
         assert_eq!(
             path("http://web-platform.test:8000/css/x.html?q#f").as_deref(),
             Some("css/x.html")
         );
-        assert_eq!(path("http://web-platform.test:8000/a/../b.css").as_deref(), Some("b.css"));
-        assert_eq!(path("http://web-platform.test:8000/a/%2e%2e/%2e%2e/etc"), None);
+        assert_eq!(
+            path("http://web-platform.test:8000/a/../b.css").as_deref(),
+            Some("b.css")
+        );
+        assert_eq!(
+            path("http://web-platform.test:8000/a/%2e%2e/%2e%2e/etc"),
+            None
+        );
         assert_eq!(path("http://web-platform.test:8000/a/..%2f..%2fetc"), None);
         assert_eq!(path("http://www.w3.org/css.html"), None);
         assert_eq!(path("http://web-platform.test:8001/x.html"), None);

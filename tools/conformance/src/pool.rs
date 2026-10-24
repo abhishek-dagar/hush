@@ -49,7 +49,11 @@ struct ChildHandles {
     rx: mpsc::Receiver<Option<String>>,
 }
 
-fn spawn_child(wpt_dir: &Path, no_render: bool, subset_path: &Path) -> Result<ChildHandles, String> {
+fn spawn_child(
+    wpt_dir: &Path,
+    no_render: bool,
+    subset_path: &Path,
+) -> Result<ChildHandles, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(exe);
     cmd.arg("--worker")
@@ -81,11 +85,7 @@ fn spawn_child(wpt_dir: &Path, no_render: bool, subset_path: &Path) -> Result<Ch
         }
         let _ = tx.send(None);
     });
-    Ok(ChildHandles {
-        child,
-        stdin,
-        rx,
-    })
+    Ok(ChildHandles { child, stdin, rx })
 }
 
 fn kill_child(handles: &mut ChildHandles) {
@@ -144,7 +144,9 @@ pub fn run_pool(
                     let mut q = queue.lock().expect("lock poisoned");
                     q.pop_front()
                 };
-                let Some(test) = test else { break; };
+                let Some(test) = test else {
+                    break;
+                };
                 let timeout = match test.timeout {
                     discover::Timeout::Normal => Duration::from_secs(10),
                     discover::Timeout::Long => Duration::from_secs(60),

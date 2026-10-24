@@ -13,16 +13,19 @@
 use std::rc::Rc;
 
 use base::{Au, BoxId, Point, Rect, SideOffsets, Size};
-use css::{BoxSizing, ComputedStyle, Length, WritingMode};
+use css::{BoxSizing, Clear, ComputedStyle, Length, WritingMode};
 use dom::NodeId;
 
 use crate::Fonts;
-use crate::box_tree::{BoxKind, LayoutBox, NaturalSize};
+use crate::box_tree::{BoxKind, BoxTree, FloatSide, LayoutBox, NaturalSize};
+use crate::exclusion::{Exclusion, ExclusionSpace};
 use crate::fragment::{
     BlockMargins, BoxFragment, Fragment, MarginStrut, PendingAbsolute, TextFragment,
 };
 use crate::inline::{Lines, font_descriptor, text_fragment};
-use crate::{AvailableSize, ConstraintSpace, border_widths, positioned};
+use crate::{
+    AvailableSize, ConstraintSpace, LayoutContext, border_widths, lay_out_box, positioned,
+};
 
 /// A box partway through layout: its children are being laid out.
 pub(crate) struct InProgress {
@@ -69,6 +72,10 @@ pub(crate) struct InProgress {
     /// The box's inline content made at least one line box.
     has_lines: bool,
     children: Vec<(Point, Rc<Fragment>)>,
+    /// It is a BFC root: its `height: auto` grows to hold its floats.
+    bfc_root: bool,
+    /// The bottom of the lowest placed float, in BFC coordinates.
+    float_bottom: Au,
     /// The first and last line's baselines from the border box top.
     baseline: Option<Au>,
     last_baseline: Option<Au>,
@@ -78,6 +85,12 @@ pub(crate) struct InProgress {
     /// Absolute descendants waiting for their containing block, from the
     /// border box corner.
     absolutes: Vec<PendingAbsolute>,
+    /// The floats placed in this BFC so far, as an exclusion space, in BFC
+    /// coordinates from the content box top left.
+    pub(crate) exclusions: ExclusionSpace,
+    /// The floats placed in this BFC, as fragments to hand to the parent as
+    /// `exclusions_out` and to paint (spec 0009, child 0001).
+    pub(crate) floats: Vec<(Point, Rc<Fragment>)>,
 }
 
 /// A flex container's own sizes, which its items are laid out in.
@@ -241,6 +254,15 @@ impl InProgress {
         let top_adjoining = !starts_context && border.top == Au::ZERO && padding.top == Au::ZERO;
         let bottom_open =
             !starts_context && border.bottom == Au::ZERO && padding.bottom == Au::ZERO;
+        // The exclusion space this box passes to its children: a BFC root
+        // starts fresh, otherwise it inherits its parent's floats (spec 0009,
+        // child 0001). Computed before `space` is moved into the struct.
+        let exclusions = if starts_context {
+            ExclusionSpace::empty()
+        } else {
+            space.exclusions.as_deref().cloned().unwrap_or_default()
+        };
+        let relative_offset = positioned::relative_offset(style, space.percentage_basis);
         Self {
             id,
             node: layout_box.node,
@@ -279,12 +301,18 @@ impl InProgress {
             baseline: None,
             last_baseline: None,
             marker: layout_box.marker.clone(),
-            relative_offset: positioned::relative_offset(style, space.percentage_basis),
+            relative_offset,
             absolutes: Vec::new(),
+            exclusions,
+            floats: Vec::new(),
+            bfc_root: starts_context,
+            float_bottom: Au::ZERO,
         }
     }
 
-    /// The space the box's children (and its inline content) get.
+    /// The space the box's children (and its inline content) get. Children
+    /// inherit the parent's exclusion space and clearance, and their BFC
+    /// offset is where they sit (spec 0009, child 0001).
     pub(crate) fn child_space(&self) -> ConstraintSpace {
         ConstraintSpace {
             available_inline: AvailableSize::Definite(self.content_width),
@@ -295,6 +323,9 @@ impl InProgress {
             writing_mode: self.writing_mode,
             stretch_inline: None,
             stretch_block: None,
+            bfc_offset: None,
+            exclusions: self.space.exclusions.clone(),
+            clearance: self.space.clearance,
         }
     }
 
@@ -379,8 +410,9 @@ impl InProgress {
     }
 
     /// Places a finished child below the ones before it, collapsing its
-    /// top margin with the margins before it.
-    pub(crate) fn place(&mut self, fragment: Rc<Fragment>) {
+    /// top margin with the margins before it. `clearance` shifts the box
+    /// down past `clear` (CSS 2.2 section 9.5.2; spec 0009, child 0001).
+    pub(crate) fn place(&mut self, tree: &BoxTree, fragment: Rc<Fragment>) {
         let Some(child) = fragment.as_box() else {
             return;
         };
@@ -400,7 +432,7 @@ impl InProgress {
             self.push_child(Point::new(x, origin.y + y), fragment);
             return;
         }
-        let y = if self.at_top {
+        let mut y = if self.at_top {
             // The margins so far collapse into this box's own top margin.
             self.absorbed_top.append(self.pending);
             self.at_top = false;
@@ -408,6 +440,25 @@ impl InProgress {
         } else {
             self.cursor + self.pending.resolve()
         };
+        // `clear`: push the box's top border edge below the matching floats
+        // (CSS 2.2 section 9.5.2).
+        if let Some(clear) = tree
+            .get(child.box_id)
+            .map(|b| b.style.display_box.clear)
+            .filter(|clear| *clear != Clear::None)
+        {
+            let clearance = match clear {
+                Clear::Left => self.exclusions.clearance(FloatSide::Left),
+                Clear::Right => self.exclusions.clearance(FloatSide::Right),
+                Clear::Both => Some(self.exclusions.clearance_both()),
+                Clear::None => None,
+            };
+            if let Some(clearance) = clearance.filter(|&c| c > y) {
+                y = clearance;
+                // Clearance stops margins collapsing through this box.
+                self.bottom_adjoining = false;
+            }
+        }
         if self.baseline.is_none() {
             self.baseline = child.baseline.map(|b| origin.y + y + b);
         }
@@ -417,6 +468,55 @@ impl InProgress {
         self.cursor = y + child.size.height;
         self.pending = margins.bottom;
         self.push_child(Point::new(x, origin.y + y), fragment);
+    }
+
+    /// Places a floated child out of flow, beside the floats already placed,
+    /// and records its exclusion so later lines are narrowed (spec 0009,
+    /// child 0001). The float takes no room in flow.
+    pub(crate) fn place_float(
+        &mut self,
+        tree: &mut BoxTree,
+        child_id: BoxId,
+        cx: &mut LayoutContext<'_>,
+    ) -> Option<()> {
+        let layout_box = tree.get(child_id)?;
+        let float_side = layout_box.float?;
+        let float_space = ConstraintSpace {
+            available_inline: AvailableSize::Definite(self.content_width),
+            available_block: AvailableSize::MaxContent,
+            percentage_basis: Size::new(Some(self.content_width), None),
+            writing_mode: self.writing_mode,
+            stretch_inline: None,
+            stretch_block: None,
+            // A float is a BFC root: its own children never see the outer
+            // floats.
+            bfc_offset: None,
+            exclusions: Some(Rc::new(ExclusionSpace::empty())),
+            clearance: None,
+        };
+        let fragment = lay_out_box(tree, child_id, float_space, cx)?;
+        let box_fragment = fragment.as_box()?;
+        let margin_box_width =
+            box_fragment.margins.left + box_fragment.size.width + box_fragment.margins.right;
+        let margin_box_height = box_fragment.margins.top.resolve()
+            + box_fragment.size.height
+            + box_fragment.margins.bottom.resolve();
+        let origin = self.content_origin();
+        let opp = self
+            .exclusions
+            .opportunity(self.cursor, self.content_width, margin_box_width);
+        let at = origin.offset_by(Point::new(opp.rect.origin.x, opp.rect.origin.y));
+        self.floats.push((at, Rc::clone(&fragment)));
+        self.push_child(at, fragment);
+        self.exclusions = self.exclusions.add(Exclusion {
+            rect: Rect::new(
+                opp.rect.origin,
+                Size::new(margin_box_width, margin_box_height),
+            ),
+            side: float_side,
+        });
+        self.float_bottom = self.float_bottom.max(opp.rect.origin.y + margin_box_height);
+        Some(())
     }
 
     /// Finishes the box: its height, its margins as its parent sees them,
@@ -443,6 +543,13 @@ impl InProgress {
             } else {
                 self.cursor + self.pending.resolve()
             }
+        };
+        // A BFC root's `height: auto` grows to hold its floats
+        // (CSS 2.2 section 10.6.7; spec 0009, child 0001).
+        let auto_height = if self.bfc_root {
+            auto_height.max(self.float_bottom)
+        } else {
+            auto_height
         };
         let content_height = clamp(
             self.height.unwrap_or(auto_height),
@@ -477,6 +584,7 @@ impl InProgress {
             auto_height,
             relative_offset: self.relative_offset,
             absolutes: self.absolutes,
+            exclusions_out: Some(Rc::new(self.exclusions)),
         }
     }
 

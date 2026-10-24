@@ -141,7 +141,7 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
     let single_line = flex.wrap == FlexWrap::Nowrap;
 
     for item in &mut items {
-        base_sizes(tree, item, frame, space, row, single_line, cx);
+        base_sizes(tree, item, frame, &space, row, single_line, cx);
     }
 
     // Line breaking on outer hypothetical sizes (section 9.3, step 5).
@@ -204,14 +204,14 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
         if row {
             let width = item.target + item.edges_main;
             item.stretched = known_stretch.is_some();
-            item.fragment = measure(tree, item.id, space, Some(width), known_stretch, cx);
+            item.fragment = measure(tree, item.id, &space, Some(width), known_stretch, cx);
             let height = border_size(&item.fragment).1;
             item.outer_cross = height + item.margins_cross();
         } else {
             let width = column_cross(tree, item, frame, single_line, cx);
             item.stretched = item.stretches() && single_line;
             let height = item.target + item.edges_main;
-            item.fragment = measure(tree, item.id, space, Some(width), Some(height), cx);
+            item.fragment = measure(tree, item.id, &space, Some(width), Some(height), cx);
             item.outer_cross = width + item.margins_cross();
         }
     }
@@ -256,9 +256,9 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
             let (width, height) = border_size(&item.fragment);
             item.outer_cross = stretched + item.margins_cross();
             if row && stretched != height {
-                item.fragment = measure(tree, item.id, space, Some(width), Some(stretched), cx);
+                item.fragment = measure(tree, item.id, &space, Some(width), Some(stretched), cx);
             } else if !row && stretched != width {
-                item.fragment = measure(tree, item.id, space, Some(stretched), Some(height), cx);
+                item.fragment = measure(tree, item.id, &space, Some(stretched), Some(height), cx);
             }
         }
     }
@@ -367,7 +367,7 @@ fn base_sizes(
     tree: &mut BoxTree,
     item: &mut Item,
     frame: FlexFrame,
-    space: ConstraintSpace,
+    space: &ConstraintSpace,
     row: bool,
     single_line: bool,
     cx: &mut LayoutContext<'_>,
@@ -445,7 +445,7 @@ fn column_cross(
 fn measure(
     tree: &mut BoxTree,
     id: BoxId,
-    space: ConstraintSpace,
+    space: &ConstraintSpace,
     width: Option<Au>,
     height: Option<Au>,
     cx: &mut LayoutContext<'_>,
@@ -454,7 +454,7 @@ fn measure(
         available_inline: width.map_or(space.available_inline, AvailableSize::Definite),
         stretch_inline: width,
         stretch_block: height,
-        ..space
+        ..space.clone()
     };
     lay_out_box(tree, id, space, cx)
 }

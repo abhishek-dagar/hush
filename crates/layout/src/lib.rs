@@ -20,6 +20,7 @@
 mod block;
 mod box_tree;
 mod dump;
+mod exclusion;
 mod flex;
 mod fragment;
 mod hit_test;
@@ -34,6 +35,8 @@ use std::rc::Rc;
 use base::{Au, BoxId, Point, SideOffsets, Size};
 use css::{ComputedStyle, WritingMode};
 use text::{FontContext, FontDescriptor, LineMetrics, ShapedRun, WebFontLayer};
+
+use exclusion::ExclusionSpace;
 
 use block::InProgress;
 pub use box_tree::{BoxFlags, BoxKind, BoxTree, InlineItem, LayoutBox, NaturalSize};
@@ -65,7 +68,7 @@ impl AvailableSize {
 
 /// Everything a box's layout depends on from outside the box. Equal spaces
 /// give equal results for a clean box, so it keys the layout cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstraintSpace {
     /// Space along the inline (horizontal) axis.
     pub available_inline: AvailableSize,
@@ -82,6 +85,15 @@ pub struct ConstraintSpace {
     /// A border box height the parent fixes, counted as definite for the
     /// box's children's percentages (CSS Flexbox section 9.8).
     pub stretch_block: Option<Au>,
+    /// The box's border box top left corner in its BFC's coordinates, or
+    /// `None` while its margins have not settled (spec 0009, child 0001).
+    pub bfc_offset: Option<Point>,
+    /// The floats in this BFC that can reach this box, in BFC coordinates,
+    /// or `None` when none can (spec 0009, child 0001).
+    pub exclusions: Option<Rc<ExclusionSpace>>,
+    /// How far above the box's hypothetical position `clear` moves it, or
+    /// `None` when the box has no `clear` (spec 0009, child 0001).
+    pub clearance: Option<Au>,
 }
 
 impl ConstraintSpace {
@@ -94,6 +106,9 @@ impl ConstraintSpace {
             writing_mode: WritingMode::default(),
             stretch_inline: None,
             stretch_block: None,
+            bfc_offset: None,
+            exclusions: None,
+            clearance: None,
         }
     }
 }
@@ -225,13 +240,13 @@ pub fn inner_radii(outer: [f32; 8], border: SideOffsets) -> [f32; 8] {
 
 /// The cached fragment for `layout_box`, if it is clean and was laid out in
 /// an equal `space`.
-fn cached(layout_box: &LayoutBox, space: ConstraintSpace) -> Option<Rc<Fragment>> {
+fn cached(layout_box: &LayoutBox, space: &ConstraintSpace) -> Option<Rc<Fragment>> {
     let dirty = BoxFlags::NEEDS_LAYOUT | BoxFlags::CHILD_NEEDS_LAYOUT;
     if layout_box.flags.intersects(dirty) {
         return None;
     }
     let cache = layout_box.cache.as_ref()?;
-    (cache.space == space).then(|| Rc::clone(&cache.fragment))
+    (cache.space == *space).then(|| Rc::clone(&cache.fragment))
 }
 
 /// What to do with the next box: reuse its fragment, or lay it out.
@@ -249,7 +264,7 @@ fn step(
     cx: &mut LayoutContext<'_>,
 ) -> Option<Step> {
     let layout_box = tree.get(id)?;
-    if let Some(fragment) = cached(layout_box, space) {
+    if let Some(fragment) = cached(layout_box, &space) {
         cx.stats.cache_hits += 1;
         return Some(Step::Reuse(fragment));
     }
@@ -285,7 +300,7 @@ fn step(
                 break;
             }
             cx.depth += 1;
-            let fragment = lay_out_box(tree, atomic, child_space, cx);
+            let fragment = lay_out_box(tree, atomic, child_space.clone(), cx);
             cx.depth -= 1;
             if let Some(fragment) = fragment {
                 fragments.insert(atomic, fragment);
@@ -297,6 +312,7 @@ fn step(
             &layout_box.inline,
             &layout_box.style,
             in_progress.content_width,
+            &in_progress.exclusions,
             &fragments,
             &mut cx.fonts,
         );
@@ -357,7 +373,8 @@ fn lay_out_box(
     space: ConstraintSpace,
     cx: &mut LayoutContext<'_>,
 ) -> Option<Rc<Fragment>> {
-    let mut stack = match step(tree, id, space, cx)? {
+    let space = space.clone();
+    let mut stack = match step(tree, id, space.clone(), cx)? {
         Step::Reuse(fragment) => return Some(fragment),
         Step::Run(in_progress) => vec![in_progress],
     };
@@ -375,9 +392,15 @@ fn lay_out_box(
                 top.place_absolute(child_id);
                 continue;
             }
+            // A float leaves only its placement in flow; it is laid out by
+            // its block formatting context (spec 0009, child 0001).
+            if tree.get(child_id).is_some_and(LayoutBox::is_float) {
+                top.place_float(tree, child_id, cx);
+                continue;
+            }
             let space = top.child_space();
             match step(tree, child_id, space, cx) {
-                Some(Step::Reuse(fragment)) => top.place(fragment),
+                Some(Step::Reuse(fragment)) => top.place(tree, fragment),
                 Some(Step::Run(in_progress)) => stack.push(in_progress),
                 None => {}
             }
@@ -385,10 +408,11 @@ fn lay_out_box(
         }
 
         let done = stack.pop()?;
-        let (id, space, was_clean) = (done.id, done.space, done.was_clean);
+        let space = done.space.clone();
+        let (id, was_clean) = (done.id, done.was_clean);
         let mut fragment = done.finish(&mut cx.fonts);
         if !fragment.absolutes.is_empty()
-            && let Some(cb) = positioned::containing_block(tree, id, &fragment, space)
+            && let Some(cb) = positioned::containing_block(tree, id, &fragment, space.clone())
         {
             positioned::lay_out_absolutes(tree, &mut fragment, cb, cx);
         }
@@ -407,7 +431,7 @@ fn lay_out_box(
             });
         }
         match stack.last_mut() {
-            Some(parent) => parent.place(fragment),
+            Some(parent) => parent.place(tree, fragment),
             None => break Some(fragment),
         }
     }
@@ -417,7 +441,7 @@ fn lay_out_box(
 mod tests {
     use base::atoms::QualName;
     use base::local_name;
-    use css::{Display, Length, Margin, Padding};
+    use css::{Clear, Display, Float, Length, Margin, Padding};
     use dom::{Document, NodeId};
 
     use super::*;
@@ -481,6 +505,49 @@ mod tests {
         assert_eq!(b_fragment.node, Some(b));
         assert_eq!(b_fragment.size, Size::new(px(762.0), px(30.0)));
         let _ = a;
+    }
+
+    #[test]
+    fn a_cleared_block_sits_below_the_matching_float() {
+        // Spec 0009, child 0001, AC-2: `clear: left` pushes the box below the
+        // lowest left float, stopping margins collapsing through it.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+        let body = add(&mut doc, html, block(0.0, 0.0, None));
+        let mut floated = block(0.0, 0.0, Some(50.0));
+        {
+            let s = Rc::make_mut(&mut floated);
+            Rc::make_mut(&mut s.display_box).float = Float::Left;
+            Rc::make_mut(&mut s.size).width = Some(Length::px(100.0));
+        }
+        add(&mut doc, body, floated);
+        let mut cleared = block(0.0, 0.0, Some(20.0));
+        {
+            let s = Rc::make_mut(&mut cleared);
+            Rc::make_mut(&mut s.display_box).clear = Clear::Left;
+        }
+        add(&mut doc, body, cleared);
+
+        let mut boxes = BoxTree::build(&mut doc);
+        let (tree, _) = layout(
+            &mut boxes,
+            Size::new(px(800.0), px(600.0)),
+            &mut FontContext::new(),
+            &text::WebFontLayer::default(),
+        );
+        let (_, fragment) = tree.root.unwrap();
+        let html_fragment = fragment.as_box().unwrap();
+        let body_fragment = html_fragment.children[0].1.as_box().unwrap();
+        let float_pos = body_fragment.children[0].0;
+        let cleared_pos = body_fragment.children[1].0;
+        assert_eq!(float_pos, Point::new(px(0.0), px(0.0)));
+        assert_eq!(
+            cleared_pos.y,
+            px(50.0),
+            "cleared block's top edge below the float"
+        );
+        assert_eq!(cleared_pos.x, px(0.0));
     }
 
     fn styled(doc: &mut Document, parent: NodeId, name: &str, display: Display) -> NodeId {

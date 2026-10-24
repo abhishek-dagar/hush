@@ -283,6 +283,9 @@ fn lay_out_absolute(
         writing_mode: style.inherited_text.writing_mode,
         stretch_inline: width.map(|w| w + x_axis.edges),
         stretch_block: height.map(|h| h + y_axis.edges),
+        bfc_offset: None,
+        exclusions: None,
+        clearance: None,
     };
     let fragment = lay_out_box(tree, absolute.box_id, space, cx)?;
     let outer = fragment.size();

@@ -42,8 +42,9 @@ impl Expectations {
             let path = parts.next().context("empty expectation line")?.to_owned();
             let statuses: Vec<Status> = parts
                 .map(|token| {
-                    Status::parse(token)
-                        .ok_or_else(|| anyhow::anyhow!("unknown status `{token}` on line {}", lineno + 1))
+                    Status::parse(token).ok_or_else(|| {
+                        anyhow::anyhow!("unknown status `{token}` on line {}", lineno + 1)
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?;
             if statuses.is_empty() {
@@ -79,10 +80,7 @@ impl Expectations {
     }
 
     /// Regressions: paths whose actual status is not in the expected set.
-    pub fn regressions<'a>(
-        &self,
-        results: &'a [(String, Status)],
-    ) -> Vec<&'a str> {
+    pub fn regressions<'a>(&self, results: &'a [(String, Status)]) -> Vec<&'a str> {
         results
             .iter()
             .filter(|(path, status)| !self.expected(path).contains(status))
@@ -91,10 +89,7 @@ impl Expectations {
     }
 
     /// Unexpected passes: listed tests that passed but do not expect PASS.
-    pub fn unexpected_passes<'a>(
-        &self,
-        results: &'a [(String, Status)],
-    ) -> Vec<&'a str> {
+    pub fn unexpected_passes<'a>(&self, results: &'a [(String, Status)]) -> Vec<&'a str> {
         results
             .iter()
             .filter(|(path, status)| {

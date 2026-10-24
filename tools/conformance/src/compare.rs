@@ -54,7 +54,11 @@ impl Fuzzy {
         // Named form: [<ref url>:]maxDifference=<a>[-<b>];totalPixels=<c>[-<d>]
         let (ref_url, body) = if let Some((left, right)) = text.split_once(':') {
             // only treat as named when the right side looks like maxDifference=
-            if right.trim_start().to_ascii_lowercase().starts_with("maxdifference=") {
+            if right
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("maxdifference=")
+            {
                 (Some(left.trim().to_owned()), right.to_owned())
             } else {
                 (None, text.to_owned())
@@ -86,9 +90,7 @@ impl Fuzzy {
                 }
             }
         }
-        let max_diff = max_part
-            .ok_or_else(|| text.to_owned())?
-            .parse::<Range>()?;
+        let max_diff = max_part.ok_or_else(|| text.to_owned())?.parse::<Range>()?;
         let total_pixels = total_part
             .ok_or_else(|| text.to_owned())?
             .parse::<Range>()?;

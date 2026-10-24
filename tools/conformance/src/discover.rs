@@ -43,7 +43,12 @@ pub enum SkipReason {
 
 impl SkipReason {
     /// Every reason, in report order.
-    pub const ALL: [Self; 4] = [Self::Server, Self::Manual, Self::Testharness, Self::OtherKind];
+    pub const ALL: [Self; 4] = [
+        Self::Server,
+        Self::Manual,
+        Self::Testharness,
+        Self::OtherKind,
+    ];
 
     /// The name the reports use.
     pub fn as_str(self) -> &'static str {
@@ -159,7 +164,11 @@ pub fn read_meta(document: &Document) -> Meta {
             }
             "meta" => {
                 let value = element.attribute(&content).unwrap_or_default();
-                match element.attribute(&name).map(str::to_ascii_lowercase).as_deref() {
+                match element
+                    .attribute(&name)
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
                     Some("fuzzy") => meta.fuzzy.push(value.to_owned()),
                     Some("timeout") if value.trim().eq_ignore_ascii_case("long") => {
                         meta.long_timeout = true;
@@ -380,12 +389,18 @@ mod tests {
             Some(Kind::Skip(SkipReason::Server))
         );
         assert_eq!(
-            kind("css/a/t.html", "<link rel=stylesheet href=s.py><link rel=match href=r.html>"),
+            kind(
+                "css/a/t.html",
+                "<link rel=stylesheet href=s.py><link rel=match href=r.html>"
+            ),
             Some(Kind::Skip(SkipReason::Server))
         );
         // Rule 5.
         assert_eq!(
-            kind("css/a/t.html", "<script src=/resources/testharness.js></script>"),
+            kind(
+                "css/a/t.html",
+                "<script src=/resources/testharness.js></script>"
+            ),
             Some(Kind::Skip(SkipReason::Testharness))
         );
         // Rule 6.
@@ -402,6 +417,9 @@ mod tests {
             kind("css/a/t.html", "<link rel=mismatch href=x.html>"),
             Some(Kind::Reftest)
         );
-        assert_eq!(kind("css/a/t.html", "<p>hi"), Some(Kind::Skip(SkipReason::OtherKind)));
+        assert_eq!(
+            kind("css/a/t.html", "<p>hi"),
+            Some(Kind::Skip(SkipReason::OtherKind))
+        );
     }
 }

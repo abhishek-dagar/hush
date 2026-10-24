@@ -20,6 +20,7 @@ use text::{FontDescriptor, LineMetrics, ShapedRun, Slant};
 
 use crate::block::{overflow_of, union};
 use crate::box_tree::{BoxTree, InlineItem};
+use crate::exclusion::ExclusionSpace;
 use crate::fragment::{
     BoxFragment, Fragment, InlineEdges, LineFragment, PendingAbsolute, PlacedGlyph, TextFragment,
 };
@@ -69,6 +70,10 @@ pub(crate) enum PieceKind {
     Atomic(BoxId),
     /// An absolute box's static position, taking no room.
     Absolute(BoxId),
+    /// A float's marker among inline content: it takes no room on the line;
+    /// the float is placed through the exclusion space (spec 0009, child
+    /// 0001).
+    Float(BoxId),
     /// A forced line break.
     Break,
 }
@@ -111,23 +116,35 @@ fn opportunity(pieces: &[Piece], i: usize) -> bool {
 /// takes pieces until the next would overflow (not counting the spaces that
 /// hang at its end), then breaks at the last opportunity. Content with no
 /// opportunity overflows until the next one. Forced breaks end their line.
+/// `line_top` advances by `line_height` per line, so the exclusion space
+/// narrows each line beside the floats (spec 0009, child 0001).
 /// Returns each line's range of pieces.
-pub(crate) fn break_lines(pieces: &[Piece], available: Au) -> Vec<Range<usize>> {
+pub(crate) fn break_lines(
+    pieces: &[Piece],
+    available: Au,
+    exclusions: &ExclusionSpace,
+    line_height: Au,
+) -> Vec<Range<usize>> {
     let mut lines = Vec::new();
     let mut start = 0;
     // The width of `pieces[start..i]`.
     let mut width = Au::ZERO;
     // The last opportunity on this line, and the width before it.
     let mut last: Option<(usize, Au)> = None;
+    // The block offset of the current line, used to ask the exclusion space
+    // how wide the line may be beside the floats.
+    let mut line_top = Au::ZERO;
     for (i, piece) in pieces.iter().enumerate() {
         if i > start && opportunity(pieces, i) {
             let hang = pieces.get(i - 1).map_or(Au::ZERO, |p| p.trailing);
-            if width - hang > available {
+            let available_line = line_width(available, exclusions, line_top, piece.width);
+            if width - hang > available_line {
                 // Overflowing content with no earlier opportunity ends here.
                 lines.push(start..i);
                 start = i;
                 width = Au::ZERO;
                 last = None;
+                line_top += line_height;
             } else {
                 last = Some((i, width));
             }
@@ -137,21 +154,34 @@ pub(crate) fn break_lines(pieces: &[Piece], available: Au) -> Vec<Range<usize>> 
             start = i + 1;
             width = Au::ZERO;
             last = None;
+            line_top += line_height;
             continue;
         }
         width += piece.width;
-        if width - piece.trailing > available
+        let available_line = line_width(available, exclusions, line_top, piece.width);
+        if width - piece.trailing > available_line
             && let Some((at, before)) = last.take()
         {
             lines.push(start..at);
             start = at;
             width -= before;
+            line_top += line_height;
         }
     }
     if start < pieces.len() {
         lines.push(start..pieces.len());
     }
     lines
+}
+
+/// How wide a line whose top is `line_top` may be, beside the floats, when
+/// `min_width` must fit: the exclusion space's band at `line_top`.
+fn line_width(available: Au, exclusions: &ExclusionSpace, line_top: Au, min_width: Au) -> Au {
+    exclusions
+        .opportunity(line_top, available, min_width)
+        .rect
+        .size
+        .width
 }
 
 /// A text item shaped, with its style.
@@ -244,6 +274,7 @@ fn build_pieces(
                 pieces.push(piece);
             }
             InlineItem::Absolute(id) => pieces.push(Piece::new(PieceKind::Absolute(*id), Au::ZERO)),
+            InlineItem::Float(id) => pieces.push(Piece::new(PieceKind::Float(*id), Au::ZERO)),
             InlineItem::Break(_) => pieces.push(Piece::new(PieceKind::Break, Au::ZERO)),
         }
     }
@@ -406,6 +437,7 @@ pub(crate) fn lay_out_lines(
     items: &[InlineItem],
     style: &Rc<ComputedStyle>,
     available: Au,
+    exclusions: &ExclusionSpace,
     atomics: &HashMap<BoxId, Rc<Fragment>>,
     fonts: &mut Fonts<'_>,
 ) -> Lines {
@@ -417,6 +449,9 @@ pub(crate) fn lay_out_lines(
         .metrics(&font_descriptor(style), style.font.size)
         .map(|metrics| extents(metrics, style))
         .unwrap_or_default();
+    // Each line starts one line-height below the last, so the exclusion
+    // space narrows lines beside floats at the right block offset.
+    let line_height = strut.0 + strut.1;
     let display_box = &style.display_box;
     let ellipsis = (display_box.text_overflow == TextOverflow::Ellipsis
         && display_box.clips_overflow())
@@ -440,10 +475,13 @@ pub(crate) fn lay_out_lines(
     };
     // Inline boxes open at the start of the next line, outermost first.
     let mut open: Vec<BoxId> = Vec::new();
-    for range in break_lines(&pieces, available) {
+    for range in break_lines(&pieces, available, exclusions, line_height) {
         let line = pieces.get(range).unwrap_or_default();
         let has_content = line.iter().any(|piece| match &piece.kind {
-            PieceKind::Text { .. } | PieceKind::Atomic(_) | PieceKind::Break => true,
+            PieceKind::Text { .. }
+            | PieceKind::Atomic(_)
+            | PieceKind::Float(_)
+            | PieceKind::Break => true,
             PieceKind::Start(_) | PieceKind::End(_) => piece.width > Au::ZERO,
             PieceKind::Absolute(_) => false,
         });
@@ -498,6 +536,11 @@ pub(crate) fn lay_out_lines(
                     }
                 }
                 PieceKind::End(_) | PieceKind::Absolute(_) | PieceKind::Break => {}
+                PieceKind::Float(id) => {
+                    if let Some(fragment) = cx.atomics.get(id).and_then(|f| f.as_box()) {
+                        grow(atomic_extents(fragment));
+                    }
+                }
             }
         }
         if let Some((ellipsis, _)) = shown {
@@ -595,7 +638,10 @@ fn cut_line(
     let mut node = None;
     for piece in line {
         match &piece.kind {
-            PieceKind::Start(_) | PieceKind::End(_) | PieceKind::Absolute(_) => {
+            PieceKind::Start(_)
+            | PieceKind::End(_)
+            | PieceKind::Absolute(_)
+            | PieceKind::Float(_) => {
                 x += piece.width;
                 kept.push(piece.clone());
             }
@@ -807,6 +853,7 @@ fn build_line(
                 box_id: *box_id,
                 static_position: Point::new(x, Au::ZERO),
             }),
+            PieceKind::Float(_) => {}
             PieceKind::Break => {}
         }
         i += 1;
@@ -891,6 +938,7 @@ fn close_box(
         auto_height: Au::ZERO,
         relative_offset: Point::default(),
         absolutes: Vec::new(),
+        exclusions_out: None,
     };
     push_child(
         stack,
@@ -1040,18 +1088,41 @@ mod tests {
     fn lines_fill_greedily_and_trailing_spaces_hang() {
         // "aaa bbb ccc" with 10px letters and 5px spaces.
         let words = [word(35.0, 5.0), word(35.0, 5.0), word(30.0, 0.0)];
-        assert_eq!(break_lines(&words, Au::from_px(100.0)), vec![0..3]);
+        let empty = &ExclusionSpace::empty();
+        assert_eq!(
+            break_lines(&words, Au::from_px(100.0), empty, Au::from_px(16.0)),
+            vec![0..3]
+        );
         // 35 + 30 = 65 fits only if the second space hangs.
-        assert_eq!(break_lines(&words, Au::from_px(65.0)), [0..2, 2..3]);
-        assert_eq!(break_lines(&words, Au::from_px(64.0)), [0..1, 1..2, 2..3]);
+        assert_eq!(
+            break_lines(&words, Au::from_px(65.0), empty, Au::from_px(16.0)),
+            [0..2, 2..3]
+        );
+        assert_eq!(
+            break_lines(&words, Au::from_px(64.0), empty, Au::from_px(16.0)),
+            [0..1, 1..2, 2..3]
+        );
     }
 
     #[test]
     fn an_overlong_word_takes_a_line_of_its_own() {
         let words = [word(10.0, 5.0), word(500.0, 5.0), word(10.0, 0.0)];
-        assert_eq!(break_lines(&words, Au::from_px(50.0)), [0..1, 1..2, 2..3]);
         assert_eq!(
-            break_lines(&[], Au::from_px(50.0)),
+            break_lines(
+                &words,
+                Au::from_px(50.0),
+                &ExclusionSpace::empty(),
+                Au::from_px(16.0)
+            ),
+            [0..1, 1..2, 2..3]
+        );
+        assert_eq!(
+            break_lines(
+                &[],
+                Au::from_px(50.0),
+                &ExclusionSpace::empty(),
+                Au::from_px(16.0)
+            ),
             Vec::<Range<usize>>::new()
         );
     }
@@ -1062,7 +1133,15 @@ mod tests {
         let mut glued = word(30.0, 0.0);
         glued.breaks_after = false;
         let pieces = [glued, word(35.0, 5.0), word(30.0, 0.0)];
-        assert_eq!(break_lines(&pieces, Au::from_px(40.0)), [0..2, 2..3]);
+        assert_eq!(
+            break_lines(
+                &pieces,
+                Au::from_px(40.0),
+                &ExclusionSpace::empty(),
+                Au::from_px(16.0)
+            ),
+            [0..2, 2..3]
+        );
     }
 
     #[test]
@@ -1070,7 +1149,15 @@ mod tests {
         let mut pieces = vec![word(10.0, 0.0), Piece::new(PieceKind::Break, Au::ZERO)];
         pieces.push(Piece::new(PieceKind::Break, Au::ZERO));
         pieces.push(word(10.0, 0.0));
-        assert_eq!(break_lines(&pieces, Au::from_px(500.0)), [0..2, 2..3, 3..4]);
+        assert_eq!(
+            break_lines(
+                &pieces,
+                Au::from_px(500.0),
+                &ExclusionSpace::empty(),
+                Au::from_px(16.0)
+            ),
+            [0..2, 2..3, 3..4]
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub struct Subset {
     pub areas: Vec<Area>,
 }
 
-/// One area: a name and the folders it covers.
+/// One area: a name, the folders it covers, and an optional pass-rate floor.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Area {
@@ -40,6 +40,11 @@ pub struct Area {
     pub name: String,
     /// Folders from the WPT root.
     pub paths: Vec<String>,
+    /// The pass-rate floor, in percent. A run whose pass rate for this area
+    /// is under the floor exits 1 and names the area (spec 0009, AC-21).
+    /// Absent until the first full run measures it; only ever raised after.
+    #[serde(default)]
+    pub min_pass_rate: Option<f32>,
 }
 
 impl Subset {
@@ -76,6 +81,12 @@ impl Subset {
                 "area `{name}` is listed twice"
             );
             ensure!(!area.paths.is_empty(), "area `{name}` has no paths");
+            if let Some(rate) = area.min_pass_rate {
+                ensure!(
+                    (0.0..=100.0).contains(&rate),
+                    "area `{name}` has min_pass_rate {rate} outside 0..=100"
+                );
+            }
         }
         for path in subset
             .exclude
@@ -83,7 +94,11 @@ impl Subset {
             .chain(subset.areas.iter_mut().flat_map(|a| a.paths.iter_mut()))
         {
             *path = path.trim_matches('/').to_owned();
-            if path.is_empty() || path.split('/').any(|s| s == ".." || s == "." || s.is_empty()) {
+            if path.is_empty()
+                || path
+                    .split('/')
+                    .any(|s| s == ".." || s == "." || s.is_empty())
+            {
                 bail!("path `{path}` must be a folder below the WPT root");
             }
         }
@@ -98,7 +113,10 @@ impl Subset {
     /// The folders to check out: every area's paths, then the shared ones.
     pub fn sparse_paths(&self) -> Vec<String> {
         let mut paths: Vec<String> = Vec::new();
-        let all = self.areas.iter().flat_map(|a| a.paths.iter().map(String::as_str));
+        let all = self
+            .areas
+            .iter()
+            .flat_map(|a| a.paths.iter().map(String::as_str));
         for path in all.chain(SHARED_PATHS.iter().copied()) {
             if !paths.iter().any(|p| p == path) {
                 paths.push(path.to_owned());
@@ -116,7 +134,9 @@ impl Subset {
 
     /// Whether an `exclude` prefix removes `path`.
     pub fn excluded(&self, path: &str) -> bool {
-        self.exclude.iter().any(|prefix| path.starts_with(prefix.as_str()))
+        self.exclude
+            .iter()
+            .any(|prefix| path.starts_with(prefix.as_str()))
     }
 }
 
@@ -145,7 +165,10 @@ mod tests {
         .unwrap();
         assert_eq!(subset.area_of("css/x/deep/t.html").unwrap().name, "a");
         assert_eq!(subset.area_of("css/x/t.html").unwrap().name, "b");
-        assert!(subset.area_of("css/xy/t.html").is_none(), "whole segments only");
+        assert!(
+            subset.area_of("css/xy/t.html").is_none(),
+            "whole segments only"
+        );
         assert_eq!(
             subset.sparse_paths()[..2],
             ["css/x/deep".to_owned(), "css/x".to_owned()]
@@ -157,10 +180,36 @@ mod tests {
         let area = "[[area]]\nname = \"a\"\npaths = [\"css\"]\n";
         assert!(Subset::parse(&format!("wpt_commit = \"ABC\"\n{area}")).is_err());
         assert!(subset("").is_err(), "no areas");
-        assert!(subset(&format!("{area}{area}")).is_err(), "a duplicate name");
+        assert!(
+            subset(&format!("{area}{area}")).is_err(),
+            "a duplicate name"
+        );
         assert!(subset("[[area]]\nname = \"A b\"\npaths = [\"css\"]\n").is_err());
         assert!(subset("[[area]]\nname = \"a\"\npaths = []\n").is_err());
         assert!(subset("[[area]]\nname = \"a\"\npaths = [\"../etc\"]\n").is_err());
-        assert!(subset(&format!("{area}color = 1\n")).is_err(), "unknown fields");
+        assert!(
+            subset(&format!("{area}color = 1\n")).is_err(),
+            "unknown fields"
+        );
+    }
+
+    #[test]
+    fn min_pass_rate_parses_and_stays_in_range() {
+        let area = "[[area]]\nname = \"a\"\npaths = [\"css\"]\n";
+        let good = format!("{area}min_pass_rate = 70\n");
+        let parsed = subset(&good).unwrap();
+        assert_eq!(parsed.areas[0].min_pass_rate, Some(70.0));
+
+        // Absent is fine.
+        let absent = "[[area]]\nname = \"a\"\npaths = [\"css\"]\n";
+        assert_eq!(subset(absent).unwrap().areas[0].min_pass_rate, None);
+
+        // Out of range is refused.
+        for rate in [-1.0, 100.5] {
+            assert!(
+                subset(&format!("{area}min_pass_rate = {rate}\n")).is_err(),
+                "min_pass_rate {rate} should be out of range"
+            );
+        }
     }
 }

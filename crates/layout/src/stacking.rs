@@ -123,6 +123,9 @@ enum Stacking {
     /// An atomic inline or a flex item: it paints as if it made a context,
     /// among the inline content.
     Atomic,
+    /// A float: paints as its own layer after block backgrounds and before
+    /// inline content (CSS 2.2 Appendix E, step 5; spec 0009, child 0001).
+    Float,
 }
 
 fn stacking(boxes: &BoxTree, fragment: &BoxFragment, in_line: bool) -> Stacking {
@@ -144,6 +147,8 @@ fn stacking(boxes: &BoxTree, fragment: &BoxFragment, in_line: bool) -> Stacking 
         Stacking::Positioned
     } else if flex_item || (in_line && fragment.inline_edges.is_none()) {
         Stacking::Atomic
+    } else if layout_box.float.is_some() {
+        Stacking::Float
     } else {
         Stacking::Normal
     }
@@ -165,6 +170,9 @@ struct Layers<'a, S> {
     own: Vec<Item<'a, S>>,
     negative: Vec<(i32, usize)>,
     blocks: Vec<Item<'a, S>>,
+    /// Floats: paint after block backgrounds and before inline content,
+    /// each whole as if it made a stacking context (Appendix E, step 5).
+    floats: Vec<Item<'a, S>>,
     inline: Vec<Item<'a, S>>,
     positioned: Vec<Item<'a, S>>,
     positive: Vec<(i32, usize)>,
@@ -178,6 +186,7 @@ impl<S> Layers<'_, S> {
             own: Vec::new(),
             negative: Vec::new(),
             blocks: Vec::new(),
+            floats: Vec::new(),
             inline: Vec::new(),
             positioned: Vec::new(),
             positive: Vec::new(),
@@ -196,8 +205,12 @@ struct Work<'a, S> {
     in_line: bool,
     /// The group its steps go to.
     layers: usize,
-    /// The real stacking context it is in.
+    /// The real stacking context it is in; its children walk in this context.
     context: usize,
+    /// The context whose negative/positive/positioned lists descendants
+    /// register into: the enclosing context for a float's sub-group, else
+    /// `context` itself (spec 0009, child 0001).
+    parent_context: usize,
 }
 
 /// Sorts every fragment into the layers of its group, depth first in tree
@@ -214,6 +227,7 @@ fn gather<'a, W: Walker<'a>>(
         in_line: false,
         layers: 0,
         context: 0,
+        parent_context: 0,
     }];
     while let Some(Work {
         placed,
@@ -221,6 +235,7 @@ fn gather<'a, W: Walker<'a>>(
         in_line,
         layers,
         context,
+        parent_context,
     }) = work.pop()
     {
         let Placed {
@@ -241,6 +256,7 @@ fn gather<'a, W: Walker<'a>>(
                     in_line: true,
                     layers,
                     context,
+                    parent_context,
                 }));
                 continue;
             }
@@ -260,32 +276,60 @@ fn gather<'a, W: Walker<'a>>(
                 state: state.clone(),
             });
         }
-        if !root {
-            let kind = stacking(boxes, fragment_box, in_line);
-            if !matches!(kind, Stacking::Normal) {
+        let kind = if !root {
+            stacking(boxes, fragment_box, in_line)
+        } else {
+            Stacking::Normal
+        };
+        match kind {
+            Stacking::Float => {
+                // A float paints as its own layer after block backgrounds and
+                // before inline content (Appendix E, step 5). Its sub-group
+                // paints the float box plus its content as a unit; positioned
+                // descendants and real stacking contexts register with the
+                // enclosing context (parent_context).
+                let group = groups.len();
+                groups.push(Layers::new());
+                groups[layers].floats.push(Item::Group(group));
+                work.push(Work {
+                    placed: Placed {
+                        origin,
+                        fragment,
+                        state,
+                    },
+                    root: true,
+                    in_line,
+                    layers: group,
+                    context: group,
+                    parent_context,
+                });
+                continue;
+            }
+            _ if !matches!(kind, Stacking::Normal) => {
                 let group = groups.len();
                 groups.push(Layers::new());
                 let new_context = match kind {
                     Stacking::Context(z) if z < 0 => {
-                        groups[context].negative.push((z, group));
+                        groups[parent_context].negative.push((z, group));
                         group
                     }
                     Stacking::Context(z) if z > 0 => {
-                        groups[context].positive.push((z, group));
+                        groups[parent_context].positive.push((z, group));
                         group
                     }
                     Stacking::Context(_) => {
-                        groups[layers].positioned.push(Item::Group(group));
+                        groups[parent_context].positioned.push(Item::Group(group));
                         group
                     }
                     Stacking::Positioned => {
-                        groups[layers].positioned.push(Item::Group(group));
+                        groups[parent_context].positioned.push(Item::Group(group));
                         context
                     }
                     Stacking::Atomic | Stacking::Normal => {
                         groups[layers].inline.push(Item::Group(group));
                         context
                     }
+                    Stacking::Float => unreachable!(),
                 };
                 work.push(Work {
                     placed: Placed {
@@ -297,23 +341,28 @@ fn gather<'a, W: Walker<'a>>(
                     in_line,
                     layers: group,
                     context: new_context,
+                    parent_context,
                 });
                 continue;
             }
+            _ => {}
         }
 
-        let own = Step::Box {
-            fragment: fragment_box,
-            origin,
-            state: state.clone(),
-        };
-        let group = &mut groups[layers];
-        if root {
-            group.own.push(Item::Step(own));
-        } else if fragment_box.inline_edges.is_some() {
-            group.inline.push(Item::Step(own));
-        } else {
-            group.blocks.push(Item::Step(own));
+        let is_normal = matches!(kind, Stacking::Normal);
+        if is_normal {
+            let own = Step::Box {
+                fragment: fragment_box,
+                origin,
+                state: state.clone(),
+            };
+            let group = &mut groups[layers];
+            if root {
+                group.own.push(Item::Step(own));
+            } else if fragment_box.inline_edges.is_some() {
+                group.inline.push(Item::Step(own));
+            } else {
+                group.blocks.push(Item::Step(own));
+            }
         }
         let outlined = boxes
             .get(fragment_box.box_id)
@@ -340,6 +389,7 @@ fn gather<'a, W: Walker<'a>>(
             in_line: children_in_line,
             layers,
             context,
+            parent_context,
         }));
     }
     groups
@@ -382,6 +432,7 @@ fn flatten<'a, S>(mut groups: Vec<Layers<'a, S>>) -> Vec<Step<'a, S>> {
         sequence.extend(group.own.into_iter().map(item));
         sequence.extend(by_z(group.negative));
         sequence.extend(group.blocks.into_iter().map(item));
+        sequence.extend(group.floats.into_iter().map(item));
         sequence.extend(group.inline.into_iter().map(item));
         sequence.extend(group.positioned.into_iter().map(item));
         sequence.extend(by_z(group.positive));
