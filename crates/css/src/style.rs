@@ -285,12 +285,16 @@ pub enum Display {
     ListItem,
     /// `display: flex`: a block level flex container (spec 0006, AC-3).
     Flex,
+    /// `display: flow-root`: a block that always establishes a block
+    /// formatting context, so its `height: auto` holds its floats
+    /// (spec 0009, child 0001).
+    FlowRoot,
     /// `display: none`: no box at all.
     None,
 }
 
-/// `position`. `fixed` computes to `Absolute` and `sticky` to `Relative`
-/// (spec 0006, Unsupported keywords).
+/// `position` (spec 0006, AC-5; spec 0009, child 0003). `fixed` and
+/// `sticky` are real values now, not mapped to `absolute` and `relative`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Position {
     /// `static`, the initial value.
@@ -300,6 +304,12 @@ pub enum Position {
     Relative,
     /// `absolute`.
     Absolute,
+    /// `fixed`: laid out against the viewport, scrolled with it (spec 0009,
+    /// child 0003, AC-10).
+    Fixed,
+    /// `sticky`: laid out in flow, then shifted to stay inside its nearest
+    /// scroll container while it scrolls (spec 0009, child 0003, AC-11).
+    Sticky,
 }
 
 /// `text-overflow`.

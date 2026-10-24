@@ -17,9 +17,9 @@ use crate::values::{
     parse_font_family, parse_keyword, parse_length, parse_url,
 };
 use crate::{
-    AlignItems, BorderStyle, BoxSizing, Cursor, Display, FlexDirection, FlexWrap, FontStyle,
-    JustifyContent, ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position, TextAlign,
-    TextDecorationLine, TextOverflow, UserSelect, Visibility, WhiteSpace,
+    AlignItems, BorderStyle, BoxSizing, Clear, Cursor, Display, FlexDirection, FlexWrap, Float,
+    FontStyle, JustifyContent, ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position,
+    TextAlign, TextDecorationLine, TextOverflow, UserSelect, Visibility, WhiteSpace,
 };
 
 macro_rules! longhands {
@@ -112,6 +112,8 @@ longhands! {
     Order = "order", false;
     OverflowX = "overflow-x", false;
     OverflowY = "overflow-y", false;
+    Float = "float", false;
+    Clear = "clear", false;
     Position = "position", false;
     Top = "top", false;
     Right = "right", false;
@@ -358,6 +360,8 @@ pub(crate) enum Value {
     /// `align-self`; `None` is `auto`.
     AlignSelf(Option<AlignItems>),
     Overflow(Overflow),
+    Float(Float),
+    Clear(Clear),
     Position(Position),
     /// `z-index`; `None` is `auto`.
     ZIndex(Option<i32>),
@@ -733,18 +737,16 @@ fn parse_longhand(
         }
         L::Order => Value::Integer(input.expect_integer()?),
         L::OverflowX | L::OverflowY => Value::Overflow(parse_overflow(input, context, longhand)?),
-        L::Position => Value::Position(parse_mapped_keyword(
+        L::Float => Value::Float(parse_float(input)?),
+        L::Clear => Value::Clear(parse_clear(input)?),
+        L::Position => Value::Position(parse_keyword(
             input,
-            context,
-            longhand,
             &[
                 ("static", Position::Static),
                 ("relative", Position::Relative),
                 ("absolute", Position::Absolute),
-            ],
-            &[
-                ("fixed", Position::Absolute),
-                ("sticky", Position::Relative),
+                ("fixed", Position::Fixed),
+                ("sticky", Position::Sticky),
             ],
         )?),
         L::Top | L::Right | L::Bottom | L::Left => {
@@ -920,22 +922,46 @@ fn parse_outline(
     ])
 }
 
-/// One `overflow` axis. `scroll`, `auto` and `clip` compute to `hidden`
-/// (spec 0006, Unsupported keywords).
+/// One `overflow` axis (spec 0009, child 0002, AC-6). No keyword maps away
+/// anymore: `scroll`, `auto` and `clip` compute to themselves.
 fn parse_overflow(
     input: &mut Parser<'_>,
-    context: &ParseContext,
-    longhand: Longhand,
+    _context: &ParseContext,
+    _longhand: Longhand,
 ) -> ParseResult<Overflow> {
-    parse_mapped_keyword(
+    parse_keyword(
         input,
-        context,
-        longhand,
-        &[("visible", Overflow::Visible), ("hidden", Overflow::Hidden)],
         &[
-            ("scroll", Overflow::Hidden),
-            ("auto", Overflow::Hidden),
-            ("clip", Overflow::Hidden),
+            ("visible", Overflow::Visible),
+            ("hidden", Overflow::Hidden),
+            ("clip", Overflow::Clip),
+            ("scroll", Overflow::Scroll),
+            ("auto", Overflow::Auto),
+        ],
+    )
+}
+
+/// `float`: `none`, `left` or `right` (spec 0009, child 0001).
+fn parse_float(input: &mut Parser<'_>) -> ParseResult<Float> {
+    parse_keyword(
+        input,
+        &[
+            ("none", Float::None),
+            ("left", Float::Left),
+            ("right", Float::Right),
+        ],
+    )
+}
+
+/// `clear`: `none`, `left`, `right` or `both` (spec 0009, child 0001).
+fn parse_clear(input: &mut Parser<'_>) -> ParseResult<Clear> {
+    parse_keyword(
+        input,
+        &[
+            ("none", Clear::None),
+            ("left", Clear::Left),
+            ("right", Clear::Right),
+            ("both", Clear::Both),
         ],
     )
 }
@@ -1080,9 +1106,12 @@ fn parse_display(input: &mut Parser<'_>) -> ParseResult<Display> {
             Display::Inline
         }
         // Block level ones, table parts included (feature 11).
-        "grid" | "table" | "flow-root" | "run-in" | "table-row-group" | "table-header-group"
+        "grid" | "table" | "run-in" | "table-row-group" | "table-header-group"
         | "table-footer-group" | "table-row" | "table-cell" | "table-column-group"
         | "table-column" | "table-caption" => Display::Block,
+        // `flow-root` is a block that always makes a BFC (spec 0009, child
+        // 0001).
+        "flow-root" => Display::FlowRoot,
         _ => return invalid(),
     })
 }
@@ -1876,8 +1905,8 @@ mod tests {
         );
         assert_eq!(
             overflow[1].1,
-            DeclaredValue::Value(Value::Overflow(Overflow::Hidden)),
-            "auto computes to hidden"
+            DeclaredValue::Value(Value::Overflow(Overflow::Auto)),
+            "auto computes to itself"
         );
         assert_eq!(
             parse("overflow: visible")[1].1,
@@ -1887,19 +1916,57 @@ mod tests {
     }
 
     #[test]
-    fn positioning_longhands_parse_and_map_fixed_and_sticky() {
-        // Spec 0006, AC-1 and Unsupported keywords
+    fn overflow_longhands_compute_every_keyword_to_itself() {
+        // Spec 0009, child 0002, AC-6 and AC-20: no overflow keyword maps
+        // away anymore. The shorthand sets both axes to the same value.
+        for (text, expected) in [
+            ("overflow-x: visible", Overflow::Visible),
+            ("overflow-x: hidden", Overflow::Hidden),
+            ("overflow-x: clip", Overflow::Clip),
+            ("overflow-x: scroll", Overflow::Scroll),
+            ("overflow-x: auto", Overflow::Auto),
+            ("overflow-y: visible", Overflow::Visible),
+            ("overflow-y: hidden", Overflow::Hidden),
+            ("overflow-y: clip", Overflow::Clip),
+            ("overflow-y: scroll", Overflow::Scroll),
+            ("overflow-y: auto", Overflow::Auto),
+        ] {
+            assert_eq!(
+                value(text),
+                Value::Overflow(expected),
+                "{text} should compute to itself"
+            );
+        }
+        let shorthand = parse("overflow: scroll auto");
+        assert_eq!(
+            shorthand
+                .iter()
+                .map(|(n, _, _)| n.as_str())
+                .collect::<Vec<_>>(),
+            ["overflow-x", "overflow-y"]
+        );
+        assert_eq!(
+            shorthand[0].1,
+            DeclaredValue::Value(Value::Overflow(Overflow::Scroll)),
+        );
+        assert_eq!(
+            shorthand[1].1,
+            DeclaredValue::Value(Value::Overflow(Overflow::Auto)),
+        );
+    }
+
+    #[test]
+    fn positioning_longhands_parse_fixed_and_sticky() {
+        // Spec 0009, child 0003, AC-20: `fixed` and `sticky` compute to
+        // themselves, not to `absolute` and `relative`.
         assert_eq!(
             value("position: absolute"),
             Value::Position(Position::Absolute)
         );
-        assert_eq!(
-            value("position: fixed"),
-            Value::Position(Position::Absolute)
-        );
+        assert_eq!(value("position: fixed"), Value::Position(Position::Fixed));
         assert_eq!(
             value("position: sticky"),
-            Value::Position(Position::Relative)
+            Value::Position(Position::Sticky)
         );
         assert!(parse("position: float").is_empty());
         assert_eq!(value("top: auto"), Value::Size(None));

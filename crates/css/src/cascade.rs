@@ -20,8 +20,8 @@ use crate::properties::{
 };
 use crate::values::SpecifiedLength;
 use crate::{
-    BorderStyle, Color, ComputedStyle, CustomProperties, Display, FlexBasis, Font, Length,
-    LineHeight, OutlineStyle, Position,
+    BorderStyle, Color, ComputedStyle, CustomProperties, Display, FlexBasis, Float, Font, Length,
+    LineHeight, Overflow, OutlineStyle, Position,
 };
 
 /// The longest text a `var()` substitution may produce. Past it the
@@ -778,6 +778,12 @@ impl Computer<'_> {
             (L::OverflowY, Value::Overflow(overflow)) => {
                 Rc::make_mut(&mut style.display_box).overflow_y = *overflow;
             }
+            (L::Float, Value::Float(float)) => {
+                Rc::make_mut(&mut style.display_box).float = *float;
+            }
+            (L::Clear, Value::Clear(clear)) => {
+                Rc::make_mut(&mut style.display_box).clear = *clear;
+            }
             (L::Position, Value::Position(position)) => {
                 Rc::make_mut(&mut style.display_box).position = *position;
             }
@@ -861,11 +867,22 @@ impl Computer<'_> {
 
     fn fix_up(&mut self) {
         // The root element is always a block box (CSS 2.2, 9.7), and so are
-        // absolute boxes (section 9.7) and the children of a flex
-        // container, which are flex items (CSS Flexbox 4; spec 0006, AC-3).
+        // absolute boxes (section 9.7), the children of a flex container,
+        // which are flex items (CSS Flexbox 4; spec 0006, AC-3), and a box
+        // with `float` other than `none` that is not itself absolutely
+        // positioned (CSS 2.2, 9.7; spec 0009, child 0001).
+        let floated = self.style.display_box.float != Float::None
+            && self.style.display_box.position != Position::Absolute;
+        // Absolute, fixed and sticky boxes are positioned, so they blockify
+        // (CSS 2.2 section 9.7); relative boxes do not.
+        let positioned = matches!(
+            self.style.display_box.position,
+            Position::Absolute | Position::Fixed | Position::Sticky
+        );
         let blockify = self.is_root
             || self.parent.display_box.display == Display::Flex
-            || self.style.display_box.position == Position::Absolute;
+            || positioned
+            || floated;
         if blockify
             && matches!(
                 self.style.display_box.display,
@@ -874,6 +891,18 @@ impl Computer<'_> {
         {
             Rc::make_mut(&mut self.style.display_box).display = Display::Block;
         }
+        // CSS Overflow 3: when one axis is `visible` or `clip` and the other
+        // is not, `visible` computes to `auto` and `clip` to `hidden`
+        // (spec 0009, child 0002, AC-6).
+        let display_box = Rc::make_mut(&mut self.style.display_box);
+        let (x, y) = (display_box.overflow_x, display_box.overflow_y);
+        let normalize = |axis: Overflow, other: Overflow| match (axis, other) {
+            (Overflow::Visible, other) if other != Overflow::Visible => Overflow::Auto,
+            (Overflow::Clip, other) if other != Overflow::Clip => Overflow::Hidden,
+            (axis, _) => axis,
+        };
+        display_box.overflow_x = normalize(x, y);
+        display_box.overflow_y = normalize(y, x);
     }
 }
 
@@ -961,6 +990,8 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::OutlineStyle => copy!(outline.style),
         L::OutlineColor => copy!(outline.color),
         L::OutlineOffset => copy!(outline.offset),
+        L::Float => copy!(display_box.float),
+        L::Clear => copy!(display_box.clear),
         L::TextOverflow => copy!(display_box.text_overflow),
         L::Cursor => copy!(inherited_box.cursor),
         L::UserSelect => copy!(inherited_box.user_select),
@@ -1074,7 +1105,7 @@ mod tests {
     fn insets_z_index_and_absolute_blockification_compute() {
         // Spec 0006, AC-1
         let style = computed("position: fixed; top: 10%; left: 2em; z-index: 4");
-        assert_eq!(style.display_box.position, Position::Absolute);
+        assert_eq!(style.display_box.position, Position::Fixed);
         assert_eq!(style.display_box.display, Display::Block, "blockified");
         assert_eq!(style.position_offsets.top, Some(Length::Percent(10.0)));
         assert_eq!(style.position_offsets.left, Some(Length::px(32.0)));
@@ -1090,6 +1121,32 @@ mod tests {
     }
 
     #[test]
+    fn overflow_cross_axis_normalizes_visible_and_clip() {
+        // Spec 0009, child 0002, AC-6: when one axis is `visible` or `clip`
+        // and the other is not, `visible` becomes `auto` and `clip` becomes
+        // `hidden`.
+        let mixed = computed("overflow-x: visible; overflow-y: scroll");
+        assert_eq!(mixed.display_box.overflow_x, Overflow::Auto);
+        assert_eq!(mixed.display_box.overflow_y, Overflow::Scroll);
+
+        let reversed = computed("overflow-x: scroll; overflow-y: visible");
+        assert_eq!(reversed.display_box.overflow_x, Overflow::Scroll);
+        assert_eq!(reversed.display_box.overflow_y, Overflow::Auto);
+
+        let clip = computed("overflow-x: clip; overflow-y: auto");
+        assert_eq!(clip.display_box.overflow_x, Overflow::Hidden);
+        assert_eq!(clip.display_box.overflow_y, Overflow::Auto);
+
+        // Two `visible`s or two `clip`s stay as they are.
+        let both_visible = computed("overflow: visible");
+        assert_eq!(both_visible.display_box.overflow_x, Overflow::Visible);
+        assert_eq!(both_visible.display_box.overflow_y, Overflow::Visible);
+        let both_clip = computed("overflow: clip");
+        assert_eq!(both_clip.display_box.overflow_x, Overflow::Clip);
+        assert_eq!(both_clip.display_box.overflow_y, Overflow::Clip);
+    }
+
+    #[test]
     fn relative_weights_follow_the_table() {
         assert_eq!(bolder(400), 700);
         assert_eq!(bolder(700), 900);
@@ -1097,5 +1154,39 @@ mod tests {
         assert_eq!(lighter(400), 100);
         assert_eq!(lighter(700), 400);
         assert_eq!(lighter(900), 700);
+    }
+
+    #[test]
+    fn float_clear_and_flow_root_compute() {
+        // Spec 0009, child 0001: `float`, `clear` and `flow-root` compute.
+        let floated = computed("float: left; clear: both; display: flow-root");
+        assert_eq!(floated.display_box.float, Float::Left);
+        assert_eq!(floated.display_box.clear, crate::Clear::Both);
+        assert_eq!(floated.display_box.display, Display::FlowRoot);
+
+        // A float is blockified even when its display is inline (CSS 2.2 9.7).
+        let inline_float = computed("display: inline; float: right");
+        assert_eq!(inline_float.display_box.display, Display::Block);
+        assert_eq!(inline_float.display_box.float, Float::Right);
+
+        // `inherit` on float copies from the parent.
+        let mut parent = ComputedStyle::default();
+        Rc::make_mut(&mut parent.display_box).float = Float::Left;
+        let inherited = compute(
+            &[Declaration {
+                property: PropertyKey::Longhand(Longhand::Float),
+                value: DeclaredValue::Wide(CssWide::Inherit),
+                important: false,
+            }],
+            &CascadeInputs {
+                parent: Some(&parent),
+                root_font_size: Au::from_px(16.0),
+                device: &Device {
+                    width: 800.0,
+                    height: 600.0,
+                },
+            },
+        );
+        assert_eq!(inherited.display_box.float, Float::Left);
     }
 }

@@ -55,6 +55,8 @@ impl BoxTree {
                 css::Position::Static => {}
                 css::Position::Relative => out.push_str(" relative"),
                 css::Position::Absolute => out.push_str(" absolute"),
+                css::Position::Fixed => out.push_str(" fixed"),
+                css::Position::Sticky => out.push_str(" sticky"),
             }
             if let Some(marker) = &layout_box.marker {
                 let _ = write!(out, " marker={marker:?}");
@@ -94,7 +96,9 @@ impl BoxTree {
                     InlineItem::Break(node) => {
                         Entry::Line(format!("{:indent$}break {}\n", "", doc.path(*node)))
                     }
-                    InlineItem::Atomic(id) | InlineItem::Absolute(id) => Entry::Box(*id, depth + 1),
+                    InlineItem::Atomic(id) | InlineItem::Absolute(id) | InlineItem::Float(id) => {
+                        Entry::Box(*id, depth + 1)
+                    }
                 })
                 .collect();
             entries.extend(
