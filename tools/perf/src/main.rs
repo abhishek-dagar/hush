@@ -41,6 +41,16 @@ fn main() {
 fn run() -> anyhow::Result<i32> {
     let args = args::Args::parse()?;
 
+    // The runner surface keeps these apart: `--only` never writes the
+    // baseline, so accepting from a partial run is a mistake (spec 0007,
+    // Runner surface).
+    if args.accept && args.only.is_some() {
+        anyhow::bail!(
+            "--accept cannot be combined with --only: the baseline is only \
+             written by a full gate run"
+        );
+    }
+
     // Load and validate budgets before anything is built (AC-10). A row
     // with no reason, an unknown metric/os, or alarm_pct on a timing
     // metric stops here, naming the row.
@@ -61,6 +71,7 @@ fn run() -> anyhow::Result<i32> {
     // Measure every budget row that applies to this OS.
     let mut rows = Vec::new();
     let mut any_fail = false;
+    let mut any_hard_fail = false;
 
     for budget in &budgets.rows {
         if let Some(ref only) = args.only
@@ -73,38 +84,20 @@ fn run() -> anyhow::Result<i32> {
             let key = budgets.baseline_key(budget, os);
             let baseline_value = baseline.values.get(&key).copied();
 
-            // Only the current OS is measured natively; other OSes attempt
-            // a cross build and become `not_measured` with a hint (AC-3).
-            if os != current_os() {
-                rows.push(report::build_row(
-                    budget.metric,
-                    budget.target,
-                    os,
-                    vec![],
-                    0.0,
-                    budget.limit,
-                    baseline_value,
-                    core_status(None, budget, baseline_value, machine_matches),
-                    Some(format!(
-                        "not measured on {}; no native {} build on this machine",
-                        os.as_str(),
-                        os.as_str()
-                    )),
-                ));
-                continue;
-            }
-
             let (samples, value, note) = measure_metric(budget, os)?;
-            let status = core_status(Some(value), budget, baseline_value, machine_matches);
+            let status = core_status(value, budget, baseline_value, machine_matches);
             if status.is_fail() {
                 any_fail = true;
+            }
+            if status.blocks_accept() {
+                any_hard_fail = true;
             }
             rows.push(report::build_row(
                 budget.metric,
                 budget.target,
                 os,
                 samples,
-                value,
+                value.unwrap_or(0.0),
                 budget.limit,
                 baseline_value,
                 status,
@@ -131,9 +124,10 @@ fn run() -> anyhow::Result<i32> {
     };
     report::Report::write(&report, &report::report_path())?;
 
-    // --accept: refresh baseline.json only when nothing failed (AC-10).
+    // --accept: refresh baseline.json when no row hard failed (AC-10). An
+    // alarm is allowed here: accepting new numbers is the point.
     if args.accept {
-        if any_fail {
+        if any_hard_fail {
             anyhow::bail!("cannot accept a baseline while a budget row fails");
         }
         write_baseline(&budgets, &rows, &machine)?;
@@ -158,24 +152,43 @@ fn current_os() -> budgets::Os {
     }
 }
 
-/// Measures one budget row on the current OS. For task 1 only bundle_size
-/// is measured; every other metric returns `not_measured` until its task
-/// lands (spec 0007, Build plan task 1).
+/// Measures one budget row on the current OS. The measured value is `None`
+/// when the row could not be measured: a missing cross tool (AC-3), or a
+/// runtime metric whose task has not landed yet (spec 0007, Build plan
+/// tasks 3 to 6). An unmeasured row is honestly `not_measured`, never a
+/// fake pass.
 fn measure_metric(
     budget: &budgets::BudgetRow,
     os: budgets::Os,
-) -> anyhow::Result<(Vec<f64>, f64, Option<String>)> {
+) -> anyhow::Result<(Vec<f64>, Option<f64>, Option<String>)> {
     match budget.metric {
-        budgets::Metric::BundleSize => {
-            let value = size::measure(budget.target, os)
-                .ok_or_else(|| anyhow::anyhow!("could not measure bundle size"))?;
-            Ok((vec![value], value, None))
+        budgets::Metric::BundleSize => match size::measure(budget.target, os) {
+            Some(value) => Ok((vec![value], Some(value), None)),
+            None if os == current_os() => Err(anyhow::anyhow!("could not measure bundle size")),
+            // AC-3: the cross tool is missing or the cross build failed.
+            None => Ok((
+                vec![],
+                None,
+                Some(format!("not measured: {}", cross_hint(os))),
+            )),
+        },
+        _ => Ok((
+            vec![],
+            None,
+            Some("not measured: runtime metrics land in build plan tasks 3 to 6".to_owned()),
+        )),
+    }
+}
+
+/// The one line install hint for a cross OS whose build did not happen
+/// (spec 0007, AC-3).
+fn cross_hint(os: budgets::Os) -> String {
+    match os {
+        budgets::Os::Linux => {
+            "install cargo-zigbuild (with Zig on PATH) to measure Linux size".to_owned()
         }
-        _ => {
-            // Runtime metrics (cold start, memory, scroll, script load) are
-            // implemented in later tasks; they are not_measured here.
-            Ok((vec![], 0.0, Some("not yet implemented".to_owned())))
-        }
+        budgets::Os::Windows => "install cargo-xwin to measure Windows size".to_owned(),
+        budgets::Os::Macos => "no native macOS build on this machine".to_owned(),
     }
 }
 
@@ -232,6 +245,11 @@ fn write_baseline(
 ) -> anyhow::Result<()> {
     let mut values = serde_json::Map::new();
     for row in rows {
+        // A row that was not measured gets no baseline key, so its alarm
+        // stays skipped until a run measures it (spec 0007, baseline shape).
+        if row.samples.is_empty() {
+            continue;
+        }
         let key = format!("{}.{}.{}", row.metric, row.target, row.os);
         if let Some(num) = serde_json::Number::from_f64(row.value) {
             values.insert(key, serde_json::Value::Number(num));
@@ -249,15 +267,64 @@ fn write_baseline(
     report::write_json(Path::new(BASELINE_PATH), &baseline)
 }
 
-/// A coarse timestamp without adding the `time` or `chrono` dependency.
+/// Today's UTC date, `YYYY-MM-DD`, without adding a date dependency.
 fn record_timestamp() -> String {
-    let now = std::time::SystemTime::now();
-    let secs = now
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // Crude ISO-8601-ish from seconds since epoch; good enough for a record.
-    let days = secs / 86400;
-    let year = 1970 + (days / 365) as u32;
-    format!("{year}-10-21")
+    let (year, month, day) = civil_from_days((secs / 86400) as i64);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Days since 1970-01-01 to a proleptic Gregorian (year, month, day).
+/// Howard Hinnant's `civil_from_days` algorithm (public domain).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn civil_dates_from_epoch_days() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(58), (1970, 2, 28));
+        assert_eq!(civil_from_days(59), (1970, 3, 1)); // 1970 is not a leap year
+        assert_eq!(civil_from_days(365), (1971, 1, 1));
+        assert_eq!(civil_from_days(20750), (2026, 10, 24));
+    }
+
+    #[test]
+    fn runtime_metrics_are_not_measured_not_fake_pass() {
+        let budget = crate::budgets::BudgetRow {
+            metric: crate::budgets::Metric::ColdStart,
+            target: crate::budgets::Target::Browser,
+            os: vec![crate::budgets::Os::Macos],
+            limit: 200.0,
+            unit: crate::budgets::Unit::Ms,
+            alarm_pct: None,
+            reason: "a reason".to_owned(),
+        };
+        let (samples, value, note) = measure_metric(&budget, crate::budgets::Os::Macos).unwrap();
+        assert!(samples.is_empty());
+        assert!(value.is_none());
+        assert!(note.is_some());
+        // The status function turns a missing value into not_measured.
+        assert_eq!(
+            status::status(value, &budget, None, true),
+            status::Status::NotMeasured
+        );
+    }
 }

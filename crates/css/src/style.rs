@@ -195,6 +195,21 @@ pub enum Visibility {
     Collapse,
 }
 
+/// `vertical-align`: `baseline`, `top`, `middle`, `bottom`. Other values
+/// act as `baseline` (spec 0009, child 0004, AC-16). Does not inherit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VerticalAlign {
+    /// `baseline`, the initial value.
+    #[default]
+    Baseline,
+    /// `top`: aligns the top of the cell's content with the top of the row.
+    Top,
+    /// `middle`: centers the cell's content in the row.
+    Middle,
+    /// `bottom`: aligns the bottom of the cell's content with the bottom of the row.
+    Bottom,
+}
+
 /// `cursor`: the chrome CSS profile's keywords. Every other keyword
 /// computes to `auto` (spec 0006, Unsupported keywords).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -232,6 +247,9 @@ pub struct InheritedBox {
     pub cursor: Cursor,
     /// `user-select`.
     pub user_select: UserSelect,
+    /// `vertical-align` on table cells. Does not inherit, but stored here
+    /// for compactness (spec 0009, child 0004, AC-16).
+    pub vertical_align: VerticalAlign,
 }
 
 /// `list-style-type`.

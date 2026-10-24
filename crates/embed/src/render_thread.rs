@@ -691,16 +691,16 @@ impl RenderLoop {
             else {
                 continue;
             };
-            // Convert the frame rect to root space.
-            let origin = list.to_root(SpatialId(index as u32), PointF::default());
+            // Convert the frame rect to root space. The scrollbar track is
+            // anchored at the scrollport's top-left corner, which stays fixed
+            // as the frame scrolls (spec 0009, child 0002, AC-8).
+            let origin =
+                scrolling::scroll_port_origin_in_root(list, SpatialId(index as u32), *offset);
             let Some(origin) = origin else {
                 continue;
             };
             let frame = RectF {
-                origin: PointF {
-                    x: frame_rect.origin.x + origin.x,
-                    y: frame_rect.origin.y + origin.y,
-                },
+                origin,
                 size: frame_rect.size,
             };
             for (axis, scrollable) in [Axis::X, Axis::Y]
@@ -909,15 +909,16 @@ impl RenderLoop {
                     else {
                         continue;
                     };
-                    let origin = list.to_root(SpatialId(index as u32), PointF::default());
+                    let origin = scrolling::scroll_port_origin_in_root(
+                        list,
+                        SpatialId(index as u32),
+                        *offset,
+                    );
                     let Some(origin) = origin else {
                         continue;
                     };
                     let frame = RectF {
-                        origin: PointF {
-                            x: frame_rect.origin.x + origin.x,
-                            y: frame_rect.origin.y + origin.y,
-                        },
+                        origin,
                         size: frame_rect.size,
                     };
                     for (axis, scrollable) in [Axis::X, Axis::Y]

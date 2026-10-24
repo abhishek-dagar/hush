@@ -12,6 +12,7 @@ mod cascade;
 mod damage;
 mod dump;
 mod font_face;
+mod hints;
 mod invalidation;
 mod media;
 mod properties;
@@ -45,7 +46,7 @@ pub use style::{
     Font, FontStyle, InheritedBox, InheritedTable, InheritedText, JustifyContent, LineHeight, List,
     ListStylePosition, ListStyleType, Margin, Outline, OutlineStyle, Overflow, Padding, Position,
     PositionOffsets, Sizes, Table, TableLayout, TextAlign, TextDecorationLine, TextOverflow,
-    UserSelect, Visibility, WhiteSpace, WritingMode,
+    UserSelect, VerticalAlign, Visibility, WhiteSpace, WritingMode,
 };
 pub use stylist::Stylist;
 pub use ua::ua_stylesheet;

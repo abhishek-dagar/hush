@@ -21,7 +21,7 @@ use crate::{
     AlignItems, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect, Cursor,
     Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, JustifyContent,
     ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position, TableLayout, TextAlign,
-    TextDecorationLine, TextOverflow, UserSelect, Visibility, WhiteSpace,
+    TextDecorationLine, TextOverflow, UserSelect, VerticalAlign, Visibility, WhiteSpace,
 };
 
 macro_rules! longhands {
@@ -130,6 +130,7 @@ longhands! {
     TextOverflow = "text-overflow", false;
     Cursor = "cursor", true;
     UserSelect = "user-select", true;
+    VerticalAlign = "vertical-align", false;
     TableLayout = "table-layout", false;
     BorderCollapse = "border-collapse", true;
     BorderSpacing = "border-spacing", true;
@@ -379,6 +380,7 @@ pub(crate) enum Value {
     TextOverflow(TextOverflow),
     Cursor(Cursor),
     UserSelect(UserSelect),
+    VerticalAlign(VerticalAlign),
     TableLayout(TableLayout),
     BorderCollapse(BorderCollapse),
     BorderSpacing((Au, Au)),
@@ -798,6 +800,7 @@ fn parse_longhand(
                 ("contain", UserSelect::Auto),
             ],
         )?),
+        L::VerticalAlign => Value::VerticalAlign(parse_vertical_align(input)?),
         L::TableLayout => Value::TableLayout(parse_mapped_keyword(
             input,
             context,
@@ -1012,6 +1015,19 @@ fn parse_clear(input: &mut Parser<'_>) -> ParseResult<Clear> {
             ("both", Clear::Both),
         ],
     )
+}
+
+/// `vertical-align`: `baseline`, `top`, `middle`, `bottom`. Any other
+/// keyword acts as `baseline` (spec 0009, child 0004, AC-16).
+fn parse_vertical_align(input: &mut Parser<'_>) -> ParseResult<VerticalAlign> {
+    let ident = input.expect_ident()?;
+    Ok(match ident.to_ascii_lowercase().as_str() {
+        "baseline" => VerticalAlign::Baseline,
+        "top" => VerticalAlign::Top,
+        "middle" => VerticalAlign::Middle,
+        "bottom" => VerticalAlign::Bottom,
+        _ => VerticalAlign::Baseline,
+    })
 }
 
 /// One of `supported`, or one of `mapped`: a keyword the property defines
@@ -2235,5 +2251,33 @@ mod tests {
         );
         assert!(parse("clip: rect(1px 2px 3px 4px)").is_empty());
         assert!(parse("clip: banana").is_empty());
+    }
+
+    #[test]
+    fn vertical_align_parses_cell_keywords() {
+        // Spec 0009, child 0004, AC-16: baseline, top, middle, bottom; any
+        // other keyword acts as baseline.
+        assert_eq!(
+            value("vertical-align: baseline"),
+            Value::VerticalAlign(VerticalAlign::Baseline)
+        );
+        assert_eq!(
+            value("vertical-align: top"),
+            Value::VerticalAlign(VerticalAlign::Top)
+        );
+        assert_eq!(
+            value("vertical-align: middle"),
+            Value::VerticalAlign(VerticalAlign::Middle)
+        );
+        assert_eq!(
+            value("vertical-align: bottom"),
+            Value::VerticalAlign(VerticalAlign::Bottom)
+        );
+        assert_eq!(
+            value("vertical-align: text-top"),
+            Value::VerticalAlign(VerticalAlign::Baseline),
+            "unknown keyword acts as baseline"
+        );
+        assert!(!Longhand::VerticalAlign.is_inherited());
     }
 }

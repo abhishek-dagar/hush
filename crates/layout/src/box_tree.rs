@@ -30,6 +30,7 @@ use css::{ComputedStyle, Display, Float, ListStyleType, Position, StyleDamage, W
 use dom::{Document, ImageState, NodeData, NodeId};
 
 use crate::LayoutCache;
+use crate::table::fix_tables;
 
 /// What kind of box this is. More kinds (grid, tables) arrive with their
 /// slices.
@@ -277,6 +278,9 @@ impl BoxTree {
         tree.root = Some(root);
         let _ = doc.set_layout_box(html, Some(root));
         tree.fill(doc, root, html);
+        // CSS Tables 3 section 3: add the anonymous boxes tables need (a
+        // table wrapper, anonymous rows and cells around misplaced parts).
+        fix_tables(&mut tree);
         tree
     }
 
@@ -378,6 +382,12 @@ impl BoxTree {
     /// The box for the document element, if it has one.
     pub fn root(&self) -> Option<BoxId> {
         self.root
+    }
+
+    /// Sets the root box: used by the table fixup when the root table is
+    /// wrapped in a table wrapper.
+    pub(crate) fn set_root(&mut self, root: BoxId) {
+        self.root = Some(root);
     }
 
     /// The box whose background paints the whole canvas (CSS 2.2 section
@@ -833,7 +843,7 @@ impl LayoutBox {
         self.float.is_some()
     }
 
-    fn new(
+    pub(crate) fn new(
         node: Option<NodeId>,
         kind: BoxKind,
         style: Rc<ComputedStyle>,

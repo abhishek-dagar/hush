@@ -28,6 +28,7 @@ mod inline;
 mod intrinsic;
 mod positioned;
 pub mod stacking;
+mod table;
 
 use std::collections::HashMap;
 use std::rc::Rc;

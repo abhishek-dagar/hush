@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use display_list::{ColorF, PointF, RectF, ScrollId, ScrollOffset, SizeF};
+use display_list::{ColorF, DisplayList, PointF, RectF, ScrollId, ScrollOffset, SizeF, SpatialId};
 use ipc::KeyScroll;
 use render::ScrollIndicator;
 
@@ -181,6 +181,25 @@ pub(crate) fn bar_geometry(
     }
 }
 
+/// The root-space top-left corner of a scroll frame's scrollport, where its
+/// overlay scrollbar track is anchored. This stays fixed as the frame scrolls:
+/// `to_parent(offset) = frame_rect.origin + offset - offset = frame_rect.origin`,
+/// so walking `offset` up to root space yields `frame_rect.origin` in root
+/// space — independent of the scroll offset.
+pub(crate) fn scroll_port_origin_in_root(
+    list: &DisplayList,
+    frame_id: SpatialId,
+    offset: ScrollOffset,
+) -> Option<PointF> {
+    list.to_root(
+        frame_id,
+        PointF {
+            x: offset.x,
+            y: offset.y,
+        },
+    )
+}
+
 /// Ease out cubic: starts fast, ends slow, used for smooth scrolling
 /// (spec 0009, child 0002, Value sourcing, Smooth scroll curve).
 pub(crate) fn ease_out(t: f32) -> f32 {
@@ -318,6 +337,7 @@ pub(crate) fn indicator_gone(scrolled_at: Instant, now: Instant) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use display_list::{Epoch, PageId, SpatialKind};
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> RectF {
         RectF {
@@ -509,5 +529,68 @@ mod tests {
         };
         assert!(done);
         assert!((offset.y - 1000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn scrollbar_track_stays_fixed_when_scrolling() {
+        // A scroll frame whose scrollport sits at (100, 50) in root space.
+        let make_list = |y: f32| {
+            let mut list = DisplayList::new(PageId(1), Epoch(1), SizeF::default());
+            let frame_id = list.push_spatial(
+                SpatialId::ROOT,
+                SpatialKind::ScrollFrame {
+                    scroll_id: ScrollId::new(0, 0, 0),
+                    frame_rect: RectF {
+                        origin: PointF { x: 100.0, y: 50.0 },
+                        size: SizeF {
+                            width: 800.0,
+                            height: 600.0,
+                        },
+                    },
+                    content_size: SizeF {
+                        width: 800.0,
+                        height: 2000.0,
+                    },
+                    offset: ScrollOffset {
+                        x: 0.0,
+                        y,
+                        generation: 0,
+                    },
+                    user_scrollable: [true, true],
+                },
+            );
+            (list, frame_id)
+        };
+
+        // Before scrolling: the track anchors at the scrollport's top-left.
+        let (list, frame_id) = make_list(0.0);
+        let origin_before = scroll_port_origin_in_root(
+            &list,
+            frame_id,
+            ScrollOffset {
+                x: 0.0,
+                y: 0.0,
+                generation: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(origin_before, PointF { x: 100.0, y: 50.0 });
+
+        // After scrolling down 300px: the track stays put, it does not move up
+        // off the screen. The old code computed `to_root(frame, PointF::default())`
+        // then added `frame_rect.origin`, which gave `-offset` for a root frame
+        // — so the track slid up as the page scrolled down.
+        let (list, frame_id) = make_list(300.0);
+        let origin_after = scroll_port_origin_in_root(
+            &list,
+            frame_id,
+            ScrollOffset {
+                x: 0.0,
+                y: 300.0,
+                generation: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(origin_after, PointF { x: 100.0, y: 50.0 });
     }
 }

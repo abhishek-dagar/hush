@@ -14,10 +14,26 @@ noframes, noscript, param, rp, script, style, template, title, svg, math {
 html, address, blockquote, body, center, dialog, div, figure, figcaption,
 footer, form, header, hr, legend, listing, main, p, plaintext, pre, search,
 xmp, details, summary, article, aside, h1, h2, h3, h4, h5, h6, hgroup, nav,
-section, dir, dd, dl, dt, menu, ol, ul, fieldset, optgroup, frameset, frame,
-table, caption, colgroup, col, thead, tbody, tfoot, tr, td, th {
+section, dir, dd, dl, dt, menu, ol, ul, fieldset, optgroup, frameset, frame {
   display: block;
 }
+
+/* Tables (spec 0009, child 0004; the HTML Rendering section). */
+table {
+  display: table;
+  box-sizing: border-box;
+  border-collapse: separate;
+  border-spacing: 2px;
+}
+
+caption { display: table-caption; }
+colgroup { display: table-column-group; }
+col { display: table-column; }
+thead, tbody, tfoot { display: table-row-group; }
+tr { display: table-row; }
+td, th { display: table-cell; padding: 1px; }
+thead, tbody, tfoot, tr { vertical-align: middle; }
+th { font-weight: bold; }
 
 li { display: list-item; }
 dialog:not([open]) { display: none; }

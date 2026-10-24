@@ -200,6 +200,79 @@ pub(crate) fn parse_color(input: &mut Parser<'_>) -> ParseResult<SpecifiedColor>
     }
 }
 
+/// Parses an HTML legacy color attribute value (`bgcolor`, etc.).
+/// Follows the HTML "rules for parsing a legacy colour value": named
+/// colors, `#rgb` and `#rrggbb` hex, odd legacy forms, and recursive
+/// stripping of non-alphanumeric characters. Returns `None` for the empty
+/// string and for `transparent`, which produce no color hint.
+pub(crate) fn parse_legacy_color(value: &str) -> Option<SpecifiedColor> {
+    let mut value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.eq_ignore_ascii_case("transparent") {
+        return None;
+    }
+    // Hex: #rgb or #rrggbb
+    if let Some(stripped) = value.strip_prefix('#') {
+        if let Some(color) = parse_legacy_hex(stripped) {
+            return Some(color);
+        }
+        // Invalid hex: drop the `#` and retry as a name.
+        value = stripped;
+    }
+    // Named color
+    if let Some(color) = parse_named_legacy(value) {
+        return Some(color);
+    }
+    // Strip non-alphanumeric characters and retry.
+    let cleaned: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    if cleaned.is_empty() || cleaned == value {
+        return None;
+    }
+    parse_legacy_color(&cleaned)
+}
+
+/// Parses `#rgb` or `#rrggbb` hex digits into a color.
+fn parse_legacy_hex(value: &str) -> Option<SpecifiedColor> {
+    let digits = value.as_bytes();
+    let (r, g, b) = if digits.len() == 3 {
+        let r = hex_digit(digits[0])?;
+        let g = hex_digit(digits[1])?;
+        let b = hex_digit(digits[2])?;
+        ((r << 4) | r, (g << 4) | g, (b << 4) | b)
+    } else if digits.len() == 6 {
+        (
+            (hex_digit(digits[0])? << 4) | hex_digit(digits[1])?,
+            (hex_digit(digits[2])? << 4) | hex_digit(digits[3])?,
+            (hex_digit(digits[4])? << 4) | hex_digit(digits[5])?,
+        )
+    } else {
+        return None;
+    };
+    Some(SpecifiedColor::Rgba(Color::rgb8(r, g, b)))
+}
+
+/// Converts one hex digit to its numeric value.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Parses a named color from the CSS named color table.
+fn parse_named_legacy(value: &str) -> Option<SpecifiedColor> {
+    cssparser::color::parse_named_color(&value.to_ascii_lowercase())
+        .ok()
+        .map(|(r, g, b)| SpecifiedColor::Rgba(Color::rgb8(r, g, b)))
+}
+
 /// The inside of `rgb()`: three numbers or three percentages, then an
 /// optional alpha, separated by commas or by spaces with a `/` before alpha.
 fn parse_rgb(input: &mut Parser<'_>) -> ParseResult<SpecifiedColor> {
@@ -436,6 +509,38 @@ mod tests {
         assert_eq!(
             families,
             ["Iowan Old Style", "Palatino Linotype", "serif"].map(Atom::from)
+        );
+    }
+
+    #[test]
+    fn legacy_color_parses_named_and_hex_and_refuses_invalid() {
+        // Named colors, case insensitive.
+        assert_eq!(
+            parse_legacy_color("red"),
+            Some(SpecifiedColor::Rgba(Color::rgb8(255, 0, 0)))
+        );
+        assert_eq!(
+            parse_legacy_color("RED"),
+            Some(SpecifiedColor::Rgba(Color::rgb8(255, 0, 0)))
+        );
+        // #rgb and #rrggbb.
+        assert_eq!(
+            parse_legacy_color("#0f0"),
+            Some(SpecifiedColor::Rgba(Color::rgb8(0, 255, 0)))
+        );
+        assert_eq!(
+            parse_legacy_color("#336699"),
+            Some(SpecifiedColor::Rgba(Color::rgb8(51, 102, 153)))
+        );
+        // Invalid hex falls back to the name after the #.
+        assert_eq!(parse_legacy_color("#zzz"), None);
+        // Empty and transparent give no hint.
+        assert_eq!(parse_legacy_color(""), None);
+        assert_eq!(parse_legacy_color("transparent"), None);
+        // Legacy odd forms: strip non alphanumeric and retry.
+        assert_eq!(
+            parse_legacy_color("  red!  "),
+            Some(SpecifiedColor::Rgba(Color::rgb8(255, 0, 0)))
         );
     }
 }

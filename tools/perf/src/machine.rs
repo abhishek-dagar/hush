@@ -42,12 +42,17 @@ impl Machine {
     }
 }
 
-/// Whether the detected machine matches the budgets' `[machine]` table.
-// The OS comparison is the meaningful one: a Linux CI runner is not the
-// reference Mac, so its timing and memory become info while its size still
-// gates.
+/// Whether the detected machine matches the budgets' `[machine]` table
+/// (AC-14): CPU name, RAM and OS name all match. On any difference, timing
+/// and memory rows become `info` (reported, never failing) while size rows
+/// still gate.
 pub fn machine_matches(budget_machine: &crate::budgets::Machine, actual: &Machine) -> bool {
     budget_machine.os.eq_ignore_ascii_case(&actual.os_name())
+        && budget_machine
+            .cpu
+            .trim()
+            .eq_ignore_ascii_case(actual.cpu.trim())
+        && budget_machine.ram_gb == actual.ram_gb
 }
 
 /// The OS name to compare against budgets, lowercased.
@@ -136,6 +141,29 @@ mod tests {
             cpu: "x".to_owned(),
             ram_gb: 16,
             os_version: "Ubuntu 24.04".to_owned(),
+        };
+        assert!(!machine_matches(&budget, &actual));
+    }
+
+    #[test]
+    fn machine_mismatch_on_cpu_or_ram() {
+        let budget = crate::budgets::Machine {
+            cpu: "Apple M4".to_owned(),
+            ram_gb: 16,
+            os: "macos".to_owned(),
+        };
+        // Same OS, different CPU: timing and memory become info (AC-14).
+        let actual = Machine {
+            cpu: "Apple M1".to_owned(),
+            ram_gb: 16,
+            os_version: "macOS 26.0".to_owned(),
+        };
+        assert!(!machine_matches(&budget, &actual));
+        // Same OS and CPU, different RAM: also a mismatch.
+        let actual = Machine {
+            cpu: "Apple M4".to_owned(),
+            ram_gb: 32,
+            os_version: "macOS 26.0".to_owned(),
         };
         assert!(!machine_matches(&budget, &actual));
     }

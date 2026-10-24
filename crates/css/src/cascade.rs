@@ -829,6 +829,9 @@ impl Computer<'_> {
             (L::UserSelect, Value::UserSelect(user_select)) => {
                 Rc::make_mut(&mut style.inherited_box).user_select = *user_select;
             }
+            (L::VerticalAlign, Value::VerticalAlign(align)) => {
+                Rc::make_mut(&mut style.inherited_box).vertical_align = *align;
+            }
             (L::TableLayout, Value::TableLayout(table_layout)) => {
                 Rc::make_mut(&mut self.style.table).table_layout = *table_layout;
             }
@@ -1014,6 +1017,7 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::TextOverflow => copy!(display_box.text_overflow),
         L::Cursor => copy!(inherited_box.cursor),
         L::UserSelect => copy!(inherited_box.user_select),
+        L::VerticalAlign => copy!(inherited_box.vertical_align),
         L::TableLayout => copy!(table.table_layout),
         L::BorderCollapse => copy!(inherited_table.border_collapse),
         L::BorderSpacing => copy!(inherited_table.border_spacing),

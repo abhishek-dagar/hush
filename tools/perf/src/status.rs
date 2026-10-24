@@ -28,6 +28,13 @@ impl Status {
         matches!(self, Status::Fail | Status::Alarm)
     }
 
+    /// Whether this status blocks `--accept` (AC-10): only a hard budget
+    /// break does. An alarm is allowed when accepting, since accepting new
+    /// numbers is the point.
+    pub fn blocks_accept(self) -> bool {
+        matches!(self, Status::Fail)
+    }
+
     /// The name reports and tables use.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -170,5 +177,17 @@ mod tests {
     fn no_baseline_means_no_alarm() {
         let r = row(Metric::BundleSize);
         assert_eq!(status(Some(99.0), &r, None, true), Status::Pass);
+    }
+
+    #[test]
+    fn accept_is_blocked_by_fail_not_by_alarm() {
+        let mut r = row(Metric::MemoryTotal);
+        r.limit = 1000.0;
+        r.alarm_pct = Some(10.0);
+        // A hard break blocks accepting (AC-10).
+        assert!(status(Some(1500.0), &r, None, true).blocks_accept());
+        // An alarm does not: accepting new numbers is the point.
+        assert!(!status(Some(111.0), &r, Some(100.0), true).blocks_accept());
+        assert!(status(Some(111.0), &r, Some(100.0), true).is_fail());
     }
 }

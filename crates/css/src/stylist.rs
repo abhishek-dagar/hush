@@ -9,6 +9,7 @@ use base::Au;
 use base::atoms::{Atom, LocalName};
 
 use crate::cascade::{CascadeInputs, compute};
+use crate::hints::presentational_hints;
 use crate::invalidation::InvalidationMap;
 use crate::media::Device;
 use crate::properties::Declaration;
@@ -215,7 +216,14 @@ impl Stylist {
         context: &mut MatchContext<E>,
     ) -> ComputedStyle {
         let matched = self.matching(element, None, context);
-        self.cascade_matched(matched, parent, style_attribute, root_font_size)
+        let presentational = presentational_hints(element);
+        self.cascade_matched(
+            matched,
+            parent,
+            style_attribute,
+            root_font_size,
+            &presentational,
+        )
     }
 
     /// Computes the `::placeholder` style of the `<input>` `element`, which
@@ -229,7 +237,7 @@ impl Stylist {
     ) -> Rc<ComputedStyle> {
         let mut context = MatchContext::default();
         let matched = self.matching(element, Some(PseudoElement::Placeholder), &mut context);
-        Rc::new(self.cascade_matched(matched, Some(input_style), &[], root_font_size))
+        Rc::new(self.cascade_matched(matched, Some(input_style), &[], root_font_size, &[]))
     }
 
     fn cascade_matched(
@@ -238,6 +246,7 @@ impl Stylist {
         parent: Option<&ComputedStyle>,
         style_attribute: &[Declaration],
         root_font_size: Au,
+        presentational: &[Declaration],
     ) -> ComputedStyle {
         matched.sort_by_key(|entry| {
             let origin = match self.rules[entry.rule as usize].origin {
@@ -256,13 +265,14 @@ impl Stylist {
         let normal = |d: &&Declaration| !d.important;
         let important = |d: &&Declaration| d.important;
 
-        // Lowest priority first: UA and author normal (already sorted by
-        // origin, specificity, then order), the style attribute, author
-        // important, the style attribute's important, UA important.
-        let ordered = matched
-            .iter()
-            .flat_map(block)
+        // Lowest priority first: UA normal, then presentational hints
+        // (author origin, specificity 0, before every author rule), then
+        // author normal, the style attribute, author important, the style
+        // attribute's important, UA important.
+        let ordered = from(Origin::Ua)
             .filter(normal)
+            .chain(presentational.iter())
+            .chain(from(Origin::Author).filter(normal))
             .chain(style_attribute.iter().filter(normal))
             .chain(from(Origin::Author).filter(important))
             .chain(style_attribute.iter().filter(important))
