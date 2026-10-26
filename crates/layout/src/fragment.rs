@@ -9,6 +9,7 @@ use dom::NodeId;
 use text::FontKey;
 
 use crate::exclusion::ExclusionSpace;
+use crate::table::borders::CollapsedEdge;
 
 /// Margins that meet and collapse into one (CSS 2.2 section 8.3.1): the
 /// largest positive margin plus the most negative one.
@@ -121,7 +122,7 @@ pub struct StickyInfo {
 /// A laid out box. Immutable once made; children are placed relative to
 /// their parent's border box, so a cached fragment stays valid when its
 /// parent moves.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BoxFragment {
     /// The box it was laid out from.
     pub box_id: BoxId,
@@ -176,6 +177,26 @@ pub struct BoxFragment {
     /// top left corner, for the next sibling in its BFC. `None` for a BFC
     /// root, whose floats stay inside it (spec 0009, child 0001).
     pub exclusions_out: Option<Rc<ExclusionSpace>>,
+    /// A table's resolved collapsed borders, from its border box top left
+    /// corner, when it has `border-collapse: collapse` (spec 0009, child
+    /// 0004, AC-17). Paint draws these in one pass after the cell
+    /// backgrounds.
+    pub collapsed_borders: Option<Rc<[CollapsedEdge]>>,
+    /// A table's column group, column, row group and row backgrounds, in
+    /// paint order, from its border box top left corner (spec 0009, child
+    /// 0004, AC-17). Paint draws them after the table's own background and
+    /// before its cells.
+    pub background_layers: Option<Rc<[BackgroundLayer]>>,
+}
+
+/// One table part's background, for the six layer paint order (spec 0009,
+/// child 0004, AC-17).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BackgroundLayer {
+    /// The area the background covers, from the table's border box corner.
+    pub rect: Rect,
+    /// The background color.
+    pub color: css::Color,
 }
 
 impl Drop for BoxFragment {

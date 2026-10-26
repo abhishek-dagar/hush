@@ -16,6 +16,8 @@ pub enum Status {
     Fail,
     /// Under budget but over the regression alarm: fails the gate.
     Alarm,
+    /// Under budget but over the goal: reported, never failing (AC-16).
+    OverGoal,
     /// Reported but never failing: machine mismatch (timing/memory only).
     Info,
     /// Not measured (cross tool missing, footprint reader unavailable).
@@ -41,6 +43,7 @@ impl Status {
             Status::Pass => "pass",
             Status::Fail => "fail",
             Status::Alarm => "alarm",
+            Status::OverGoal => "over_goal",
             Status::Info => "info",
             Status::NotMeasured => "not_measured",
         }
@@ -94,6 +97,14 @@ pub fn status(
         return Status::Alarm;
     }
 
+    // Softer goal: over goal but within limit warns but doesn't fail
+    // (AC-16).
+    if let Some(goal) = budget.goal
+        && value > goal
+    {
+        return Status::OverGoal;
+    }
+
     Status::Pass
 }
 
@@ -114,6 +125,7 @@ mod tests {
             target: crate::budgets::Target::Browser,
             os: vec![crate::budgets::Os::Macos],
             limit: 100.0,
+            goal: None,
             unit: crate::budgets::Unit::Mb,
             alarm_pct: None,
             reason: "a reason".to_owned(),

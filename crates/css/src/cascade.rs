@@ -12,16 +12,17 @@ use base::Au;
 use base::atoms::Atom;
 use cssparser::{ParseError, Parser, Token};
 
+use crate::CalcExpr;
 use crate::media::Device;
 use crate::properties::{
     CssWide, Declaration, DeclaredValue, FlexBasis as SpecifiedFlexBasis, FontSize, FontWeight,
     LineHeight as SpecifiedLineHeight, Longhand, ParseContext, PropertyKey, Unparsed, Value,
-    parse_values,
+    parse_values, syntax_matches,
 };
-use crate::values::SpecifiedLength;
+use crate::values::{SpecifiedCalcExpr, SpecifiedLength};
 use crate::{
     BorderStyle, Color, ComputedStyle, CustomProperties, Display, FlexBasis, Float, Font, Length,
-    LineHeight, OutlineStyle, Overflow, Position,
+    LineHeight, OutlineStyle, Overflow, Position, PropertyRule,
 };
 
 /// The longest text a `var()` substitution may produce. Past it the
@@ -46,6 +47,9 @@ pub(crate) struct CascadeInputs<'a> {
     pub(crate) root_font_size: Au,
     /// The viewport, for `vw` and `vh`.
     pub(crate) device: &'a Device,
+    /// Registered custom properties from `@property`, for validating declared
+    /// values at computed value time (spec 0010, AC-10).
+    pub(crate) properties: &'a HashMap<Atom, PropertyRule>,
 }
 
 /// Shorthand and longhand texts already parsed after `var()`
@@ -84,7 +88,7 @@ pub(crate) fn compute<'a>(
         root_font_size: inputs.root_font_size,
         device: inputs.device,
     };
-    computer.style.custom = compute_custom(&custom, &parent.custom);
+    computer.style.custom = compute_custom(&custom, &parent.custom, inputs.properties);
 
     let mut reparsed: Reparsed = Vec::new();
     let mut applied: Vec<(Longhand, Applied)> = Vec::new();
@@ -121,7 +125,7 @@ pub(crate) fn compute<'a>(
             (Longhand::OutlineWidth, value) => {
                 outline.touched = true;
                 outline.width = match value {
-                    Applied::Value(Value::Length(width)) => Some(computer.absolute(*width)),
+                    Applied::Value(Value::Length(width)) => Some(computer.absolute(width)),
                     Applied::Wide(CssWide::Inherit) => Some(computer.parent.outline.width),
                     _ => None,
                 };
@@ -139,10 +143,10 @@ pub(crate) fn compute<'a>(
         if let Some(side) = border_width_side(*longhand) {
             border.touched = true;
             border.widths[side] = Some(match value {
-                Applied::Value(Value::Length(width)) => computer.absolute(*width),
+                Applied::Value(Value::Length(width)) => computer.absolute(width),
                 Applied::Value(_) => continue,
                 Applied::Wide(CssWide::Inherit) => computer.parent_border_width(side),
-                Applied::Wide(_) => computer.absolute(MEDIUM_BORDER),
+                Applied::Wide(_) => computer.absolute(&MEDIUM_BORDER),
             });
             continue;
         }
@@ -253,6 +257,7 @@ fn substituted(
 fn compute_custom(
     declared: &HashMap<&Atom, &DeclaredValue>,
     parent: &Rc<CustomProperties>,
+    properties: &HashMap<Atom, PropertyRule>,
 ) -> Rc<CustomProperties> {
     if declared.is_empty() {
         return Rc::clone(parent);
@@ -280,9 +285,31 @@ fn compute_custom(
     for name in raw.keys() {
         resolver.resolve(name);
     }
-    for (name, value) in resolver.done {
+    let done = resolver.done;
+    for (name, value) in &done {
         if let Some(value) = value {
-            map.insert(name, value);
+            map.insert(name.clone(), value.clone());
+        }
+    }
+    // Validate custom properties declared on this element that are
+    // registered with `@property`. A value that does not match the registered
+    // syntax falls back to the initial value when the property does not
+    // inherit, and to the inherited value (already in `map`) when it does
+    // (spec 0010, AC-10).
+    for name in declared.keys() {
+        let Some(rule) = properties.get(name) else {
+            continue;
+        };
+        if rule.inherits {
+            continue;
+        }
+        let valid = done
+            .get(name)
+            .and_then(|v| v.as_deref())
+            .is_some_and(|text| syntax_matches(text, &rule.syntax));
+        if !valid {
+            // A custom value that fails validation lands as the initial value.
+            map.insert((*name).clone(), Rc::clone(&rule.initial));
         }
     }
     Rc::new(map)
@@ -493,19 +520,19 @@ impl Computer<'_> {
             None => (parent.size.scale_by(factor), None),
         };
         let (size, keyword_size) = match value {
-            Some(Applied::Value(Value::FontSize(size))) => match *size {
-                FontSize::Keyword(factor) => from_keyword(factor),
+            Some(Applied::Value(Value::FontSize(size))) => match size {
+                FontSize::Keyword(factor) => from_keyword(*factor),
                 FontSize::Smaller => relative(1.0 / 1.2),
                 FontSize::Larger => relative(1.2),
-                FontSize::Length(SpecifiedLength::Em(em)) => relative(em),
-                FontSize::Length(SpecifiedLength::Percent(percent)) => relative(percent / 100.0),
+                FontSize::Length(SpecifiedLength::Em(em)) => relative(*em),
+                FontSize::Length(SpecifiedLength::Percent(percent)) => relative(*percent / 100.0),
                 FontSize::Length(SpecifiedLength::Rem(rem)) => {
                     let root = if self.is_root {
                         Au::from_px(MEDIUM_PX)
                     } else {
                         self.root_font_size
                     };
-                    (root.scale_by(rem), None)
+                    (root.scale_by(*rem), None)
                 }
                 FontSize::Length(length) => (self.viewport_or_px(length), None),
             },
@@ -518,38 +545,76 @@ impl Computer<'_> {
     }
 
     /// Resolves an absolute or viewport length (never `em` or `%`).
-    fn viewport_or_px(&self, length: SpecifiedLength) -> Au {
+    fn viewport_or_px(&self, length: &SpecifiedLength) -> Au {
         let (width, height) = (self.device.width, self.device.height);
         Au::from_px(match length {
-            SpecifiedLength::Px(px) => px,
-            SpecifiedLength::Vw(v) => width * v / 100.0,
-            SpecifiedLength::Vh(v) => height * v / 100.0,
-            SpecifiedLength::Vmin(v) => width.min(height) * v / 100.0,
-            SpecifiedLength::Vmax(v) => width.max(height) * v / 100.0,
+            SpecifiedLength::Px(px) => *px,
+            SpecifiedLength::Vw(v) => width * *v / 100.0,
+            SpecifiedLength::Vh(v) => height * *v / 100.0,
+            SpecifiedLength::Vmin(v) => width.min(height) * *v / 100.0,
+            SpecifiedLength::Vmax(v) => width.max(height) * *v / 100.0,
             SpecifiedLength::Em(_) | SpecifiedLength::Rem(_) | SpecifiedLength::Percent(_) => 0.0,
+            SpecifiedLength::Calc(_) => 0.0,
         })
     }
 
     /// A computed length: `em` against this element's font size, `rem`
     /// against the root's, percentages kept for layout.
-    fn length(&self, length: SpecifiedLength) -> Length {
+    fn length(&self, length: &SpecifiedLength) -> Length {
         match length {
-            SpecifiedLength::Percent(percent) => Length::Percent(percent),
-            SpecifiedLength::Em(em) => Length::Au(self.style.font.size.scale_by(em)),
+            SpecifiedLength::Percent(percent) => Length::Percent(*percent),
+            SpecifiedLength::Em(em) => Length::Au(self.style.font.size.scale_by(*em)),
             SpecifiedLength::Rem(rem) => {
                 let root = if self.is_root {
                     self.style.font.size
                 } else {
                     self.root_font_size
                 };
-                Length::Au(root.scale_by(rem))
+                Length::Au(root.scale_by(*rem))
             }
+            SpecifiedLength::Calc(expr) => Length::Calc(Rc::new(self.calc_expr_to_css(expr))),
             other => Length::Au(self.viewport_or_px(other)),
         }
     }
 
+    /// Turns a parse-time calc expression into a computed one: `em`, `rem`
+    /// and viewport units resolve against this element's font, the root's,
+    /// and the viewport; percentages stay for layout until used value time
+    /// (spec 0010, AC-8).
+    fn calc_expr_to_css(&self, expr: &SpecifiedCalcExpr) -> CalcExpr {
+        match expr {
+            SpecifiedCalcExpr::Leaf(length) => CalcExpr::Leaf(self.length(length)),
+            SpecifiedCalcExpr::Sum(terms) => CalcExpr::Sum(
+                terms
+                    .iter()
+                    .map(|term| self.calc_expr_to_css(term))
+                    .collect(),
+            ),
+            SpecifiedCalcExpr::Product(term, factor) => {
+                CalcExpr::Product(Box::new(self.calc_expr_to_css(term)), *factor)
+            }
+            SpecifiedCalcExpr::Min(terms) => CalcExpr::Min(
+                terms
+                    .iter()
+                    .map(|term| self.calc_expr_to_css(term))
+                    .collect(),
+            ),
+            SpecifiedCalcExpr::Max(terms) => CalcExpr::Max(
+                terms
+                    .iter()
+                    .map(|term| self.calc_expr_to_css(term))
+                    .collect(),
+            ),
+            SpecifiedCalcExpr::Clamp(a, b, c) => CalcExpr::Clamp(
+                Box::new(self.calc_expr_to_css(a)),
+                Box::new(self.calc_expr_to_css(b)),
+                Box::new(self.calc_expr_to_css(c)),
+            ),
+        }
+    }
+
     /// A length that may not be a percentage, such as a border width.
-    fn absolute(&self, length: SpecifiedLength) -> Au {
+    fn absolute(&self, length: &SpecifiedLength) -> Au {
         self.length(length).resolve(None)
     }
 
@@ -586,62 +651,65 @@ impl Computer<'_> {
                 Rc::make_mut(&mut style.display_box).display = *display;
             }
             (L::Width, Value::Size(size)) => {
-                let size = size.map(|l| self.length(l));
+                let size = size.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.size).width = size;
             }
             (L::Height, Value::Size(size)) => {
-                let size = size.map(|l| self.length(l));
+                let size = size.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.size).height = size;
             }
             (L::MinWidth, Value::Size(size)) => {
-                let size = size.map(|l| self.length(l));
+                let size = size.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.size).min_width = size;
             }
             (L::MinHeight, Value::Size(size)) => {
-                let size = size.map(|l| self.length(l));
+                let size = size.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.size).min_height = size;
             }
             (L::MaxWidth, Value::Size(size)) => {
-                let size = size.map(|l| self.length(l));
+                let size = size.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.size).max_width = size;
             }
             (L::MaxHeight, Value::Size(size)) => {
-                let size = size.map(|l| self.length(l));
+                let size = size.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.size).max_height = size;
             }
             (L::BoxSizing, Value::BoxSizing(sizing)) => {
                 Rc::make_mut(&mut style.size).box_sizing = *sizing;
             }
+            (L::AspectRatio, Value::AspectRatio(ratio)) => {
+                Rc::make_mut(&mut style.size).aspect_ratio = *ratio;
+            }
             (L::MarginTop, Value::Size(m)) => {
-                let m = m.map(|l| self.length(l));
+                let m = m.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.margin).top = m;
             }
             (L::MarginRight, Value::Size(m)) => {
-                let m = m.map(|l| self.length(l));
+                let m = m.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.margin).right = m;
             }
             (L::MarginBottom, Value::Size(m)) => {
-                let m = m.map(|l| self.length(l));
+                let m = m.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.margin).bottom = m;
             }
             (L::MarginLeft, Value::Size(m)) => {
-                let m = m.map(|l| self.length(l));
+                let m = m.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.margin).left = m;
             }
             (L::PaddingTop, Value::Length(p)) => {
-                let p = self.length(*p);
+                let p = self.length(p);
                 Rc::make_mut(&mut self.style.padding).top = p;
             }
             (L::PaddingRight, Value::Length(p)) => {
-                let p = self.length(*p);
+                let p = self.length(p);
                 Rc::make_mut(&mut self.style.padding).right = p;
             }
             (L::PaddingBottom, Value::Length(p)) => {
-                let p = self.length(*p);
+                let p = self.length(p);
                 Rc::make_mut(&mut self.style.padding).bottom = p;
             }
             (L::PaddingLeft, Value::Length(p)) => {
-                let p = self.length(*p);
+                let p = self.length(p);
                 Rc::make_mut(&mut self.style.padding).left = p;
             }
             (L::BorderTopStyle, Value::BorderStyle(s)) => {
@@ -673,19 +741,19 @@ impl Computer<'_> {
                 Rc::make_mut(&mut self.style.border).left.color = c;
             }
             (L::BorderTopLeftRadius, Value::Length(r)) => {
-                let r = self.length(*r);
+                let r = self.length(r);
                 Rc::make_mut(&mut self.style.border).radius.top_left = r;
             }
             (L::BorderTopRightRadius, Value::Length(r)) => {
-                let r = self.length(*r);
+                let r = self.length(r);
                 Rc::make_mut(&mut self.style.border).radius.top_right = r;
             }
             (L::BorderBottomRightRadius, Value::Length(r)) => {
-                let r = self.length(*r);
+                let r = self.length(r);
                 Rc::make_mut(&mut self.style.border).radius.bottom_right = r;
             }
             (L::BorderBottomLeftRadius, Value::Length(r)) => {
-                let r = self.length(*r);
+                let r = self.length(r);
                 Rc::make_mut(&mut self.style.border).radius.bottom_left = r;
             }
             (L::BackgroundColor, Value::Color(c)) => {
@@ -704,11 +772,11 @@ impl Computer<'_> {
                 Rc::make_mut(&mut self.style.inherited_text).color = c;
             }
             (L::LineHeight, Value::LineHeight(height)) => {
-                let height = match *height {
+                let height = match height {
                     SpecifiedLineHeight::Normal => LineHeight::Normal,
-                    SpecifiedLineHeight::Number(n) => LineHeight::Number(n),
+                    SpecifiedLineHeight::Number(n) => LineHeight::Number(*n),
                     SpecifiedLineHeight::Length(SpecifiedLength::Percent(p)) => {
-                        LineHeight::Length(Length::Au(self.style.font.size.scale_by(p / 100.0)))
+                        LineHeight::Length(Length::Au(self.style.font.size.scale_by(*p / 100.0)))
                     }
                     SpecifiedLineHeight::Length(l) => LineHeight::Length(self.length(l)),
                 };
@@ -736,12 +804,12 @@ impl Computer<'_> {
                 Rc::make_mut(&mut style.flex).direction = *direction;
             }
             (L::RowGap, Value::Length(gap)) => {
-                let gap = self.length(*gap);
-                Rc::make_mut(&mut self.style.flex).row_gap = gap;
+                let gap = self.length(gap);
+                Rc::make_mut(&mut self.style.alignment).row_gap = gap;
             }
             (L::ColumnGap, Value::Length(gap)) => {
-                let gap = self.length(*gap);
-                Rc::make_mut(&mut self.style.flex).column_gap = gap;
+                let gap = self.length(gap);
+                Rc::make_mut(&mut self.style.alignment).column_gap = gap;
             }
             (L::FlexWrap, Value::FlexWrap(wrap)) => {
                 Rc::make_mut(&mut style.flex).wrap = *wrap;
@@ -753,7 +821,7 @@ impl Computer<'_> {
                 Rc::make_mut(&mut style.flex).shrink = *shrink;
             }
             (L::FlexBasis, Value::FlexBasis(basis)) => {
-                let basis = match *basis {
+                let basis = match basis {
                     SpecifiedFlexBasis::Auto => FlexBasis::Auto,
                     SpecifiedFlexBasis::Content => FlexBasis::Content,
                     SpecifiedFlexBasis::Length(length) => FlexBasis::Length(self.length(length)),
@@ -761,16 +829,50 @@ impl Computer<'_> {
                 Rc::make_mut(&mut self.style.flex).basis = basis;
             }
             (L::JustifyContent, Value::JustifyContent(justify)) => {
-                Rc::make_mut(&mut style.flex).justify_content = *justify;
+                Rc::make_mut(&mut self.style.alignment).justify_content = *justify;
             }
             (L::AlignItems, Value::AlignItems(align)) => {
-                Rc::make_mut(&mut style.flex).align_items = *align;
+                Rc::make_mut(&mut self.style.alignment).align_items = *align;
             }
             (L::AlignSelf, Value::AlignSelf(align)) => {
-                Rc::make_mut(&mut style.flex).align_self = *align;
+                Rc::make_mut(&mut self.style.alignment).align_self = *align;
             }
             (L::Order, Value::Integer(order)) => {
                 Rc::make_mut(&mut style.flex).order = *order;
+            }
+            (L::Transform, Value::Transform(transform)) => {
+                let t = Rc::make_mut(&mut self.style.transform);
+                t.scale = transform.scale;
+                t.transform = Rc::clone(&transform.transform);
+                t.origin = transform.origin;
+                t.binding_id = None;
+            }
+            (L::GridTemplateColumns, Value::GridTracks(tracks)) => {
+                Rc::make_mut(&mut self.style.grid).template_columns = tracks.clone();
+            }
+            (L::GridTemplateRows, Value::GridTracks(tracks)) => {
+                Rc::make_mut(&mut self.style.grid).template_rows = tracks.clone();
+            }
+            (L::GridAutoColumns, Value::GridAutoTracks(tracks)) => {
+                Rc::make_mut(&mut self.style.grid).auto_columns = tracks.clone();
+            }
+            (L::GridAutoRows, Value::GridAutoTracks(tracks)) => {
+                Rc::make_mut(&mut self.style.grid).auto_rows = tracks.clone();
+            }
+            (L::GridAutoFlow, Value::GridAutoFlow(flow)) => {
+                Rc::make_mut(&mut self.style.grid).auto_flow = *flow;
+            }
+            (L::GridColumnStart, Value::GridLine(line)) => {
+                Rc::make_mut(&mut self.style.grid).column_start = line.clone();
+            }
+            (L::GridColumnEnd, Value::GridLine(line)) => {
+                Rc::make_mut(&mut self.style.grid).column_end = line.clone();
+            }
+            (L::GridRowStart, Value::GridLine(line)) => {
+                Rc::make_mut(&mut self.style.grid).row_start = line.clone();
+            }
+            (L::GridRowEnd, Value::GridLine(line)) => {
+                Rc::make_mut(&mut self.style.grid).row_end = line.clone();
             }
             (L::OverflowX, Value::Overflow(overflow)) => {
                 Rc::make_mut(&mut style.display_box).overflow_x = *overflow;
@@ -788,19 +890,19 @@ impl Computer<'_> {
                 Rc::make_mut(&mut style.display_box).position = *position;
             }
             (L::Top, Value::Size(inset)) => {
-                let inset = inset.map(|l| self.length(l));
+                let inset = inset.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.position_offsets).top = inset;
             }
             (L::Right, Value::Size(inset)) => {
-                let inset = inset.map(|l| self.length(l));
+                let inset = inset.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.position_offsets).right = inset;
             }
             (L::Bottom, Value::Size(inset)) => {
-                let inset = inset.map(|l| self.length(l));
+                let inset = inset.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.position_offsets).bottom = inset;
             }
             (L::Left, Value::Size(inset)) => {
-                let inset = inset.map(|l| self.length(l));
+                let inset = inset.as_ref().map(|l| self.length(l));
                 Rc::make_mut(&mut self.style.position_offsets).left = inset;
             }
             (L::ZIndex, Value::ZIndex(z_index)) => {
@@ -817,7 +919,7 @@ impl Computer<'_> {
                 Rc::make_mut(&mut self.style.outline).color = c;
             }
             (L::OutlineOffset, Value::Length(offset)) => {
-                let offset = self.absolute(*offset);
+                let offset = self.absolute(offset);
                 Rc::make_mut(&mut self.style.outline).offset = offset;
             }
             (L::TextOverflow, Value::TextOverflow(text_overflow)) => {
@@ -855,7 +957,7 @@ impl Computer<'_> {
 
     /// Border widths compute to zero where the style is `none` or `hidden`.
     fn finish_border(&mut self, inputs: &BorderInputs) {
-        let medium = self.absolute(MEDIUM_BORDER);
+        let medium = self.absolute(&MEDIUM_BORDER);
         let border = Rc::make_mut(&mut self.style.border);
         let sides = [
             &mut border.top,
@@ -874,7 +976,7 @@ impl Computer<'_> {
     /// The outline width computes to zero where the style is `none`, and
     /// the color to `currentcolor` unless one was given.
     fn finish_outline(&mut self, inputs: &OutlineInputs) {
-        let medium = self.absolute(MEDIUM_BORDER);
+        let medium = self.absolute(&MEDIUM_BORDER);
         let color = self.current_color();
         let outline = Rc::make_mut(&mut self.style.outline);
         outline.width = match outline.style {
@@ -907,10 +1009,17 @@ impl Computer<'_> {
         if blockify
             && matches!(
                 self.style.display_box.display,
-                Display::Inline | Display::InlineBlock
+                Display::Inline | Display::InlineBlock | Display::InlineTable
             )
         {
-            Rc::make_mut(&mut self.style.display_box).display = Display::Block;
+            // `inline-table` blockifies to `table` (spec 0009, child 0004,
+            // AC-14).
+            let blockified = if self.style.display_box.display == Display::InlineTable {
+                Display::Table
+            } else {
+                Display::Block
+            };
+            Rc::make_mut(&mut self.style.display_box).display = blockified;
         }
         // CSS Overflow 3: when one axis is `visible` or `clip` and the other
         // is not, `visible` computes to `auto` and `clip` to `hidden`
@@ -947,6 +1056,7 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::MaxWidth => copy!(size.max_width),
         L::MaxHeight => copy!(size.max_height),
         L::BoxSizing => copy!(size.box_sizing),
+        L::AspectRatio => copy!(size.aspect_ratio),
         L::MarginTop => copy!(margin.top),
         L::MarginRight => copy!(margin.right),
         L::MarginBottom => copy!(margin.bottom),
@@ -988,16 +1098,30 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::ListStyleType => copy!(list.style_type),
         L::ListStylePosition => copy!(list.position),
         L::FlexDirection => copy!(flex.direction),
-        L::RowGap => copy!(flex.row_gap),
-        L::ColumnGap => copy!(flex.column_gap),
+        L::RowGap => copy!(alignment.row_gap),
+        L::ColumnGap => copy!(alignment.column_gap),
         L::FlexWrap => copy!(flex.wrap),
         L::FlexGrow => copy!(flex.grow),
         L::FlexShrink => copy!(flex.shrink),
         L::FlexBasis => copy!(flex.basis),
-        L::JustifyContent => copy!(flex.justify_content),
-        L::AlignItems => copy!(flex.align_items),
-        L::AlignSelf => copy!(flex.align_self),
+        L::JustifyContent => copy!(alignment.justify_content),
+        L::AlignItems => copy!(alignment.align_items),
+        L::AlignSelf => copy!(alignment.align_self),
         L::Order => copy!(flex.order),
+        L::Transform => {
+            copy!(transform.transform);
+            copy!(transform.binding_id);
+        }
+        L::GridTemplateColumns => copy!(grid.template_columns),
+        L::GridTemplateRows => copy!(grid.template_rows),
+        L::GridAutoColumns => copy!(grid.auto_columns),
+        L::GridAutoRows => copy!(grid.auto_rows),
+        L::GridAutoFlow => copy!(grid.auto_flow),
+        L::GridTemplateAreas => copy!(grid.grid_template_areas),
+        L::GridColumnStart => copy!(grid.column_start),
+        L::GridColumnEnd => copy!(grid.column_end),
+        L::GridRowStart => copy!(grid.row_start),
+        L::GridRowEnd => copy!(grid.row_end),
         L::OverflowX => copy!(display_box.overflow_x),
         L::OverflowY => copy!(display_box.overflow_y),
         L::Position => copy!(display_box.position),
@@ -1102,8 +1226,59 @@ mod tests {
                 parent: Some(&parent),
                 root_font_size: Au::from_px(16.0),
                 device: &device,
+                properties: &HashMap::new(),
             },
         )
+    }
+
+    /// Like [`computed`], but with registered custom properties from
+    /// `@property` available for validation (spec 0010, AC-10).
+    fn computed_with_properties(
+        css: &str,
+        properties: &HashMap<Atom, PropertyRule>,
+    ) -> ComputedStyle {
+        let parent = ComputedStyle::default();
+        let declarations = crate::parse_declarations(css, None);
+        let device = Device {
+            width: 800.0,
+            height: 600.0,
+        };
+        compute(
+            &declarations,
+            &CascadeInputs {
+                parent: Some(&parent),
+                root_font_size: Au::from_px(16.0),
+                device: &device,
+                properties,
+            },
+        )
+    }
+
+    #[test]
+    fn a_registered_custom_property_validates_against_its_syntax() {
+        // --foo: syntax "<length>", inherits false, initial 8px.
+        let mut properties = HashMap::new();
+        properties.insert(
+            Atom::from("foo"),
+            PropertyRule {
+                name: Atom::from("foo"),
+                syntax: crate::properties::PropertySyntax::Length,
+                inherits: false,
+                initial: Rc::from("8px"),
+            },
+        );
+        // A valid length is kept.
+        let ok = computed_with_properties("--foo: 16px;", &properties);
+        assert_eq!(
+            ok.custom.get(&Atom::from("foo")).map(|v| v.as_ref()),
+            Some("16px")
+        );
+        // An invalid value falls back to the initial value (not inherited).
+        let bad = computed_with_properties("--foo: red;", &properties);
+        assert_eq!(
+            bad.custom.get(&Atom::from("foo")).map(|v| v.as_ref()),
+            Some("8px")
+        );
     }
 
     #[test]
@@ -1213,6 +1388,7 @@ mod tests {
                     width: 800.0,
                     height: 600.0,
                 },
+                properties: &HashMap::new(),
             },
         );
         assert_eq!(inherited.display_box.float, Float::Left);

@@ -10,6 +10,9 @@ base.workspace = true
 css.workspace = true
 dom.workspace = true
 text.workspace = true
+# The one `warn` for a table grid past the 1,000,000 slot cap (spec 0009,
+# child 0004, AC-15). Already used by every other engine crate.
+tracing.workspace = true
 
 [lints]
 workspace = true

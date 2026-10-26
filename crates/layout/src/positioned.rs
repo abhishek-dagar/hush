@@ -39,7 +39,8 @@ pub(crate) fn relative_offset(style: &ComputedStyle, basis: Size<Option<Au>>) ->
     }
     let insets = &style.position_offsets;
     let axis = |start: Option<Length>, end: Option<Length>, basis: Option<Au>| {
-        let side = |length: Option<Length>| resolve(length, basis).or(length.map(|_| Au::ZERO));
+        let side =
+            |length: Option<Length>| resolve(length.clone(), basis).or(length.map(|_| Au::ZERO));
         match (side(start), side(end)) {
             (Some(start), _) => start,
             (None, Some(end)) => -end,
@@ -47,8 +48,8 @@ pub(crate) fn relative_offset(style: &ComputedStyle, basis: Size<Option<Au>>) ->
         }
     };
     Point::new(
-        axis(insets.left, insets.right, basis.width),
-        axis(insets.top, insets.bottom, basis.height),
+        axis(insets.left.clone(), insets.right.clone(), basis.width),
+        axis(insets.top.clone(), insets.bottom.clone(), basis.height),
     )
 }
 
@@ -230,29 +231,29 @@ fn axis(style: &ComputedStyle, cb: Size, horizontal: bool) -> Axis {
     let border = border_widths(style);
     let (start, end, margin_start, margin_end, edges, value, min, max) = if horizontal {
         (
-            insets.left,
-            insets.right,
-            margin.left,
-            margin.right,
+            insets.left.clone(),
+            insets.right.clone(),
+            margin.left.clone(),
+            margin.right.clone(),
             border.horizontal()
                 + padding.left.resolve(basis_width)
                 + padding.right.resolve(basis_width),
-            size.width,
-            size.min_width,
-            size.max_width,
+            size.width.clone(),
+            size.min_width.clone(),
+            size.max_width.clone(),
         )
     } else {
         (
-            insets.top,
-            insets.bottom,
-            margin.top,
-            margin.bottom,
+            insets.top.clone(),
+            insets.bottom.clone(),
+            margin.top.clone(),
+            margin.bottom.clone(),
             border.vertical()
                 + padding.top.resolve(basis_width)
                 + padding.bottom.resolve(basis_width),
-            size.height,
-            size.min_height,
-            size.max_height,
+            size.height.clone(),
+            size.min_height.clone(),
+            size.max_height.clone(),
         )
     };
     let border_box = size.box_sizing == BoxSizing::BorderBox;

@@ -83,8 +83,9 @@ fn open(width: f32, height: f32) -> Gallery {
         let drew = page.begin_frame(0.0);
         let (adds, _) = page.take_resource_messages();
         for add in adds {
-            if let ToBrowser::AddFont { key, data, .. } = add
-                && data.len() == icons_len
+            if let ToBrowser::AddFont { key, source, .. } = add
+                && let ipc::FontSource::Bytes(bytes) = &source
+                && bytes.len() == icons_len
             {
                 icons = Some(key);
             }

@@ -23,6 +23,10 @@ paths = ["css/CSS2/normal-flow", "css/CSS2/visudet"]
 [[area]]
 name = "floats"
 paths = ["css/CSS2/normal-flow"]
+# Measured on the first full run of the area, after the floats slice:
+# 2 pass of 2 (856 skipped as other kinds), 100.0%, rounded down
+# (spec 0009, AC-21). Only ever raised after this.
+min_pass_rate = 100
 
 [[area]]
 name = "positioning"
@@ -39,3 +43,7 @@ paths = ["css/CSS2/visufx"]
 [[area]]
 name = "tables"
 paths = ["css/CSS2/tables"]
+# Measured on the first full run of the area, after the tables slice:
+# 0 pass of 0 (1139 skipped as other kinds), 0.0%, rounded down
+# (spec 0009, AC-21). Only ever raised after this.
+min_pass_rate = 0

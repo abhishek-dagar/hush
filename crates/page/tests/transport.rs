@@ -62,7 +62,12 @@ fn list_with(items: usize) -> DisplayList {
     let mut transform = [0.0; 16];
     (transform[0], transform[5], transform[10], transform[15]) = (1.0, 1.0, 1.0, 1.0);
     transform[12] = 40.0;
-    let moved = list.push_spatial(scrolled, SpatialKind::ReferenceFrame { transform });
+    let moved = list.push_spatial(
+        scrolled,
+        SpatialKind::ReferenceFrame {
+            transform: display_list::Binding::Static(transform),
+        },
+    );
     let outer = list.push_clip(ClipNode {
         parent: None,
         spatial: SpatialId::ROOT,

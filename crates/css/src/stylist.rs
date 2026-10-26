@@ -15,7 +15,7 @@ use crate::media::Device;
 use crate::properties::Declaration;
 use crate::selector::{MatchContext, PseudoElement, Simple};
 use crate::sheet::{Origin, Rule, Stylesheet};
-use crate::{ComputedStyle, FontFaceRule, MatchElement};
+use crate::{ComputedStyle, FontFaceRule, LayerId, MatchElement, PropertyRule};
 
 /// One selector of one rule, filed in a bucket.
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +39,8 @@ struct Buckets {
 struct StylistRule {
     origin: Origin,
     rule: Rule,
+    /// The rule's cascade layer, resolved in first-appearance order.
+    layer: Option<LayerId>,
     /// The sheet's own `media` attribute, if any.
     sheet_media: Option<Rc<crate::MediaList>>,
 }
@@ -70,12 +72,29 @@ pub struct Stylist {
     invalidation: Rc<InvalidationMap>,
     device: Device,
     uses_viewport_units: bool,
+    /// Registered custom properties from `@property`, keyed by name. Later
+    /// sheets win for the same name (spec 0010, AC-10).
+    properties: HashMap<Atom, PropertyRule>,
 }
 
 impl Stylist {
     /// A stylist over `sheets`, in cascade source order (the UA sheet
     /// first, then the document's in tree order).
     pub fn new(sheets: &[Rc<Stylesheet>], device: Device) -> Self {
+        // Assign layer ids in first appearance across sheets, in document
+        // order (spec 0010, AC-9).
+        let mut layer_ids: HashMap<Atom, LayerId> = HashMap::new();
+        let mut next = 0u32;
+        for sheet in sheets {
+            for rule in &sheet.rules {
+                if let Some(name) = &rule.layer
+                    && !layer_ids.contains_key(name)
+                {
+                    layer_ids.insert(name.clone(), LayerId(next));
+                    next += 1;
+                }
+            }
+        }
         let mut rules = Vec::new();
         let mut invalidation = InvalidationMap::default();
         for sheet in sheets {
@@ -83,9 +102,14 @@ impl Stylist {
                 for selector in rule.selectors.iter() {
                     invalidation.add(selector);
                 }
+                let layer = rule
+                    .layer
+                    .as_ref()
+                    .and_then(|name| layer_ids.get(name).copied());
                 rules.push(StylistRule {
                     origin: sheet.origin,
                     rule: rule.clone(),
+                    layer,
                     sheet_media: sheet.media.clone(),
                 });
             }
@@ -100,6 +124,12 @@ impl Stylist {
             })
             .collect();
         let active = rules.iter().map(|rule| rule.applies(&device)).collect();
+        let mut properties = HashMap::new();
+        for sheet in sheets {
+            for rule in &sheet.properties {
+                properties.insert(rule.name.clone(), rule.clone());
+            }
+        }
         let mut stylist = Self {
             rules,
             font_faces,
@@ -108,6 +138,7 @@ impl Stylist {
             invalidation: Rc::new(invalidation),
             device,
             uses_viewport_units: sheets.iter().any(|sheet| sheet.uses_viewport_units),
+            properties,
         };
         stylist.fill_buckets();
         stylist
@@ -249,11 +280,31 @@ impl Stylist {
         presentational: &[Declaration],
     ) -> ComputedStyle {
         matched.sort_by_key(|entry| {
-            let origin = match self.rules[entry.rule as usize].origin {
+            let rule = &self.rules[entry.rule as usize];
+            let origin = match rule.origin {
                 Origin::Ua => 0,
                 Origin::Author => 1,
             };
-            (origin, entry.specificity, entry.rule)
+            let important = rule.rule.declarations.iter().any(|d| d.important);
+            let important_flag = if important { 1 } else { 0 };
+            // Cascade layer order: normal declarations in later layers win,
+            // unlayered normal beats all layers, and the order reverses for
+            // `!important` (spec 0010, AC-9).
+            let layer_priority = match (important, rule.layer) {
+                // Normal: unlayered highest; later layer id wins.
+                (false, None) => u32::MAX as u64,
+                (false, Some(id)) => id.0 as u64,
+                // Important: order reverses; unlayered lowest, earlier layer wins.
+                (true, None) => 0u64,
+                (true, Some(id)) => (u32::MAX - id.0) as u64,
+            };
+            (
+                origin,
+                important_flag,
+                layer_priority,
+                entry.specificity,
+                entry.rule,
+            )
         });
         let block = |entry: &Entry| self.rules[entry.rule as usize].rule.declarations.iter();
         let from = |origin: Origin| {
@@ -283,6 +334,7 @@ impl Stylist {
                 parent,
                 root_font_size,
                 device: &self.device,
+                properties: &self.properties,
             },
         )
     }

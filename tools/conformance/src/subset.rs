@@ -125,11 +125,19 @@ impl Subset {
         paths
     }
 
-    /// The first area, in file order, with a path that holds `path` (AC-3).
-    pub fn area_of(&self, path: &str) -> Option<&Area> {
+    /// Every area, in file order, with a path that holds `path` (AC-3).
+    /// A path can belong to multiple areas when their paths overlap, e.g.
+    /// `css/CSS2/normal-flow` is covered by both `normal-flow` and `floats`.
+    pub fn areas_of(&self, path: &str) -> Vec<&Area> {
         self.areas
             .iter()
-            .find(|area| area.paths.iter().any(|prefix| under(path, prefix)))
+            .filter(|area| area.paths.iter().any(|prefix| under(path, prefix)))
+            .collect()
+    }
+
+    /// The first area, in file order, with a path that holds `path` (AC-3).
+    pub fn area_of(&self, path: &str) -> Option<&Area> {
+        self.areas_of(path).into_iter().next()
     }
 
     /// Whether an `exclude` prefix removes `path`.
@@ -173,6 +181,24 @@ mod tests {
             subset.sparse_paths()[..2],
             ["css/x/deep".to_owned(), "css/x".to_owned()]
         );
+    }
+
+    #[test]
+    fn a_test_belongs_to_every_area_whose_paths_hold_it() {
+        let subset = subset(
+            "[[area]]\nname = \"a\"\npaths = [\"css/x/deep/\"]\n\
+             [[area]]\nname = \"b\"\npaths = [\"/css/x\"]\n",
+        )
+        .unwrap();
+        let areas: Vec<_> = subset.areas_of("css/x/deep/t.html");
+        assert_eq!(areas.len(), 2);
+        assert_eq!(areas[0].name, "a");
+        assert_eq!(areas[1].name, "b");
+        let areas: Vec<_> = subset.areas_of("css/x/t.html");
+        assert_eq!(areas.len(), 1);
+        assert_eq!(areas[0].name, "b");
+        let areas: Vec<_> = subset.areas_of("css/xy/t.html");
+        assert!(areas.is_empty(), "whole segments only");
     }
 
     #[test]

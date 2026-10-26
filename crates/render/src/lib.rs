@@ -21,11 +21,11 @@
 #![forbid(unsafe_code)]
 
 mod atlas;
+mod font;
 mod frame;
 mod textures;
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
 use display_list::{ColorF, DisplayList, FontKey, ImageFormat, ImageKey, PageId, RectF};
@@ -33,6 +33,7 @@ use skrifa::MetadataProvider;
 use tracing::{debug, info};
 
 use crate::atlas::{FontFile, GlyphAtlas};
+pub use crate::font::{FontBytes, FontStorage};
 use crate::frame::{Batch, Frame, GLYPH_FLOATS, IMAGE_FLOATS, SHAPE_FLOATS, Scene, Texture};
 use crate::textures::Textures;
 
@@ -110,6 +111,25 @@ pub enum RenderError {
     Readback,
 }
 
+/// The per category GPU and font counters the memory report reads (spec
+/// 0032, AC-10). GPU numbers are estimates from texture sizes, never driver
+/// queries: they attribute bytes, and the budget gate never uses them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryCounters {
+    /// Live file backed font mappings, in bytes.
+    pub fonts_mapped: u64,
+    /// Live font bytes on the heap or in shared memory, in bytes.
+    pub fonts_heap: u64,
+    /// Image textures, as width × height × 4.
+    pub images_gpu: u64,
+    /// The glyph atlas, as side².
+    pub atlas_gpu: u64,
+    /// Offscreen layer textures, as width × height × 4.
+    pub layers_gpu: u64,
+    /// The window's swap chain, as width × height × 4 × (latency + 1).
+    pub surface_gpu: u64,
+}
+
 /// Where frames go.
 enum Target {
     /// A window's surface, presented with vsync.
@@ -161,6 +181,12 @@ pub struct Renderer {
     /// Fonts by page and key, from `AddFont`.
     fonts: HashMap<(PageId, FontKey), FontFile>,
     textures: Textures,
+    /// When `queue.submit` last returned, for perf frame timing (spec 0007,
+    /// AC-6). Read on the same thread that drew, so it is never stale.
+    last_submit_at: Option<std::time::Instant>,
+    /// When `queue.present` last actually ran, for perf marks (spec 0007,
+    /// AC-4): a skipped frame presents nothing.
+    last_present_at: Option<std::time::Instant>,
 }
 
 impl Renderer {
@@ -188,6 +214,9 @@ impl Renderer {
         }
         // Vsync paces the render thread's frame clock (AC-28).
         config.present_mode = wgpu::PresentMode::Fifo;
+        // One frame stays queued: two drawables instead of three, which is
+        // 33% less swap chain memory (spec 0032, AC-6).
+        config.desired_maximum_frame_latency = 1;
         surface.configure(&device, &config);
         let target = Target::Window {
             instance,
@@ -300,7 +329,22 @@ impl Renderer {
             atlas,
             fonts: HashMap::new(),
             textures,
+            last_submit_at: None,
+            last_present_at: None,
         }
+    }
+
+    /// When `queue.submit` last returned, for perf frame timing (spec 0007,
+    /// AC-6): the render thread subtracts the moment it took a scroll
+    /// message from this. `None` before the first submit.
+    pub fn last_submit_at(&self) -> Option<std::time::Instant> {
+        self.last_submit_at
+    }
+
+    /// When `queue.present` last ran, for perf marks (spec 0007, AC-4):
+    /// only a frame that reached the screen counts as presented.
+    pub fn last_present_at(&self) -> Option<std::time::Instant> {
+        self.last_present_at
     }
 
     /// Keeps a font a page registered (`AddFont`): face `index` of the font
@@ -311,27 +355,32 @@ impl Renderer {
     ///
     /// The settings come from the content process, so they are untrusted:
     /// at most [`MAX_VARIATIONS`] are read, non finite values are skipped,
-    /// and the font's own axis ranges clamp the rest.
+    /// and the font's own axis ranges clamp the rest. A file `skrifa` cannot
+    /// parse is refused and logged, and `false` is returned (spec 0032,
+    /// AC-3).
     pub fn add_font(
         &mut self,
         page: PageId,
         key: FontKey,
-        data: &[u8],
+        data: FontBytes,
         index: u32,
         variations: &[(u32, f32)],
-    ) {
+    ) -> bool {
+        let Ok(font) = skrifa::FontRef::from_index(&data, index) else {
+            debug!(
+                page = page.0,
+                key = key.0,
+                "font file refused: not a readable font"
+            );
+            return false;
+        };
         self.atlas.forget_font(page, key);
-        let data: Arc<[u8]> = data.into();
-        let coords = skrifa::FontRef::from_index(&data, index)
-            .map(|font| {
-                let settings = variations
-                    .iter()
-                    .take(MAX_VARIATIONS)
-                    .filter(|(_, value)| value.is_finite())
-                    .map(|&(tag, value)| (skrifa::Tag::from_be_bytes(tag.to_be_bytes()), value));
-                font.axes().location(settings).coords().to_vec()
-            })
-            .unwrap_or_default();
+        let settings = variations
+            .iter()
+            .take(MAX_VARIATIONS)
+            .filter(|(_, value)| value.is_finite())
+            .map(|&(tag, value)| (skrifa::Tag::from_be_bytes(tag.to_be_bytes()), value));
+        let coords = font.axes().location(settings).coords().to_vec();
         self.fonts.insert(
             (page, key),
             FontFile {
@@ -340,12 +389,61 @@ impl Renderer {
                 coords,
             },
         );
+        true
+    }
+
+    /// The bytes already registered for `key` on `page`, so a later face of
+    /// one file can name them instead of sending another copy (spec 0032,
+    /// AC-4).
+    pub fn font_bytes(&self, page: PageId, key: FontKey) -> Option<FontBytes> {
+        self.fonts.get(&(page, key)).map(|file| file.data.clone())
     }
 
     /// Drops a font the page freed (`DeleteFont`).
     pub fn delete_font(&mut self, page: PageId, key: FontKey) {
         self.atlas.forget_font(page, key);
         self.fonts.remove(&(page, key));
+    }
+
+    /// Frees GPU memory a page's navigation leaves behind (spec 0032, AC-7):
+    /// the glyph atlas goes back to its start size and the spare layer
+    /// textures go. Called when a navigation starts, before the new page's
+    /// first list, so the atlas never shrinks mid frame.
+    pub fn trim_after_navigation(&mut self) {
+        self.atlas.shrink(&self.device);
+        self.textures.drop_spares();
+    }
+
+    /// The memory counters this renderer contributes to the report (spec
+    /// 0032, AC-10). Font bytes shared by several keys are counted once.
+    pub fn memory_counters(&self) -> MemoryCounters {
+        let mut fonts_mapped = 0;
+        let mut fonts_heap = 0;
+        let mut counted = HashSet::new();
+        for file in self.fonts.values() {
+            if !counted.insert(file.data.identity()) {
+                continue;
+            }
+            let bytes = file.data.len() as u64;
+            match file.data.storage() {
+                FontStorage::Mapped => fonts_mapped += bytes,
+                FontStorage::Heap | FontStorage::Shared => fonts_heap += bytes,
+            }
+        }
+        MemoryCounters {
+            fonts_mapped,
+            fonts_heap,
+            images_gpu: self.textures.images_bytes(),
+            atlas_gpu: u64::from(self.atlas.size()) * u64::from(self.atlas.size()),
+            layers_gpu: self.textures.layers_bytes(),
+            surface_gpu: match &self.target {
+                Target::Window { config, .. } => {
+                    let frames = u64::from(config.desired_maximum_frame_latency) + 1;
+                    u64::from(config.width) * u64::from(config.height) * 4 * frames
+                }
+                Target::Offscreen { .. } => 0,
+            },
+        }
     }
 
     /// Uploads an image a page registered (`AddImage`): `size` pixels laid
@@ -465,10 +563,10 @@ impl Renderer {
                         surface.configure(&self.device, config);
                         return Ok(());
                     }
-                    wgpu::CurrentSurfaceTexture::Timeout
+                    other @ (wgpu::CurrentSurfaceTexture::Timeout
                     | wgpu::CurrentSurfaceTexture::Occluded
-                    | wgpu::CurrentSurfaceTexture::Validation => {
-                        debug!("skipping a frame the surface could not provide");
+                    | wgpu::CurrentSurfaceTexture::Validation) => {
+                        debug!(?other, "skipping a frame the surface could not provide");
                         return Ok(());
                     }
                     wgpu::CurrentSurfaceTexture::Lost => return Err(RenderError::SurfaceLost),
@@ -479,6 +577,7 @@ impl Renderer {
                 });
                 self.draw_scene(&scene, &view);
                 self.queue.present(frame);
+                self.last_present_at = Some(std::time::Instant::now());
                 if suboptimal
                     && let Target::Window {
                         surface, config, ..
@@ -591,6 +690,7 @@ impl Renderer {
             }
         }
         self.queue.submit([encoder.finish()]);
+        self.last_submit_at = Some(std::time::Instant::now());
         self.textures.recycle(layers);
     }
 

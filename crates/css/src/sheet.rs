@@ -3,16 +3,19 @@
 
 use std::rc::Rc;
 
+use base::atoms::Atom;
 use cssparser::{
     AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserState,
-    QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, StyleSheetParser,
+    QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, StyleSheetParser, Token,
 };
 use encoding_rs::Encoding;
 use tracing::debug;
 
 use crate::font_face::{FontFaceRule, parse_font_face};
 use crate::media::MediaList;
-use crate::properties::{Declaration, ParseContext, parse_declaration};
+use crate::properties::{
+    Declaration, ParseContext, PropertySyntax, parse_declaration, parse_property_syntax,
+};
 use crate::selector::{Selector, parse_selector_list};
 
 /// Where a sheet comes from, which decides its place in the cascade.
@@ -29,8 +32,26 @@ pub enum Origin {
 pub struct Rule {
     pub(crate) selectors: Rc<[Selector]>,
     pub(crate) declarations: Rc<[Declaration]>,
+    /// The `@layer` name it belongs to, `None` for unlayered. Resolved to a
+    /// `LayerId` by the stylist in first-appearance order (spec 0010, AC-9).
+    pub(crate) layer: Option<Atom>,
     /// The `@media` lists around it, outermost first; all must match.
     pub(crate) media: Rc<[Rc<MediaList>]>,
+}
+
+/// A registered custom property from `@property` (spec 0010, AC-10).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropertyRule {
+    /// The custom property name, without the leading `--`.
+    pub name: Atom,
+    /// The accepted syntax, `*` for anything.
+    pub syntax: PropertySyntax,
+    /// Whether the property inherits from its parent. Custom properties
+    /// inherit by default.
+    pub inherits: bool,
+    /// The initial value, as text. Used when a declared value does not match
+    /// the syntax and the property does not inherit.
+    pub initial: Rc<str>,
 }
 
 /// A parsed style sheet.
@@ -42,6 +63,9 @@ pub struct Stylesheet {
     pub(crate) rules: Vec<Rule>,
     /// The `@font-face` rules, in source order (spec 0006, AC-10).
     pub(crate) font_faces: Vec<FontFaceRule>,
+    /// The registered custom properties from `@property`, in source order
+    /// (spec 0010, AC-10). Later rules for the same name win.
+    pub(crate) properties: Vec<PropertyRule>,
     /// The `media` attribute of the `<link>` or `<style>` it came from.
     pub media: Option<Rc<MediaList>>,
     /// Whether any value may read the viewport size.
@@ -55,6 +79,7 @@ impl Stylesheet {
             origin,
             rules: Vec::new(),
             font_faces: Vec::new(),
+            properties: Vec::new(),
             media: None,
             uses_viewport_units: false,
         }
@@ -89,8 +114,10 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
     let mut parser = TopLevel {
         context: &context,
         media: Vec::new(),
+        layer: Vec::new(),
         rules: Vec::new(),
         font_faces: Vec::new(),
+        properties: Vec::new(),
     };
     let mut input = Parser::new(text);
     for result in StyleSheetParser::new(&mut input, &mut parser) {
@@ -99,7 +126,10 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         }
     }
     let TopLevel {
-        rules, font_faces, ..
+        rules,
+        font_faces,
+        properties,
+        ..
     } = parser;
     let uses_viewport_units = rules
         .iter()
@@ -109,6 +139,7 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         origin,
         rules,
         font_faces,
+        properties,
         media: None,
         uses_viewport_units,
     }
@@ -149,14 +180,23 @@ struct TopLevel<'a> {
     context: &'a ParseContext,
     /// The `@media` lists the parser is inside.
     media: Vec<Rc<MediaList>>,
+    /// The `@layer` names the parser is inside, outermost first. The last
+    /// entry is the layer rules are filed into.
+    layer: Vec<Option<Atom>>,
     rules: Vec<Rule>,
     font_faces: Vec<FontFaceRule>,
+    /// The registered custom properties from `@property`.
+    properties: Vec<PropertyRule>,
 }
 
 /// What an at rule the top level reads turned out to be.
 enum AtPrelude {
     Media(Rc<MediaList>),
     FontFace,
+    /// The `@layer` name, `None` for an anonymous layer.
+    Layer(Option<Atom>),
+    /// The `@property` name, without the leading `--`.
+    Property(Atom),
 }
 
 impl<'i> QualifiedRuleParser<'i> for TopLevel<'_> {
@@ -182,6 +222,7 @@ impl<'i> QualifiedRuleParser<'i> for TopLevel<'_> {
         self.rules.push(Rule {
             selectors: Rc::from(selectors),
             declarations: Rc::from(declarations),
+            layer: self.layer.last().cloned().flatten(),
             media: Rc::from(self.media.clone()),
         });
         Ok(())
@@ -205,6 +246,26 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
             input.expect_exhausted()?;
             return Ok(AtPrelude::FontFace);
         }
+        if name.eq_ignore_ascii_case("layer") {
+            // `@layer name { }` or an anonymous `@layer { }`. Only the first
+            // name matters for the block form in this feature.
+            let names: Vec<Atom> = input
+                .parse_comma_separated(|input| -> Result<Atom, ParseError<()>> {
+                    let ident = input.expect_ident()?;
+                    Ok(Atom::from(ident.as_ref()))
+                })
+                .unwrap_or_default();
+            return Ok(AtPrelude::Layer(names.into_iter().next()));
+        }
+        if name.eq_ignore_ascii_case("property") {
+            // `@property --foo { ... }`. The name must start with `--`.
+            let ident = input.expect_ident()?;
+            let Some(name) = ident.as_ref().strip_prefix("--") else {
+                debug!(at_rule = &*name, "@property name missing --");
+                return Err(ParseError::unexpected_token());
+            };
+            return Ok(AtPrelude::Property(Atom::from(name)));
+        }
         // `@import`, `@supports`, `@keyframes`, `@layer` and the rest
         // arrive with later features (spec 0004, Follow-up).
         debug!(at_rule = &*name, "css at rule skipped");
@@ -225,6 +286,27 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
                     .extend(parse_font_face(input, self.context, media));
                 return Ok(());
             }
+            AtPrelude::Layer(name) => {
+                self.layer.push(name);
+                for result in StyleSheetParser::new(input, self) {
+                    if let Err((_, source, _)) = result {
+                        debug!(rule = source, "css rule dropped");
+                    }
+                }
+                self.layer.pop();
+                return Ok(());
+            }
+            AtPrelude::Property(name) => {
+                let rule = match parse_property_block(input, name.clone()) {
+                    Some(rule) => rule,
+                    None => {
+                        debug!(property = &*name, "@property rule ignored");
+                        return Ok(());
+                    }
+                };
+                self.properties.push(rule);
+                return Ok(());
+            }
         };
         self.media.push(media);
         for result in StyleSheetParser::new(input, self) {
@@ -235,6 +317,64 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
         self.media.pop();
         Ok(())
     }
+}
+
+/// Parses the block of an `@property --name { }` rule: `syntax`, `inherits`
+/// and `initial-value` declarations (spec 0010, AC-10).
+fn parse_property_block(input: &mut Parser<'_>, name: Atom) -> Option<PropertyRule> {
+    let mut syntax = None;
+    let mut inherits = true;
+    let mut initial = None;
+    loop {
+        input.skip_whitespace();
+        if input.is_exhausted() {
+            break;
+        }
+        let decl_name = input.expect_ident_cloned().ok()?;
+        input.expect_colon().ok()?;
+        let value = read_property_value(input)?;
+        eprintln!("DEBUG property value {value:?}");
+        match decl_name.as_ref().to_ascii_lowercase().as_str() {
+            "syntax" => syntax = parse_property_syntax(&value),
+            "inherits" => inherits = value.trim().eq_ignore_ascii_case("true"),
+            "initial-value" => {
+                initial = Some(
+                    value
+                        .trim()
+                        .trim_matches(|c| c == '"' || c == '\'')
+                        .to_string(),
+                )
+            }
+            _ => {}
+        }
+    }
+    let syntax = syntax?;
+    let initial = initial?;
+    Some(PropertyRule {
+        name,
+        syntax,
+        inherits,
+        initial: Rc::from(initial),
+    })
+}
+
+/// Reads one declaration's value as raw text, stopping at `;` or at the end
+/// of the enclosing block.
+fn read_property_value(input: &mut Parser<'_>) -> Option<String> {
+    let start = input.position();
+    loop {
+        match input.next() {
+            Ok(Token::Semicolon) => break,
+            Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    let mut text = input.slice_from(start).trim().to_string();
+    if text.ends_with(';') {
+        text.pop();
+    }
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 /// A declaration list: a rule's body or a `style` attribute.
@@ -371,6 +511,32 @@ mod tests {
         let names: Vec<_> = declarations.iter().map(Declaration::name).collect();
         assert_eq!(names, ["color", "width"]);
         assert!(declarations[1].important());
+    }
+
+    #[test]
+    fn at_property_registers_a_custom_property() {
+        let sheet = parse_stylesheet(
+            "@property --gap { syntax: \"<length>\"; inherits: false; initial-value: 8px; }
+             @property --color { syntax: \"<color>\"; initial-value: red; }
+             @property --bogus { syntax: \"<nope>\"; }
+             p { --gap: 16px; color: red; }",
+            Origin::Author,
+            None,
+        );
+        // The invalid syntax makes the third rule ignored as a whole.
+        let names: Vec<_> = sheet.properties.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, vec![Atom::from("gap"), Atom::from("color")]);
+        let gap = sheet.properties.iter().find(|r| r.name == *"gap").unwrap();
+        assert!(!gap.inherits);
+        assert_eq!(gap.initial.as_ref(), "8px");
+        let color = sheet
+            .properties
+            .iter()
+            .find(|r| r.name == *"color")
+            .unwrap();
+        assert!(color.inherits);
+        assert_eq!(color.initial.as_ref(), "red");
+        assert_eq!(sheet.len(), 1);
     }
 
     #[test]

@@ -16,6 +16,7 @@ mod fetch;
 mod pool;
 mod report;
 mod serve;
+mod sites;
 mod status;
 mod subset;
 mod worker;
@@ -23,13 +24,14 @@ mod worker;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use lexopt::ValueExt;
 use render::Renderer;
 
 use crate::expectations::Expectations;
 use crate::pool::{RunResult, run_pool};
 use crate::report::{AreaSummary, conformance_dir, print_summary, write_results};
+use crate::sites::Sites;
 use crate::status::Status;
 use crate::subset::Subset;
 
@@ -60,6 +62,12 @@ struct Args {
 enum Command {
     Run,
     Fetch,
+    /// `conformance sites` validates the checked-in proof sites; with
+    /// `--capture` it re-renders each page in Chrome and writes `chrome.json`
+    /// and `chrome.png` beside them (spec 0009, AC-22).
+    Sites {
+        capture: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -96,6 +104,26 @@ fn run() -> Result<ExitCode> {
     // Locate the checked-in subset file.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .context("CARGO_MANIFEST_DIR is not set (run via `cargo run -p conformance`)")?;
+
+    // `conformance sites` does not need the WPT snapshot: validate (and
+    // optionally capture) the checked-in proof sites and return.
+    if matches!(args.command, Command::Sites { .. }) {
+        let sites = Sites::load(std::path::Path::new(&manifest_dir))
+            .with_context(|| "could not load proof sites")?;
+        if let Command::Sites { capture } = args.command {
+            if capture {
+                return sites
+                    .capture(std::path::Path::new(&manifest_dir))
+                    .context("site capture failed");
+            }
+            println!("{} proof site(s) ready for capture:", sites.sites.len());
+            for site in &sites.sites {
+                println!("  {}", site.name);
+            }
+            return Ok(ExitCode::from(0));
+        }
+    }
+
     let subset_path: std::path::PathBuf = args
         .subset
         .as_deref()
@@ -161,6 +189,11 @@ fn run() -> Result<ExitCode> {
         std::thread::available_parallelism().map_or(1, |n| n.get())
     };
 
+    // AC-12: clear the output directory at the start of the run, so the
+    // failure images the workers write are not wiped at the end.
+    report::clear_output().context("could not clear the output directory")?;
+    let started = std::time::Instant::now();
+
     // AC-8 / AC-9: run the tests across worker processes.
     let results = run_pool(&dir, no_render, &subset_path, jobs, tests);
 
@@ -179,6 +212,7 @@ fn run() -> Result<ExitCode> {
     let mut regressions: Vec<String> = Vec::new();
     let mut unexpected_passes: Vec<String> = Vec::new();
     let mut stale_expectations: Vec<String> = Vec::new();
+    let mut under_floor: Vec<String> = Vec::new();
     let mut all_tests_json: Vec<serde_json::Value> = Vec::new();
 
     for area in &subset.areas {
@@ -212,7 +246,8 @@ fn run() -> Result<ExitCode> {
         );
 
         // Stale lines: only when the whole area ran (AC-10, AC-11).
-        let whole_area = args.areas.is_empty() || args.areas.contains(&area.name);
+        let whole_area =
+            args.paths.is_empty() && (args.areas.is_empty() || args.areas.contains(&area.name));
         if whole_area {
             stale_expectations.extend(expectations.stale(&discovered));
         }
@@ -255,15 +290,17 @@ fn run() -> Result<ExitCode> {
             (pass as f64) / ((total - skip) as f64) * 100.0
         };
         // AC-21: a run whose pass rate for an area is under its floor exits 1
-        // and names the area.
-        if let Some(floor) = area.min_pass_rate {
-            ensure!(
-                pass_rate >= floor as f64,
+        // and names the area. A narrowed run measures too few tests to speak
+        // for the area, so only a whole area run is gated. The summary still
+        // prints, and `results.json` still lands, so the run can be read.
+        if let Some(floor) = area.min_pass_rate
+            && whole_area
+            && pass_rate < floor as f64
+        {
+            under_floor.push(format!(
                 "area `{}` pass rate {:.1}% is below the min_pass_rate floor of {:.1}%",
-                area.name,
-                pass_rate,
-                floor
-            );
+                area.name, pass_rate, floor
+            ));
         }
         area_summaries.push(AreaSummary {
             name: area.name.clone(),
@@ -300,15 +337,15 @@ fn run() -> Result<ExitCode> {
         }
     }
 
-    // AC-12: clear output at the start of the run, write reports.
-    report::clear_output().context("could not clear the output directory")?;
+    // AC-12: write the reports; the output directory was cleared at the
+    // start of the run.
     print_summary(&area_summaries);
 
     let started_at = iso8601_now();
     let results_json = serde_json::json!({
         "wpt_commit": subset.wpt_commit,
         "started_at": started_at,
-        "duration_ms": 0,
+        "duration_ms": started.elapsed().as_millis() as u64,
         "jobs": jobs,
         "areas": area_summaries.iter().map(|s| serde_json::json!({
             "name": s.name,
@@ -355,8 +392,15 @@ fn run() -> Result<ExitCode> {
             eprintln!("  {s}");
         }
     }
+    if !under_floor.is_empty() {
+        eprintln!();
+        eprintln!("Below the min_pass_rate floor:");
+        for area in &under_floor {
+            eprintln!("  {area}");
+        }
+    }
 
-    let code = if regressions.is_empty() {
+    let code = if regressions.is_empty() && under_floor.is_empty() {
         ExitCode::from(0)
     } else {
         ExitCode::from(1)
@@ -389,6 +433,7 @@ fn parse_args() -> Result<Args> {
     let mut crashtests_only = false;
     let mut no_render = false;
     let mut worker = false;
+    let mut capture = false;
 
     while let Some(arg) = parser.next()? {
         match arg {
@@ -396,6 +441,7 @@ fn parse_args() -> Result<Args> {
                 print_help();
                 std::process::exit(0);
             }
+            lexopt::Arg::Long("capture") => capture = true,
             lexopt::Arg::Long("worker") => worker = true,
             lexopt::Arg::Long("no-render") => no_render = true,
             lexopt::Arg::Long("wpt-dir") => wpt_dir = Some(parser.value()?.string()?),
@@ -412,10 +458,19 @@ fn parse_args() -> Result<Args> {
                 match s.as_str() {
                     "run" => command = Some(Command::Run),
                     "fetch" => command = Some(Command::Fetch),
+                    "sites" => command = Some(Command::Sites { capture }),
                     other => bail!("unknown argument `{other}`"),
                 }
             }
             _ => bail!("unexpected argument `{arg:?}`"),
+        }
+    }
+
+    // `sites --capture` and `--capture sites` mean the same thing: apply a
+    // `--capture` that came after the `sites` positional.
+    if let Some(Command::Sites { capture: false }) = command {
+        if capture {
+            command = Some(Command::Sites { capture: true });
         }
     }
 
@@ -440,6 +495,7 @@ fn print_help() {
     println!("    conformance [run] [--area <name>…] [--path <prefix>…] [--jobs <n>]");
     println!("                  [--update] [--crashtests-only] [--wpt-dir <path>]");
     println!("    conformance fetch [--wpt-dir <path>]");
+    println!("    conformance sites [--capture]");
     println!("    conformance --worker --wpt-dir <path> --subset <path> [--no-render]");
     println!();
     println!("Options:");
@@ -450,6 +506,7 @@ fn print_help() {
     println!("    --jobs <n>           Number of worker processes (default: number of cores)");
     println!("    --update             Rewrite expectations files from the results");
     println!("    --crashtests-only    Run only crashtests; works without a GPU");
+    println!("    --capture            With `sites`: capture Chrome's rendering of each site");
     println!("    --wpt-dir <path>     Snapshot folder (default: OS cache dir)");
     println!("    --subset <path>      Subset file (worker/test only)");
     println!("    --no-render          Worker: do not create a renderer (crashtests-only)");

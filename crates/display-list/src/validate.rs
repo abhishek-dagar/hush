@@ -151,6 +151,11 @@ impl ResourceKeys {
         self.fonts.iter().copied()
     }
 
+    /// Every registered image key, in no order.
+    pub fn image_keys(&self) -> impl Iterator<Item = ImageKey> + '_ {
+        self.images.iter().copied()
+    }
+
     /// Whether `key` is registered.
     pub fn has_image(&self, key: ImageKey) -> bool {
         self.images.contains(&key)

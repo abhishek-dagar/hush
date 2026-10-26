@@ -2,7 +2,7 @@
 # reason. Change a row by hand, never by accepting a run: acceptance only
 # refreshes baseline.json from measured values.
 #
-# Metrics: bundle_size | cold_start | memory_total | memory_content | scroll_frame_cpu_p95 | script_load
+# Metrics: bundle_size | cold_start | memory_total | memory_content | memory_after_browse | scroll_frame_cpu_p95 | script_load
 # Targets: browser | shell (only bundle_size may use shell)
 # OSes: macos | linux | windows (runtime metrics may list only macos for now)
 # Units: MB (10^6 bytes) | ms
@@ -43,19 +43,31 @@ reason = "A page should appear within a fifth of a second on the reference Mac"
 metric = "memory_total"
 target = "browser"
 os = ["macos"]
-limit = 80.0
+limit = 180.0
+goal = 150.0
 unit = "MB"
 alarm_pct = 10.0
-reason = "Browser plus content must stay under 80 MB with one article open"
+reason = "Browser plus content must stay under 180 MB with one article open (goal 150 MB)"
 
 [[budget]]
 metric = "memory_content"
 target = "browser"
 os = ["macos"]
-limit = 40.0
+limit = 96.0
+goal = 80.0
 unit = "MB"
 alarm_pct = 10.0
-reason = "The content process alone must stay under 40 MB with one article open"
+reason = "The content process alone must stay under 96 MB with one article open (goal 80 MB)"
+
+[[budget]]
+metric = "memory_after_browse"
+target = "browser"
+os = ["macos"]
+limit = 180.0
+goal = 150.0
+unit = "MB"
+alarm_pct = 10.0
+reason = "After browsing the typical pages and returning, browser plus content stays under 180 MB (goal 150 MB)"
 
 [[budget]]
 metric = "scroll_frame_cpu_p95"

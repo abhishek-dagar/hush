@@ -47,7 +47,6 @@ impl Platform {
     /// Watches for accent and accessibility changes. Dark mode arrives as
     /// winit's `ThemeChanged`.
     pub(super) fn attach(window: &Window, proxy: EventLoopProxy<UserEvent>) -> Self {
-        let ns_window = ns_window(window);
         let block = RcBlock::new(move |_: NonNull<NSNotification>| {
             // The loop is gone when this fails; nothing is left to tell.
             let _ = proxy.send_event(UserEvent::Chrome(ChromeEvent::OsChanged));
@@ -84,7 +83,7 @@ impl Platform {
             .collect();
         Self {
             observers,
-            window: ns_window,
+            window: ns_window(window),
         }
     }
 
@@ -118,6 +117,12 @@ impl Platform {
         let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
             return;
         };
+        // In fullscreen AppKit moves the titlebar into its own short reveal
+        // window. Placing it by our window's height would push it out of
+        // that window, so AppKit hides it on the next draw; leave it be.
+        if !close.window().is_some_and(|w| std::ptr::eq(&*w, &**window)) {
+            return;
+        }
         // SAFETY: AppKit view accessors on the main thread, where the
         // event loop calls this; the views are the window's own.
         let Some(titlebar) = (unsafe { close.superview().and_then(|v| v.superview()) }) else {

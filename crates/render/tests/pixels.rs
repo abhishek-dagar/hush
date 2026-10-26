@@ -136,7 +136,13 @@ fn draw(scale: f32) -> Option<(Vec<u8>, u32)> {
             return None;
         }
     };
-    renderer.add_font(PAGE, FontKey(1), FONT, 0, &[]);
+    renderer.add_font(
+        PAGE,
+        FontKey(1),
+        render::FontBytes::heap(FONT.to_vec()),
+        0,
+        &[],
+    );
     renderer.add_image(PAGE, ImageKey(1), (2, 2), ImageFormat::Rgba8, &IMAGE);
     renderer
         .render(Some(&fixture()), scale, None, None)

@@ -23,7 +23,6 @@ use render::Renderer;
 use tracing::{debug, error, info, info_span, warn};
 use url::Url;
 use winit::application::ApplicationHandler;
-#[cfg(feature = "chrome")]
 use winit::dpi::LogicalSize;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
@@ -39,6 +38,8 @@ use crate::input;
 #[cfg(feature = "chrome")]
 use crate::input::EditKey;
 use crate::lifecycle::{self, CrashLog, PaintHold, Shortcut};
+use crate::memory_report;
+use crate::perf;
 use crate::render_thread::{self, RenderEvent, RenderMsg};
 use crate::scrolling;
 use crate::start_url::{StartPage, start_page};
@@ -135,6 +136,15 @@ pub(crate) enum UserEvent {
     /// From a native menu or an OS appearance hook (spec 0003).
     #[cfg(feature = "chrome")]
     Chrome(ChromeEvent),
+    /// From the perf wake thread: 2 s after `load`, time to ask the content
+    /// process for its marks and footprint (spec 0007, AC-5).
+    PerfSampleNow,
+    /// From the perf wake thread: 500 ms after `load`, time to start the
+    /// scroll driver (spec 0007, AC-6).
+    PerfScrollStart,
+    /// From the memory report wake thread: 2 s after `load`, time to ask
+    /// both processes for their counters (spec 0032, AC-10).
+    MemoryReportNow,
 }
 
 /// Where the IPC router sends each content message (spec 0004, Threads):
@@ -156,8 +166,15 @@ pub(crate) enum FromContent {
     Gone,
 }
 
-pub(crate) fn run(config: Config) -> Result<(), EmbedError> {
+pub(crate) fn run(
+    config: Config,
+    perf: Option<perf::PerfArgs>,
+    memory_report: Option<memory_report::State>,
+) -> Result<(), EmbedError> {
     let _span = info_span!("browser", pid = process::id()).entered();
+    if let Some(args) = &perf {
+        perf::log_start(args);
+    }
 
     #[allow(unused_mut, reason = "only macOS with the chrome changes the builder")]
     let mut builder = EventLoop::<UserEvent>::with_user_event();
@@ -179,7 +196,7 @@ pub(crate) fn run(config: Config) -> Result<(), EmbedError> {
         render: render.clone(),
         net: net.handle(),
     };
-    let content = match ContentProcess::spawn(routes.clone(), FIRST_PROCESS) {
+    let content = match ContentProcess::spawn(routes.clone(), FIRST_PROCESS, perf.is_some()) {
         Ok(content) => content,
         Err(err) => {
             net.shutdown();
@@ -200,6 +217,13 @@ pub(crate) fn run(config: Config) -> Result<(), EmbedError> {
         history: SessionHistory::new(),
         document_url: None,
         config,
+        perf: perf.map(|args| perf::PerfState {
+            started: Instant::now(),
+            args,
+        }),
+        perf_scroll_report: None,
+        memory_report,
+        browse_step: 0,
         window: None,
         content: Some(content),
         process: FIRST_PROCESS,
@@ -245,6 +269,17 @@ struct AppWindow {
 
 struct App {
     config: Config,
+    /// Live perf scenario, when `--perf` started one (spec 0007).
+    perf: Option<perf::PerfState>,
+    /// The scroll scenario's report, held while the content process is
+    /// asked for its `nav_to_load` (spec 0007, Scenarios).
+    perf_scroll_report: Option<perf::RunReport>,
+    /// The `--memory-report` breakdown, gathering both processes' counters
+    /// (spec 0032, AC-10). `None` without the flag.
+    memory_report: Option<memory_report::State>,
+    /// How far the `browse` scenario got: the article, the start page, back
+    /// (spec 0032, AC-11). Only read while that scenario runs.
+    browse_step: u8,
     /// The browser chrome around the page (spec 0003).
     #[cfg(feature = "chrome")]
     chrome: ChromeHost,
@@ -333,25 +368,38 @@ impl App {
         let attributes = Window::default_attributes().with_title(&self.config.title);
         #[cfg(feature = "chrome")]
         let attributes = self.chrome.window_attributes(attributes);
-        #[cfg(feature = "chrome")]
-        let attributes = if let Some(size) = self.chrome.window_size() {
-            // Open at the size the user last left it, not the OS default.
+        let attributes = if self.perf.is_some() {
+            // Perf scenarios need a fixed, known viewport so runs compare
+            // (spec 0007, Scenarios): 1280 by 800 logical px, always.
             attributes.with_inner_size(LogicalSize::new(
-                f64::from(size.width),
-                f64::from(size.height),
+                perf::PERF_WINDOW_SIZE.0,
+                perf::PERF_WINDOW_SIZE.1,
             ))
         } else {
+            #[cfg(feature = "chrome")]
+            let attributes = if let Some(size) = self.chrome.window_size() {
+                // Open at the size the user last left it, not the OS default.
+                attributes.with_inner_size(LogicalSize::new(
+                    f64::from(size.width),
+                    f64::from(size.height),
+                ))
+            } else {
+                attributes
+            };
             attributes
         };
         let window = Arc::new(event_loop.create_window(attributes)?);
         let size = window.inner_size();
         let renderer = Renderer::new(Arc::clone(&window), size.width, size.height)?;
+        let scenario = self.perf.as_ref().map(|state| state.args.scenario);
         let render = render_thread::spawn(
             renderer,
             Arc::clone(&window),
             MAIN_PAGE,
             receiver,
             self.proxy.clone(),
+            scenario,
+            self.render.clone(),
         )?;
         info!(width = size.width, height = size.height, "window opened");
         Ok(AppWindow {
@@ -404,6 +452,172 @@ impl App {
         error!(%err, "stopping");
         self.failure.get_or_insert(err);
         event_loop.exit();
+    }
+
+    /// A perf scenario finished on the render side: the first content frame
+    /// (start) or the 240th scroll frame (scroll). Merge the marks and end
+    /// the scenario the way it ends (spec 0007, Run report; Scenarios).
+    fn perf_done(&mut self, event_loop: &ActiveEventLoop, marks: perf::RenderMarks) {
+        let Some(state) = &self.perf else {
+            // Marks without perf mode cannot happen; ignore them.
+            return;
+        };
+        match state.args.scenario {
+            // Cold start ends at the first content frame (AC-4).
+            perf::Scenario::Start => {
+                let report = perf::RunReport {
+                    scenario: state.args.scenario.as_str(),
+                    first_frame_unix_us: marks.first_frame_unix_us,
+                    ..perf::RunReport::default()
+                };
+                self.perf_finish(event_loop, report);
+            }
+            // The scroll frames landed; the scenario also records
+            // `nav_to_load`, which only the content process knows, so ask
+            // it before writing (spec 0007, Scenarios).
+            perf::Scenario::Scroll => {
+                self.perf_scroll_report = Some(perf::RunReport {
+                    scenario: state.args.scenario.as_str(),
+                    scroll_frames_us: marks.scroll_frames_us,
+                    ..perf::RunReport::default()
+                });
+                self.send(ToContent::PerfSample);
+            }
+            // Memory and load end from the content process's answer.
+            perf::Scenario::Memory | perf::Scenario::Load | perf::Scenario::Browse => {}
+        }
+    }
+
+    /// A perf scenario that waits for `load` takes its next step now
+    /// (spec 0007, Scenarios).
+    fn perf_after_load(&mut self) {
+        let Some(state) = &self.perf else {
+            return;
+        };
+        match state.args.scenario {
+            // The footprints are sampled 2 s after `load` (AC-5).
+            perf::Scenario::Memory => {
+                self.schedule_wake(perf::MEMORY_SAMPLE_DELAY, UserEvent::PerfSampleNow);
+            }
+            // The scroll driver starts 500 ms after `load` (AC-6).
+            perf::Scenario::Scroll => {
+                self.schedule_wake(perf::SCROLL_START_DELAY, UserEvent::PerfScrollStart);
+            }
+            // The load scenario ends at `load`: ask for the marks now.
+            perf::Scenario::Load => self.send(ToContent::PerfSample),
+            // Browse walks the session, then samples like `memory` (spec
+            // 0032, AC-11).
+            perf::Scenario::Browse => self.browse_next(),
+            perf::Scenario::Start => {}
+        }
+    }
+
+    /// One step of the `browse` scenario (spec 0032, AC-11): load the
+    /// start page after the article, come back to the article, then wait 2 s
+    /// and sample. One window holds one page, so this is the shortest
+    /// session that replaces a document and returns to it.
+    fn browse_next(&mut self) {
+        match self.browse_step {
+            0 => {
+                self.browse_step = 1;
+                if let StartPage::Url(url) = start_page(None) {
+                    self.load(Load::Url {
+                        url,
+                        origin: Origin::Browser,
+                        action: Action::Push,
+                    });
+                }
+            }
+            1 => {
+                self.browse_step = 2;
+                self.go(-1, Origin::Browser);
+            }
+            _ => self.schedule_wake(perf::MEMORY_SAMPLE_DELAY, UserEvent::PerfSampleNow),
+        }
+    }
+
+    /// One shot wake after `delay`: a small thread sleeps, then sends
+    /// `event` to the event loop (spec 0007, Scenarios; spec 0032, AC-10).
+    /// One scenario and one report run at a time, so one thread per wake is
+    /// all it takes.
+    fn schedule_wake(&self, delay: Duration, event: UserEvent) {
+        let proxy = self.proxy.clone();
+        let awake = thread::Builder::new().name("wake".into()).spawn(move || {
+            thread::sleep(delay);
+            let _ = proxy.send_event(event);
+        });
+        if let Err(err) = awake {
+            warn!(%err, "could not start the wake thread");
+        }
+    }
+
+    /// The content process answered `PerfSample`: finish the scenario from
+    /// its marks (spec 0007, Run report).
+    fn perf_content_marks(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        nav_to_load_us: Option<u64>,
+        script_us: u64,
+        footprint_content_bytes: Option<u64>,
+    ) {
+        let Some(state) = &self.perf else {
+            return;
+        };
+        match state.args.scenario {
+            // Memory and browse end here: the browser adds its own footprint
+            // (AC-5; spec 0032, AC-11).
+            perf::Scenario::Memory | perf::Scenario::Browse => {
+                let report = perf::RunReport {
+                    scenario: state.args.scenario.as_str(),
+                    nav_to_load_us,
+                    script_us: Some(script_us),
+                    footprint_browser_bytes: perf::footprint_bytes(),
+                    footprint_content_bytes,
+                    ..perf::RunReport::default()
+                };
+                self.perf_finish(event_loop, report);
+            }
+            // The load scenario ends here: navigation to `load` and the
+            // script time (AC-7).
+            perf::Scenario::Load => {
+                let report = perf::RunReport {
+                    scenario: state.args.scenario.as_str(),
+                    nav_to_load_us,
+                    script_us: Some(script_us),
+                    ..perf::RunReport::default()
+                };
+                self.perf_finish(event_loop, report);
+            }
+            // Scroll waited for `nav_to_load` after the frames landed.
+            perf::Scenario::Scroll => {
+                let Some(mut report) = self.perf_scroll_report.take() else {
+                    return;
+                };
+                report.nav_to_load_us = nav_to_load_us;
+                self.perf_finish(event_loop, report);
+            }
+            perf::Scenario::Start => {}
+        }
+    }
+
+    /// Writes the run report and ends the browser (spec 0007, Scenarios:
+    /// the browser exits by itself when the scenario ends).
+    fn perf_finish(&mut self, event_loop: &ActiveEventLoop, report: perf::RunReport) {
+        let Some(state) = self.perf.take() else {
+            return;
+        };
+        match report.write(&state.args.report) {
+            Ok(()) => {
+                let duration = state.started.elapsed();
+                info!(
+                    scenario = state.args.scenario.as_str(),
+                    run_duration_ms = duration.as_millis() as u64,
+                    "perf scenario done"
+                );
+                event_loop.exit();
+            }
+            Err(err) => self.fail(event_loop, EmbedError::PerfReport(err)),
+        }
     }
 
     /// Sends a message to the content process. A failure is logged, not
@@ -913,7 +1127,8 @@ impl App {
     /// again.
     fn relaunch(&mut self, load: Load) {
         let process = self.process.wrapping_add(1);
-        let content = match ContentProcess::spawn(self.routes.clone(), process) {
+        let content = match ContentProcess::spawn(self.routes.clone(), process, self.perf.is_some())
+        {
             Ok(content) => content,
             Err(err) => {
                 error!(%err, "could not relaunch the content process");
@@ -1275,6 +1490,36 @@ impl ApplicationHandler<UserEvent> for App {
                 self.history.save_scroll(entry, offset);
                 return;
             }
+            UserEvent::Render(RenderEvent::PerfDone(marks)) => {
+                self.perf_done(event_loop, marks);
+                return;
+            }
+            UserEvent::PerfSampleNow => {
+                // 2 s after `load`: ask the content process for its marks
+                // and footprint (spec 0007, AC-5).
+                self.send(ToContent::PerfSample);
+                return;
+            }
+            UserEvent::PerfScrollStart => {
+                // 500 ms after `load`: the render thread starts feeding
+                // wheel steps (spec 0007, AC-6).
+                self.render(RenderMsg::PerfScrollStart);
+                return;
+            }
+            UserEvent::MemoryReportNow => {
+                // 2 s after `load`: both processes count what they hold
+                // (spec 0032, AC-10).
+                self.send(ToContent::ReportMemory);
+                self.render(RenderMsg::ReportMemory);
+                return;
+            }
+            UserEvent::Render(RenderEvent::Memory(counters)) => {
+                if let Some(report) = &mut self.memory_report {
+                    report.browser(counters);
+                    report.write_if_ready();
+                }
+                return;
+            }
             UserEvent::Render(RenderEvent::Failed { window, error }) => {
                 // Only the browser window's failure stops the browser.
                 #[cfg(feature = "chrome")]
@@ -1371,6 +1616,27 @@ impl ApplicationHandler<UserEvent> for App {
             {
                 self.history.load_complete(navigation);
                 self.show_navigation();
+                // A perf scenario that waits for `load` takes its next step
+                // now (spec 0007, Scenarios).
+                self.perf_after_load();
+                // The memory report is taken 2 s after `load` (spec 0032,
+                // AC-10).
+                if self.memory_report.is_some() {
+                    self.schedule_wake(memory_report::REPORT_DELAY, UserEvent::MemoryReportNow);
+                }
+            }
+            FromContent::Message(ToBrowser::PerfSample {
+                nav_to_load_us,
+                script_us,
+                footprint_bytes,
+            }) => {
+                self.perf_content_marks(event_loop, nav_to_load_us, script_us, footprint_bytes);
+            }
+            FromContent::Message(ToBrowser::MemoryReport { counters }) => {
+                if let Some(report) = &mut self.memory_report {
+                    report.content(counters);
+                    report.write_if_ready();
+                }
             }
             FromContent::Message(ToBrowser::LinkHover { page, url }) if page == MAIN_PAGE => {
                 #[cfg(feature = "chrome")]
@@ -1621,15 +1887,19 @@ struct ContentProcess {
 
 impl ContentProcess {
     /// Relaunches this executable as the content process, waits until it is
-    /// ready, then routes everything it sends.
-    fn spawn(routes: Routes, process: u32) -> Result<Self, EmbedError> {
+    /// ready, then routes everything it sends. In perf mode the content
+    /// process is launched with `--perf` too (spec 0007, IPC messages).
+    fn spawn(routes: Routes, process: u32, perf: bool) -> Result<Self, EmbedError> {
         let server = BootstrapServer::new()?;
         let exe = env::current_exe().map_err(EmbedError::SpawnContent)?;
-        let mut child = Command::new(exe)
-            .arg(CONTENT_PROCESS_FLAG)
-            .arg(server.name())
-            .spawn()
-            .map_err(EmbedError::SpawnContent)?;
+        let mut command = Command::new(exe);
+        command.arg(CONTENT_PROCESS_FLAG).arg(server.name());
+        if perf {
+            // The content process learns perf mode only from its launch
+            // argument (spec 0007, Security model).
+            command.arg("--perf");
+        }
+        let mut child = command.spawn().map_err(EmbedError::SpawnContent)?;
 
         let started = Self::handshake(server).and_then(|channel| {
             let (sender, receiver) = channel.split();

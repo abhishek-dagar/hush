@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Hacker News look alike &middot; conformance proof site</title>
+<style>
+  html { font: 13px/1.4 system-ui, sans-serif; }
+  body { margin: 0 auto; max-width: 960px; padding: 10px; color: #333; }
+  .headline { font-size: 20px; margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; border: 1px solid #999;
+          margin-top: 10px; }
+  th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left;
+           vertical-align: top; }
+  th { background: #eee; font-weight: bold; }
+  .vote { width: 32px; text-align: right; font-weight: bold; color: #f00; }
+  .headline-cell { font-weight: bold; }
+  .meta { color: #555; font-size: 11px; white-space: nowrap; }
+  .comment { color: #006621; font-size: 11px; }
+  footer { margin-top: 18px; padding-top: 8px; border-top: 1px solid #ccc;
+           font-size: 12px; color: #666; }
+</style>
+<header class="headline">Hacker News look alike &mdash; conformance proof page</header>
+<table>
+  <thead>
+    <tr>
+      <th class="vote">pts</th>
+      <th class="headline-cell">title</th>
+      <th class="meta">by &middot; minutes ago</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="vote">240</td>
+      <td class="headline-cell">Classic box layout lands in the engine</td>
+      <td class="meta">alice &middot; 2h ago</td>
+    </tr>
+    <tr>
+      <td class="vote">180</td>
+      <td class="headline-cell">Floats, sticky headers and tables now compute</td>
+      <td class="meta">bob &middot; 4h ago</td>
+    </tr>
+    <tr>
+      <td class="vote">95</td>
+      <td class="headline-cell">A hand written table that lays out like Chrome</td>
+      <td class="meta">carol &middot; 6h ago</td>
+    </tr>
+  </tbody>
+</table>
+<div class="comment">
+  <p>&gt; The float layer paints after in-flow block backgrounds and before inline content.</p>
+  <p>This keeps articles readable the way the author meant.</p>
+</div>
+<footer>
+  &mdash; Hacker News look alike &middot; conformance proof page &mdash;
+</footer>

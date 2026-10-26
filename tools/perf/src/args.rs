@@ -48,5 +48,5 @@ fn print_help() {
     println!("Exit codes: 0 all good, 1 a budget failed, 2 the gate could not run.");
     println!();
     println!("Metrics: bundle_size, cold_start, memory_total, memory_content,");
-    println!("         scroll_frame_cpu_p95, script_load");
+    println!("         memory_after_browse, scroll_frame_cpu_p95, script_load");
 }

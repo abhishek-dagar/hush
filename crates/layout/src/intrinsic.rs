@@ -19,7 +19,7 @@ use crate::{LayoutContext, border_widths, inline};
 fn absolute(length: Option<Length>) -> Option<Au> {
     match length? {
         Length::Au(au) => Some(au),
-        Length::Percent(_) => None,
+        Length::Percent(_) | Length::Calc(_) => None,
     }
 }
 
@@ -42,7 +42,7 @@ pub(crate) fn content_sizes(tree: &BoxTree, id: BoxId, cx: &mut LayoutContext<'_
             );
             continue;
         }
-        let sizes = compute(tree, layout_box, cx);
+        let sizes = compute(tree, current, layout_box, cx);
         cx.intrinsic.insert(current, sizes);
     }
     known(tree, id, cx).unwrap_or_default()
@@ -86,7 +86,12 @@ fn in_flow_children<'a>(
         .filter(|&child| !tree.get(child).is_some_and(LayoutBox::is_absolute))
 }
 
-fn compute(tree: &BoxTree, layout_box: &LayoutBox, cx: &mut LayoutContext<'_>) -> (Au, Au) {
+fn compute(
+    tree: &BoxTree,
+    id: BoxId,
+    layout_box: &LayoutBox,
+    cx: &mut LayoutContext<'_>,
+) -> (Au, Au) {
     if layout_box.text_field {
         // The HTML `size` default: 20 times the advance of `0` (spec 0006,
         // AC-17), whatever text the field holds.
@@ -100,10 +105,13 @@ fn compute(tree: &BoxTree, layout_box: &LayoutBox, cx: &mut LayoutContext<'_>) -
         return (width, width);
     }
     if layout_box.kind == BoxKind::Replaced {
-        let width = absolute(layout_box.style.size.width)
+        let width = absolute(layout_box.style.size.width.clone())
             .or(layout_box.natural.width)
             .unwrap_or(Au::ZERO);
         return (width, width);
+    }
+    if layout_box.kind == BoxKind::Table {
+        return crate::table::intrinsic_sizes(tree, id, layout_box, cx);
     }
     if !layout_box.inline.is_empty() {
         let atomics: HashMap<BoxId, (Au, Au)> = dependencies(tree, layout_box)
@@ -118,7 +126,7 @@ fn compute(tree: &BoxTree, layout_box: &LayoutBox, cx: &mut LayoutContext<'_>) -
         // A row's items side by side with the gaps between them; a row
         // that wraps can narrow to its widest item (spec 0006, Layout
         // rules worth pinning). A column takes the largest of each, below.
-        let gap = absolute(Some(flex.column_gap)).unwrap_or(Au::ZERO);
+        let gap = absolute(Some(layout_box.style.alignment.column_gap.clone())).unwrap_or(Au::ZERO);
         let (count, min_sum, min_largest, max) = contributions.fold(
             (0, Au::ZERO, Au::ZERO, Au::ZERO),
             |(count, min_sum, min_largest, max), (a, b)| {
@@ -143,26 +151,26 @@ pub(crate) fn contribution(tree: &BoxTree, id: BoxId, cx: &LayoutContext<'_>) ->
     let layout_box = tree.get(id)?;
     let style: &ComputedStyle = &layout_box.style;
     let border = border_widths(style);
-    let padding = absolute(Some(style.padding.left)).unwrap_or(Au::ZERO)
-        + absolute(Some(style.padding.right)).unwrap_or(Au::ZERO);
+    let padding = absolute(Some(style.padding.left.clone())).unwrap_or(Au::ZERO)
+        + absolute(Some(style.padding.right.clone())).unwrap_or(Au::ZERO);
     let edges = border.horizontal() + padding;
     let content = |width: Au| match style.size.box_sizing {
         BoxSizing::BorderBox => (width - edges).max(Au::ZERO),
         BoxSizing::ContentBox => width,
     };
-    let (mut min, mut max) = match absolute(style.size.width) {
+    let (mut min, mut max) = match absolute(style.size.width.clone()) {
         Some(width) if layout_box.kind != BoxKind::Replaced => (content(width), content(width)),
         _ => known(tree, id, cx)?,
     };
-    if let Some(limit) = absolute(style.size.max_width).map(content) {
+    if let Some(limit) = absolute(style.size.max_width.clone()).map(content) {
         min = min.min(limit);
         max = max.min(limit);
     }
-    if let Some(limit) = absolute(style.size.min_width).map(content) {
+    if let Some(limit) = absolute(style.size.min_width.clone()).map(content) {
         min = min.max(limit);
         max = max.max(limit);
     }
-    let margins = absolute(style.margin.left).unwrap_or(Au::ZERO)
-        + absolute(style.margin.right).unwrap_or(Au::ZERO);
+    let margins = absolute(style.margin.left.clone()).unwrap_or(Au::ZERO)
+        + absolute(style.margin.right.clone()).unwrap_or(Au::ZERO);
     Some((min + edges + margins, max + edges + margins))
 }

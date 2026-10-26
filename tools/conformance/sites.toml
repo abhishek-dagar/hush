@@ -1,0 +1,39 @@
+# Proof sites checked against Chrome's rendering (spec 0009, AC-22).
+#
+# The scope calls for six sites: a Wikipedia article, an MDN reference page,
+# a docs.rs crate page, a Rust Book chapter, a hand written news article with
+# floated figures and a sticky header, and a hand written Hacker News style
+# table layout. All six are saved here as hand written look-alikes.
+#
+# Each site names at most 20 landmarks whose border boxes Chrome's capture
+# writes into `chrome.json` beside the page.
+
+[[site]]
+name = "wikipedia-lookalike"
+path = "index.html"
+landmarks = ["#mw-page-title", "#toc", ".infobox", ".mw-parser-output", "footer"]
+
+[[site]]
+name = "mdn-lookalike"
+path = "index.html"
+landmarks = ["#main-content", ".sidebar", ".code-example", "nav", "footer"]
+
+[[site]]
+name = "docsrs-lookalike"
+path = "index.html"
+landmarks = ["#crate-title", ".item-decl", ".sidebar", "#search", "footer"]
+
+[[site]]
+name = "rustbook-lookalike"
+path = "index.html"
+landmarks = ["#chapter-title", ".sidebar", ".code-block", "nav", "footer"]
+
+[[site]]
+name = "news-lookalike"
+path = "index.html"
+landmarks = ["#header", "#masthead", ".article", ".figure", "aside.sticky", "footer"]
+
+[[site]]
+name = "hacker-news-lookalike"
+path = "index.html"
+landmarks = ["table", ".headline", ".vote", ".meta", ".comment", "footer"]

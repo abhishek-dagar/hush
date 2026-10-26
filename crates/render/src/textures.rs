@@ -12,6 +12,8 @@ struct Sampled {
     /// Kept alive while the bind group is used.
     _texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    /// Width and height, for the memory report (spec 0032, AC-10).
+    size: (u32, u32),
 }
 
 /// An offscreen layer: drawn into by one pass, then sampled by its parent.
@@ -159,6 +161,7 @@ impl Textures {
             Sampled {
                 _texture: texture,
                 bind_group,
+                size,
             },
         );
     }
@@ -166,6 +169,29 @@ impl Textures {
     /// Frees an image the page freed.
     pub(crate) fn delete_image(&mut self, image: (PageId, ImageKey)) {
         self.images.remove(&image);
+    }
+
+    /// The image textures' bytes, as width × height × 4 (spec 0032, AC-10).
+    pub(crate) fn images_bytes(&self) -> u64 {
+        self.images
+            .values()
+            .map(|sampled| u64::from(sampled.size.0) * u64::from(sampled.size.1) * 4)
+            .sum()
+    }
+
+    /// The spare layer textures' bytes, as width × height × 4 (spec 0032,
+    /// AC-10).
+    pub(crate) fn layers_bytes(&self) -> u64 {
+        self.spare_layers
+            .iter()
+            .map(|layer| u64::from(layer.size.0) * u64::from(layer.size.1) * 4)
+            .sum()
+    }
+
+    /// Frees the spare layer textures: a page's layers must not outlive it
+    /// (spec 0032, AC-7).
+    pub(crate) fn drop_spares(&mut self) {
+        self.spare_layers.clear();
     }
 
     /// The bind group sampling a registered image.

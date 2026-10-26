@@ -108,9 +108,39 @@ pub(crate) struct FlexFrame {
     pub(crate) max_height: Option<Au>,
 }
 
+/// A grid container's own sizes, which its items are laid out in.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GridFrame {
+    pub(crate) content_width: Au,
+    /// The content height, when it is definite.
+    pub(crate) height: Option<Au>,
+    #[allow(
+        dead_code,
+        reason = "grid layout does not clamp to min-height and max-height yet"
+    )]
+    pub(crate) min_height: Au,
+    #[allow(
+        dead_code,
+        reason = "grid layout does not clamp to min-height and max-height yet"
+    )]
+    pub(crate) max_height: Option<Au>,
+}
+
 /// A flex container's laid out items, from its content box origin.
 #[derive(Debug, Default)]
 pub(crate) struct FlexItems {
+    pub(crate) children: Vec<(Point, Rc<Fragment>)>,
+    /// The content height the items need.
+    pub(crate) height: Au,
+    pub(crate) baseline: Option<Au>,
+    pub(crate) last_baseline: Option<Au>,
+    /// Absolute children and the absolute descendants the items hand on.
+    pub(crate) absolutes: Vec<PendingAbsolute>,
+}
+
+/// A grid container's laid out items, from its content box origin.
+#[derive(Debug, Default)]
+pub(crate) struct GridItems {
     pub(crate) children: Vec<(Point, Rc<Fragment>)>,
     /// The content height the items need.
     pub(crate) height: Au,
@@ -126,6 +156,7 @@ pub(crate) fn resolve(length: Option<Length>, basis: Option<Au>) -> Option<Au> {
     match length? {
         Length::Au(au) => Some(au),
         percent @ Length::Percent(_) => basis.map(|b| percent.resolve(Some(b))),
+        Length::Calc(expr) => Some(expr.resolve(basis)),
     }
 }
 
@@ -179,18 +210,24 @@ impl InProgress {
         };
 
         let size = &style.size;
-        let width = resolve(size.width, basis_width).map(content_x);
-        let min_width = resolve(size.min_width, basis_width).map_or(Au::ZERO, content_x);
-        let max_width = resolve(size.max_width, basis_width).map(content_x);
-        let height = resolve(size.height, basis_height).map(content_y);
-        let min_height = resolve(size.min_height, basis_height).map_or(Au::ZERO, content_y);
-        let max_height = resolve(size.max_height, basis_height).map(content_y);
+        let width = resolve(size.width.clone(), basis_width).map(content_x);
+        let min_width = resolve(size.min_width.clone(), basis_width).map_or(Au::ZERO, content_x);
+        let max_width = resolve(size.max_width.clone(), basis_width).map(content_x);
+        let height = resolve(size.height.clone(), basis_height).map(content_y);
+        let min_height = resolve(size.min_height.clone(), basis_height).map_or(Au::ZERO, content_y);
+        let max_height = resolve(size.max_height.clone(), basis_height).map(content_y);
+
+        // Whether each dimension was `auto` (unresolved) before the fill /
+        // shrink-to-fit rules run: `aspect-ratio` derives an automatic
+        // dimension from the other (spec 0010, AC-7).
+        let width_auto = width.is_none();
+        let height_auto = height.is_none();
 
         let side = |length: Option<Length>| length.map(|l| l.resolve(basis_width));
-        let margin_left = side(style.margin.left);
-        let margin_right = side(style.margin.right);
-        let own_top = side(style.margin.top).unwrap_or(Au::ZERO);
-        let own_bottom = side(style.margin.bottom).unwrap_or(Au::ZERO);
+        let margin_left = side(style.margin.left.clone());
+        let margin_right = side(style.margin.right.clone());
+        let own_top = side(style.margin.top.clone()).unwrap_or(Au::ZERO);
+        let own_bottom = side(style.margin.bottom.clone()).unwrap_or(Au::ZERO);
 
         let available = space.available_inline.definite().unwrap_or(Au::ZERO);
         let replaced = layout_box.kind == BoxKind::Replaced;
@@ -213,22 +250,53 @@ impl InProgress {
                     - margin_right.unwrap_or(Au::ZERO)
                     - edges_x)
                     .max(Au::ZERO);
-                match (inline_level || layout_box.float.is_some(), intrinsic) {
-                    // Shrink to fit (CSS 2.2 sections 10.3.9 and 10.3.5).
+                match (
+                    inline_level
+                        || layout_box.float.is_some()
+                        || layout_box.kind == BoxKind::TableWrapper,
+                    intrinsic,
+                ) {
+                    // Shrink to fit (CSS 2.2 sections 10.3.9, 10.3.5 and
+                    // 17.5.2).
                     (true, Some((min, max))) => fill.max(min).min(max),
                     _ => fill,
                 }
             });
             (clamp(width, min_width, max_width), height)
         };
-        let content_width = match (replaced, space.stretch_inline) {
+        let mut content_width = match (replaced, space.stretch_inline) {
             (true, Some(stretch)) => (stretch - edges_x).max(Au::ZERO),
             _ => content_width,
         };
-        let height = space
+        let mut height = space
             .stretch_block
             .map(|stretch| (stretch - edges_y).max(Au::ZERO))
             .or(height);
+
+        // `aspect-ratio`: when exactly one dimension is automatic, derive it
+        // from the explicit ratio (a replaced element's `auto` natural ratio
+        // is already applied by `replaced_size`). Clamp by the min/max limits
+        // so the ratio never forces a box past them.
+        if width_auto ^ height_auto
+            && let Some((rw, rh)) = style
+                .size
+                .aspect_ratio
+                .ratio
+                .filter(|&(w, h)| w > 0.0 && h > 0.0)
+        {
+            let scale = rw / rh;
+            if width_auto {
+                // Height is definite: width = height * ratio.
+                let mut w = Au::from_px(height.unwrap_or(Au::ZERO).to_f32_px() * scale);
+                w = clamp(w, min_width, max_width);
+                content_width = w;
+            } else {
+                // Width is definite: height = width / ratio.
+                let mut h = Au::from_px(content_width.to_f32_px() / scale);
+                h = clamp(h, min_height, max_height);
+                height = Some(h);
+            }
+        }
 
         let is_absolute = layout_box.is_absolute();
         let (left, right) =
@@ -301,10 +369,10 @@ impl InProgress {
             let insets = &style.position_offsets;
             let resolve_inset = |length: Option<Length>, basis: Option<Au>| resolve(length, basis);
             Some(SideOffsets {
-                top: resolve_inset(insets.top, space.percentage_basis.height),
-                right: resolve_inset(insets.right, space.percentage_basis.width),
-                bottom: resolve_inset(insets.bottom, space.percentage_basis.height),
-                left: resolve_inset(insets.left, space.percentage_basis.width),
+                top: resolve_inset(insets.top.clone(), space.percentage_basis.height),
+                right: resolve_inset(insets.right.clone(), space.percentage_basis.width),
+                bottom: resolve_inset(insets.bottom.clone(), space.percentage_basis.height),
+                left: resolve_inset(insets.left.clone(), space.percentage_basis.width),
             })
         } else {
             None
@@ -387,6 +455,7 @@ impl InProgress {
             .style
             .margin
             .top
+            .clone()
             .map_or(Au::ZERO, |l| l.resolve(Some(self.content_width)));
         let y = if self.at_top {
             self.cursor
@@ -414,6 +483,33 @@ impl InProgress {
     /// Takes a flex container's laid out items as its content. They are
     /// all placed, so the layout stack visits no children.
     pub(crate) fn set_flex_items(&mut self, items: FlexItems, child_count: usize) {
+        let origin = self.content_origin();
+        self.children = items
+            .children
+            .into_iter()
+            .map(|(at, fragment)| (origin.offset_by(at), fragment))
+            .collect();
+        self.baseline = items.baseline.map(|b| origin.y + b);
+        self.last_baseline = items.last_baseline.map(|b| origin.y + b);
+        self.cursor = items.height;
+        self.next_child = child_count;
+        self.absolutes
+            .extend(items.absolutes.into_iter().map(|a| a.offset_by(origin)));
+    }
+
+    /// The sizes a grid container lays its items out in.
+    pub(crate) fn grid_frame(&self) -> GridFrame {
+        GridFrame {
+            content_width: self.content_width,
+            height: self.height,
+            min_height: self.min_height,
+            max_height: self.max_height,
+        }
+    }
+
+    /// Takes a grid container's laid out items as its content. They are
+    /// all placed, so the layout stack visits no children.
+    pub(crate) fn set_grid_items(&mut self, items: GridItems, child_count: usize) {
         let origin = self.content_origin();
         self.children = items
             .children
@@ -716,6 +812,8 @@ impl InProgress {
                     self.border.top + self.padding.top,
                 )))
             }),
+            collapsed_borders: None,
+            background_layers: None,
         }
     }
 

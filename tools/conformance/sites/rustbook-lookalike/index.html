@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Classic box layout &middot; The Rust Book look alike</title>
+<style>
+  html { font: 16px/1.8 system-ui, -apple-system, sans-serif; }
+  body { margin: 0; color: #24292e; background: #fff; }
+  #chapter-title { font-size: 32px; font-weight: bold; margin: 16px 0 24px 0; }
+  .sidebar { position: sticky; top: 24px; width: 280px; float: right;
+             margin: 0 0 24px 24px; padding: 20px; background: #f6f8fa;
+             border: 1px solid #d0d0d0; font-size: 14px; }
+  .sidebar h3 { font-size: 15px; margin: 0 0 12px 0; border-bottom: 1px solid #d0d0d0;
+                padding-bottom: 8px; }
+  .sidebar ul { list-style: none; margin: 0; padding: 0; }
+  .sidebar li { margin: 6px 0; }
+  .sidebar a { color: #007acc; text-decoration: none; }
+  .code-block { margin: 24px 0; padding: 16px; background: #f6f8fa;
+                border: 1px solid #d0d0d0; border-radius: 6px;
+                font-family: ui-monospace, SFMono-Regular, monospace;
+                font-size: 13px; overflow: auto; }
+  nav { margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #d0d0d0; }
+  nav a { margin-right: 20px; color: #007acc; text-decoration: none; }
+  p { margin: 0 0 18px 0; line-height: 1.8; }
+  footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #d0d0d0;
+           font-size: 12px; color: #666; }
+</style>
+<nav>
+  <a href="#">Front matter</a>
+  <a href="#">Introduction</a>
+  <a href="#">Chapter layout</a>
+</nav>
+<div style="max-width: 760px; margin: 0 auto; padding: 0 24px;">
+  <h1 id="chapter-title">Classic box layout</h1>
+  <div class="sidebar">
+    <h3>In this chapter</h3>
+    <ul>
+      <li><a href="#floats">Floats and clearing</a></li>
+      <li><a href="#tables">CSS tables</a></li>
+      <li><a href="#sticky">Sticky positioning</a></li>
+    </ul>
+  </div>
+
+  <p>
+    The classic box layout model is the foundation of most of the web. It is
+    built on the CSS box model: every element generates a rectangular box with
+    content, padding, border, and margin areas.
+  </p>
+
+  <h2 id="floats">Floats and clearing</h2>
+  <p>
+    A float is a box that is taken out of the normal flow and shifted to the
+    left or right. Content flows around it, wrapping along its margin box.
+    The <code>clear</code> property moves an element below earlier floats.
+  </p>
+
+  <div class="code-block">
+    float: left;
+    clear: both;
+  </div>
+
+  <h2 id="tables">CSS tables</h2>
+  <p>
+    CSS tables build a row-and-column grid from table display types. Cells may
+    span columns (<code>colspan</code>) or rows (<code>rowspan</code>), and
+    borders may be separate or collapsed.
+  </p>
+
+  <h2 id="sticky">Sticky positioning</h2>
+  <p>
+    A sticky box is positioned in flow like a relatively positioned box, but
+    is offset based on the scroll position of its nearest scroll container.
+    Sticky headers remain visible while the page scrolls.
+  </p>
+</div>
+<footer>
+  &mdash; The Rust Book look alike &middot; conformance proof page &mdash;
+</footer>

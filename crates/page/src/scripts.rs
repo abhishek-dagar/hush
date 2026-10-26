@@ -161,6 +161,9 @@ impl Scripts {
                     _ => None,
                 })
                 .collect();
+            // An `.xht` script wraps its source in `<![CDATA[ ... ]]>`, which
+            // an XHTML parser strips (spec 0005, AC-18).
+            let source = crate::strip_cdata(&source).to_owned();
             if source.trim().is_empty() {
                 return Prepared::Continue;
             }

@@ -393,7 +393,11 @@ fn the_menu_button_draws_its_icon_from_the_embedded_font() {
         .adds
         .iter()
         .find_map(|add| match add {
-            ipc::ToBrowser::AddFont { key, data, .. } if data.len() == icons_len => Some(*key),
+            ipc::ToBrowser::AddFont {
+                key,
+                source: ipc::FontSource::Bytes(bytes),
+                ..
+            } if bytes.len() == icons_len => Some(*key),
             _ => None,
         })
         .expect("icons.ttf is registered with the first frame");

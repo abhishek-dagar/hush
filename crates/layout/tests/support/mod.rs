@@ -16,17 +16,22 @@ use text::{FontContext, WebFontLayer};
 
 pub const VIEWPORT: (f32, f32) = (800.0, 600.0);
 
-/// Adds a `name` element under `parent`, styled by `style` as its `style`
-/// attribute.
-pub fn add(
+/// Adds a `name` element under `parent`, sets `attrs`, then styles it by
+/// `style` as its `style` attribute.
+pub fn add_with_attributes(
     doc: &mut Document,
     stylist: &Stylist,
     parent: NodeId,
     name: &str,
+    attrs: &[(&str, &str)],
     style: &str,
 ) -> NodeId {
     let id = doc.create_element(QualName::html(LocalName::from(name)));
     doc.append_child(parent, id).unwrap();
+    for &(attr, value) in attrs {
+        doc.set_attribute(id, QualName::attribute(LocalName::from(attr)), value)
+            .unwrap();
+    }
     let parent_style: Option<Rc<ComputedStyle>> = doc
         .node(parent)
         .and_then(|n| n.as_element()?.style().cloned());
@@ -43,6 +48,18 @@ pub fn add(
     };
     doc.set_style(id, Some(Rc::new(computed))).unwrap();
     id
+}
+
+/// Adds a `name` element under `parent`, styled by `style` as its `style`
+/// attribute.
+pub fn add(
+    doc: &mut Document,
+    stylist: &Stylist,
+    parent: NodeId,
+    name: &str,
+    style: &str,
+) -> NodeId {
+    add_with_attributes(doc, stylist, parent, name, &[], style)
 }
 
 /// A case's document, built and styled, with each labeled element's node.

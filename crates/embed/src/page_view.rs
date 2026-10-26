@@ -36,6 +36,12 @@ pub(crate) struct PageView {
     /// Orphan fonts the new process did not register again, for the
     /// renderer to free.
     fonts_to_free: Vec<FontKey>,
+    /// Images a previous content process registered, still drawn by the list
+    /// on screen until the new process paints.
+    orphan_images: Vec<ImageKey>,
+    /// Orphan images the new process did not register again, for the
+    /// renderer to free.
+    images_to_free: Vec<ImageKey>,
 }
 
 impl PageView {
@@ -51,6 +57,8 @@ impl PageView {
             shown: NavigationId(0),
             orphan_fonts: Vec::new(),
             fonts_to_free: Vec::new(),
+            orphan_images: Vec::new(),
+            images_to_free: Vec::new(),
         }
     }
 
@@ -88,10 +96,11 @@ impl PageView {
 
     /// The content process was relaunched (AC-14). Its keys, epochs and
     /// frame cadence start over; the list on screen stays until it paints,
-    /// and the old process's fonts with it.
+    /// and the old process's fonts and images with it.
     pub(crate) fn restart(&mut self) {
         let keys = std::mem::take(&mut self.keys);
         self.orphan_fonts.extend(keys.font_keys());
+        self.orphan_images.extend(keys.image_keys());
         self.wants_frames = false;
         self.frame_in_flight = false;
     }
@@ -100,6 +109,12 @@ impl PageView {
     /// one painted without registering them again.
     pub(crate) fn take_fonts_to_free(&mut self) -> Vec<FontKey> {
         std::mem::take(&mut self.fonts_to_free)
+    }
+
+    /// Images the renderer can free now: a previous process's, once the new
+    /// one painted without registering them again.
+    pub(crate) fn take_images_to_free(&mut self) -> Vec<ImageKey> {
+        std::mem::take(&mut self.images_to_free)
     }
 
     /// The page sent `NeedsFrame`.
@@ -183,6 +198,11 @@ impl PageView {
                     .drain(..)
                     .filter(|&key| !keys.has_font(key)),
             );
+            self.images_to_free.extend(
+                self.orphan_images
+                    .drain(..)
+                    .filter(|&key| !keys.has_image(key)),
+            );
         }
         self.scroll.apply(&mut list);
         self.list = Some(list);
@@ -244,6 +264,23 @@ impl PageView {
     ) -> Option<(ScrollId, ScrollOffset)> {
         let list = self.list.as_mut()?;
         self.scroll.scroll_frame(list, index, to)
+    }
+
+    /// Records a user-set offset for `scroll_id` on both the display list on
+    /// screen and the scroll state, so thumb dragging persists across newly
+    /// received lists (spec 0009, child 0002, AC-13).
+    pub(crate) fn set_scroll_offset(&mut self, scroll_id: ScrollId, offset: ScrollOffset) {
+        let index = self.scroll_frame_index(scroll_id);
+        if let Some(list) = self.list.as_mut()
+            && let Some(index) = index
+            && let SpatialKind::ScrollFrame {
+                offset: list_offset,
+                ..
+            } = &mut list.spatial[index].kind
+        {
+            *list_offset = offset;
+        }
+        self.scroll.set_offset(scroll_id, offset);
     }
 
     /// The index of the scroll frame `scroll_id` in the list on screen.
@@ -320,7 +357,9 @@ impl PageView {
 
 #[cfg(test)]
 mod tests {
-    use display_list::{ColorF, DisplayItem, ItemKind, RectF, SizeF, SpatialId, SpatialKind};
+    use display_list::{
+        ColorF, DisplayItem, ImageFormat, ImageKey, ItemKind, RectF, SizeF, SpatialId, SpatialKind,
+    };
 
     use super::*;
 
@@ -433,6 +472,33 @@ mod tests {
         );
         assert!(view.display_list(NavigationId(2), Epoch(1), &encoded(1, 1)));
         assert_eq!(view.take_fonts_to_free(), vec![FontKey(2)]);
+    }
+
+    #[test]
+    fn a_relaunched_process_frees_the_old_images_it_did_not_bring_back() {
+        // Spec 0032: images from a previous content process must not outlive
+        // it; otherwise every navigation leaks them in the renderer.
+        let mut view = PageView::new(PageId(1));
+        view.navigate(NavigationId(1));
+        view.add_image(ImageKey(1), (10, 10), ImageFormat::Rgba8, 400);
+        view.add_image(ImageKey(2), (10, 10), ImageFormat::Rgba8, 400);
+        assert!(view.display_list(NavigationId(1), Epoch(3), &encoded(1, 3)));
+
+        view.needs_frame();
+        assert!(view.take_begin_frame());
+        view.restart();
+        assert!(
+            !view.take_begin_frame(),
+            "the new process asks for frames itself"
+        );
+        view.navigate(NavigationId(2));
+        view.add_image(ImageKey(1), (10, 10), ImageFormat::Rgba8, 400);
+        assert!(
+            view.take_images_to_free().is_empty(),
+            "the old list still draws"
+        );
+        assert!(view.display_list(NavigationId(2), Epoch(1), &encoded(1, 1)));
+        assert_eq!(view.take_images_to_free(), vec![ImageKey(2)]);
     }
 
     #[test]

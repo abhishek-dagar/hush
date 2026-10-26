@@ -300,4 +300,48 @@ pub trait ScriptEngine {
     /// Unpins the nodes whose wrappers were collected, and forgets them.
     /// Runs at the end of each task, never inside the collector.
     fn sweep_wrappers(&mut self);
+
+    /// Runs one garbage collection pass (spec 0032, AC-9). The content
+    /// process calls this once after five seconds with no task, timer or
+    /// event.
+    fn collect_garbage(&mut self) {}
+
+    /// The script heap's size in bytes, or `None` when the engine cannot
+    /// report it (spec 0032, AC-10).
+    fn heap_bytes(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// Forwards to the boxed engine, so a wrapper of a box is itself an
+/// engine: perf mode's `TimedEngine` wraps a page's boxed engine this way
+/// (spec 0007, Script timing).
+impl ScriptEngine for Box<dyn ScriptEngine> {
+    fn eval_classic(&mut self, source: &str, url: &str) -> Result<(), ScriptError> {
+        (**self).eval_classic(source, url)
+    }
+
+    fn fire_event(&mut self, target: EventTarget, event: &str) -> Result<(), ScriptError> {
+        (**self).fire_event(target, event)
+    }
+
+    fn run_timer(&mut self, id: TimerId) -> Result<(), ScriptError> {
+        (**self).run_timer(id)
+    }
+
+    fn run_microtasks(&mut self) -> Result<(), ScriptError> {
+        (**self).run_microtasks()
+    }
+
+    fn sweep_wrappers(&mut self) {
+        (**self).sweep_wrappers()
+    }
+
+    fn collect_garbage(&mut self) {
+        (**self).collect_garbage()
+    }
+
+    fn heap_bytes(&self) -> Option<u64> {
+        (**self).heap_bytes()
+    }
 }

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>News look alike &middot; conformance proof site</title>
+<style>
+  html { font: 16px/1.5 system-ui, sans-serif; }
+  body { margin: 0 auto; max-width: 960px; padding: 12px; }
+  #header { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #ccc;
+            padding: 8px 0; z-index: 5; }
+  #header h1 { margin: 0; font-size: 26px; }
+  #masthead { border-bottom: 2px solid #444; padding-bottom: 8px; margin-bottom: 16px; }
+  .article { line-height: 1.6; }
+  .article p { margin: 0 0 14px 0; text-align: justify; }
+  .figure { float: right; width: 260px; margin: 0 0 12px 14px; border: 1px solid #ddd;
+            background: #f7f7f7; padding: 8px; text-align: center; }
+  .figure img { width: 100%; height: auto; display: block; }
+  .figure figcaption { font-size: 13px; color: #555; margin-top: 4px; }
+  aside.sticky { position: sticky; top: 72px; width: 240px; float: right;
+                 background: #fafafa; border: 1px solid #ddd; padding: 10px; }
+  footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #ccc;
+           font-size: 13px; color: #666; }
+</style>
+<header id="header">
+  <div id="masthead">
+    <h1>The Daily Byte</h1>
+  </div>
+</header>
+<main>
+  <aside class="sticky">
+    <h3>In this issue</h3>
+    <ul>
+      <li><a href="#layout">Classic box layout</a></li>
+      <li><a href="#floats">Floats and wrapping</a></li>
+      <li><a href="#sticky">Sticky headers</a></li>
+    </ul>
+  </aside>
+
+  <article class="article">
+    <h2 id="layout">Classic box layout is back</h2>
+    <p>
+      Most of the web is still built on floats, relative and absolute
+      positioning, overflow scrolling, and tables. This page exercises the
+      parts of the engine that spec 0009 brings to baseline: figures that
+      float beside the text, a header that sticks while you scroll, and a
+      table that lays out like Chrome.
+    </p>
+    <div class="figure">
+      <img src="figure.png" alt="a floated figure">
+      <figcaption>Figure 1. A floated figure with text wrapping around it.</figcaption>
+    </div>
+    <p>
+      When an image is floated, line boxes beside it shorten so the text wraps
+      around the float's margin box, and a line whose content cannot fit beside
+      the floats moves down until it fits or the floats end. That is CSS 2.2
+      section 9.5.1, rules 1 to 9.
+    </p>
+    <p>
+      The header above uses <code>position: sticky</code> with <code>top: 0</code>,
+      so it stays at the top of the scrollport while the article scrolls, but
+      never leaves its containing block. The sidebar beside it is sticky too,
+      offset from the top once scrolling passes it.
+    </p>
+    <h2 id="floats">Floats, clear, and formatting contexts</h2>
+    <p>
+      A <code>clear: both</code> block moves below the earlier floats in its
+      block formatting context, and a BFC root with <code>height: auto</code>
+      grows to hold its floats. These are the rules that keep news and
+      documentation pages readable.
+    </p>
+    <div style="clear: both;"></div>
+    <p>
+      This paragraph sits below the cleared floats and runs full width again,
+      just as it would in Chrome.
+    </p>
+  </article>
+</main>
+<footer>
+  &mdash; The Daily Byte &middot; conformance proof page &mdash;
+</footer>

@@ -1,0 +1,39 @@
+<!doctype html>
+<title>Modern layout thin thread</title>
+<style>
+@layer base {
+  body { font-family: sans-serif; margin: 0; background: #f4f1ea; }
+  .card {
+    background: #fff;
+    border: 1px solid #c80;
+    border-radius: 8px;
+    padding: 16px;
+    width: clamp(120px, 25vw, 200px);
+    height: 120px;
+    transform: scale(1.05);
+    transition: transform 0.4s ease;
+  }
+  .card:hover {
+    transform: scale(1.15);
+  }
+}
+@layer theme {
+  .card { background: #e06c4f; color: #fff; }
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: calc(8px + 1vw);
+  margin: 24px;
+}
+</style>
+<div class="grid">
+  <div class="card">Card one</div>
+  <div class="card">Card two</div>
+  <div class="card">Card three</div>
+  <div class="card">Card four</div>
+  <div class="card">Card five</div>
+  <div class="card">Card six</div>
+  <div class="card">Card seven</div>
+  <div class="card">Card eight</div>
+</div>

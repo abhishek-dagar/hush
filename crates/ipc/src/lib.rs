@@ -36,6 +36,74 @@ impl Deref for SharedBytes {
     }
 }
 
+impl AsRef<[u8]> for SharedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// Where a font's bytes come from (spec 0032, AC-1 to AC-5).
+///
+/// The content process is untrusted, so the browser checks every case: a
+/// `System` path must lie under an allowed font root, and `SameBytesAs`
+/// must name a key the same page already registered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FontSource {
+    /// A system font file the browser opens itself, by its path. The
+    /// browser maps or reads the file once per canonical path, so every
+    /// face of it shares the bytes (spec 0032, AC-1, AC-2).
+    System {
+        /// The file's path, UTF 8. A path that is not UTF 8 is sent as
+        /// [`FontSource::Bytes`] instead.
+        path: String,
+    },
+    /// The font file's bytes, in shared memory.
+    Bytes(SharedBytes),
+    /// The bytes already sent for `key` on the same page (spec 0032,
+    /// AC-4): another face or variation of one web font file.
+    SameBytesAs(FontKey),
+}
+
+/// One category in the memory report (spec 0032, AC-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryCategory {
+    /// The process's physical footprint, in bytes.
+    Footprint,
+    /// File backed font bytes the browser maps, in bytes.
+    FontMapped,
+    /// Font bytes the browser holds on its heap, in bytes.
+    FontHeap,
+    /// Image textures on the GPU, estimated from their sizes.
+    ImagesGpu,
+    /// The glyph atlas texture, estimated from its side.
+    AtlasGpu,
+    /// The offscreen layer textures, estimated from their sizes.
+    LayersGpu,
+    /// The window's swap chain, estimated from its size and latency.
+    SurfaceGpu,
+    /// The script engine's heap, in bytes.
+    JsHeap,
+    /// The number of DOM nodes (a count, not bytes).
+    DomNodes,
+}
+
+impl MemoryCategory {
+    /// The name the memory report's JSON uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Footprint => "footprint",
+            Self::FontMapped => "font_mapped",
+            Self::FontHeap => "font_heap",
+            Self::ImagesGpu => "images_gpu",
+            Self::AtlasGpu => "atlas_gpu",
+            Self::LayersGpu => "layers_gpu",
+            Self::SurfaceGpu => "surface_gpu",
+            Self::JsHeap => "js_heap",
+            Self::DomNodes => "dom_nodes",
+        }
+    }
+}
+
 /// Bytes that fit in a message are sent inline; bigger ones go through
 /// shared memory (spec 0004, Messages added to `ipc`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -596,6 +664,13 @@ pub enum ToContent {
         /// Why.
         reason: FetchError,
     },
+    /// Ask the content process for its perf marks and footprint (spec 0007,
+    /// IPC messages). Perf mode only: content ignores this and logs a
+    /// warning when it was not launched with `--perf`.
+    PerfSample,
+    /// Ask the content process for its memory report counters (spec 0032,
+    /// AC-10). Only sent when the browser runs with `--memory-report`.
+    ReportMemory,
 }
 
 /// A message the content process sends to the browser process.
@@ -634,8 +709,8 @@ pub enum ToBrowser {
         page: PageId,
         /// The key lists will name it by.
         key: FontKey,
-        /// The font file's bytes (TrueType, OpenType or a collection).
-        data: SharedBytes,
+        /// Where the font file's bytes come from (spec 0032, AC-1).
+        source: FontSource,
         /// Which face in a collection file; 0 for a single font file.
         index: u32,
         /// Variation axis settings for a variable face, as (OpenType tag,
@@ -795,6 +870,25 @@ pub enum ToBrowser {
         height: u32,
         /// Straight alpha RGBA8, rows top to bottom with no padding.
         rgba: SharedBytes,
+    },
+    /// The content process's answer to [`ToContent::PerfSample`] (spec 0007,
+    /// IPC messages): its marks and its own footprint. Perf mode only; the
+    /// content process sends it only when it was launched with `--perf`.
+    PerfSample {
+        /// Navigation start to `load`, in µs, or `None` when no navigation
+        /// has been recorded.
+        nav_to_load_us: Option<u64>,
+        /// Wall time spent inside the script engine, in µs; 0 when untimed.
+        script_us: u64,
+        /// The content process's physical footprint in bytes, or `None`
+        /// when this OS has no reader (spec 0007, Value sourcing).
+        footprint_bytes: Option<u64>,
+    },
+    /// The content process's memory report counters, in answer to
+    /// [`ToContent::ReportMemory`] (spec 0032, AC-10).
+    MemoryReport {
+        /// One counter per category the content process fills.
+        counters: Vec<(MemoryCategory, u64)>,
     },
 }
 
@@ -998,6 +1092,74 @@ impl BrowserChannel {
             Ok(message) => Ok(Some(message)),
             Err(ipc_channel::TryRecvError::Empty) => Ok(None),
             Err(ipc_channel::TryRecvError::IpcError(_)) => Err(IpcError::Disconnected),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AC-11: the perf messages survive a real channel round trip, the
+    /// same `ipc-channel` path production uses (spec 0007, IPC messages).
+    #[test]
+    fn perf_sample_messages_round_trip() {
+        // The ask: no fields, no surprises.
+        let (tx, rx) = ipc::channel::<ToContent>().unwrap();
+        tx.send(ToContent::PerfSample).unwrap();
+        assert_eq!(rx.recv().unwrap(), ToContent::PerfSample);
+
+        // The answer: every field arrives as it left.
+        let (tx, rx) = ipc::channel::<ToBrowser>().unwrap();
+        let message = ToBrowser::PerfSample {
+            nav_to_load_us: Some(1_234_567),
+            script_us: 890,
+            footprint_bytes: Some(12_345_678),
+        };
+        tx.send(message.clone()).unwrap();
+        assert_eq!(rx.recv().unwrap(), message);
+    }
+
+    /// AC-10: the memory report ask and answer survive the same channel.
+    #[test]
+    fn memory_report_messages_round_trip() {
+        let (tx, rx) = ipc::channel::<ToContent>().unwrap();
+        tx.send(ToContent::ReportMemory).unwrap();
+        assert_eq!(rx.recv().unwrap(), ToContent::ReportMemory);
+
+        let (tx, rx) = ipc::channel::<ToBrowser>().unwrap();
+        let message = ToBrowser::MemoryReport {
+            counters: vec![
+                (MemoryCategory::Footprint, 1),
+                (MemoryCategory::JsHeap, 2),
+                (MemoryCategory::DomNodes, 3),
+            ],
+        };
+        tx.send(message.clone()).unwrap();
+        assert_eq!(rx.recv().unwrap(), message);
+    }
+
+    /// AC-1, AC-4, AC-5: every `AddFont` source, including the shared
+    /// region a web font crosses in, arrives as it left.
+    #[test]
+    fn add_font_sources_round_trip() {
+        let (tx, rx) = ipc::channel::<ToBrowser>().unwrap();
+        for source in [
+            FontSource::System {
+                path: "/System/Library/Fonts/SFNS.ttf".to_owned(),
+            },
+            FontSource::Bytes(SharedBytes::from_bytes(b"font bytes")),
+            FontSource::SameBytesAs(FontKey(2)),
+        ] {
+            let message = ToBrowser::AddFont {
+                page: PageId(1),
+                key: FontKey(1),
+                source,
+                index: 0,
+                variations: vec![(0x7767_6874, 700.0)],
+            };
+            tx.send(message.clone()).unwrap();
+            assert_eq!(rx.recv().unwrap(), message);
         }
     }
 }

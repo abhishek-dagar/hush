@@ -2,6 +2,7 @@
 //! it, and the parsers for them (spec 0004, child 0003, Parsing).
 
 use std::f32::consts::PI;
+use std::rc::Rc;
 
 use base::atoms::Atom;
 use cssparser::{ParseError, Parser, Token, match_ignore_ascii_case};
@@ -18,7 +19,7 @@ pub(crate) fn invalid<T>() -> ParseResult<T> {
 }
 
 /// A length or percentage as written, before the cascade resolves it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SpecifiedLength {
     /// CSS px (every absolute unit is converted to px when parsed).
     Px(f32),
@@ -36,13 +37,18 @@ pub(crate) enum SpecifiedLength {
     Vmax(f32),
     /// A percentage, 0 to 100, resolved by whoever owns its basis.
     Percent(f32),
+    /// A `calc()`, `min()`, `max()` or `clamp()` expression: its leaves stay
+    /// as `SpecifiedLength` so `em`, `rem` and viewport units resolve at
+    /// computed value time while percentages wait for layout (spec 0010,
+    /// AC-8).
+    Calc(Rc<SpecifiedCalcExpr>),
 }
 
 impl SpecifiedLength {
     /// Zero px.
     pub(crate) const ZERO: Self = Self::Px(0.0);
 
-    fn is_negative(self) -> bool {
+    fn is_negative(&self) -> bool {
         match self {
             Self::Px(v)
             | Self::Em(v)
@@ -51,16 +57,55 @@ impl SpecifiedLength {
             | Self::Vh(v)
             | Self::Vmin(v)
             | Self::Vmax(v)
-            | Self::Percent(v) => v < 0.0,
+            | Self::Percent(v) => *v < 0.0,
+            Self::Calc(_) => false,
         }
     }
 
     /// Whether resolving it reads the viewport size.
-    pub(crate) fn uses_viewport(self) -> bool {
-        matches!(
-            self,
-            Self::Vw(_) | Self::Vh(_) | Self::Vmin(_) | Self::Vmax(_)
-        )
+    pub(crate) fn uses_viewport(&self) -> bool {
+        match self {
+            Self::Vw(_) | Self::Vh(_) | Self::Vmin(_) | Self::Vmax(_) => true,
+            Self::Calc(expr) => calc_expr_uses_viewport(expr),
+            _ => false,
+        }
+    }
+}
+
+/// A `calc()` family expression as written: its leaves stay as
+/// `SpecifiedLength` so `em`, `rem` and viewport units resolve at computed
+/// value time while percentages wait for layout (spec 0010, AC-8).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SpecifiedCalcExpr {
+    /// One leaf length, as written.
+    Leaf(SpecifiedLength),
+    /// A sum of terms (`a + b`, `a - b`).
+    Sum(Vec<SpecifiedCalcExpr>),
+    /// A term scaled by a factor; division is a fractional factor.
+    Product(Box<SpecifiedCalcExpr>, f32),
+    /// The smallest of several terms (`min()`).
+    Min(Vec<SpecifiedCalcExpr>),
+    /// The largest of several terms (`max()`).
+    Max(Vec<SpecifiedCalcExpr>),
+    /// `clamp(min, value, max)`.
+    Clamp(
+        Box<SpecifiedCalcExpr>,
+        Box<SpecifiedCalcExpr>,
+        Box<SpecifiedCalcExpr>,
+    ),
+}
+
+/// Whether any leaf of `expr` resolves against the viewport size.
+fn calc_expr_uses_viewport(expr: &SpecifiedCalcExpr) -> bool {
+    match expr {
+        SpecifiedCalcExpr::Leaf(length) => length.uses_viewport(),
+        SpecifiedCalcExpr::Sum(terms)
+        | SpecifiedCalcExpr::Min(terms)
+        | SpecifiedCalcExpr::Max(terms) => terms.iter().any(calc_expr_uses_viewport),
+        SpecifiedCalcExpr::Product(term, _) => calc_expr_uses_viewport(term),
+        SpecifiedCalcExpr::Clamp(a, b, c) => {
+            calc_expr_uses_viewport(a) || calc_expr_uses_viewport(b) || calc_expr_uses_viewport(c)
+        }
     }
 }
 
@@ -96,6 +141,9 @@ impl LengthRules {
     };
 }
 
+/// Parses a `<length>` or `<length-percentage>`, including the `calc()`
+/// family (`calc`, `min`, `max`, `clamp`). A bare `0` is a length; an
+/// expression whose unit cannot be resolved here (`em`, `rem`, viewport
 /// Parses a `<length>` or `<length-percentage>`. A bare `0` is a length;
 /// `calc()` is not supported yet, so it fails and the declaration drops.
 pub(crate) fn parse_length(
@@ -110,12 +158,127 @@ pub(crate) fn parse_length(
             SpecifiedLength::Percent(unit_value * 100.0)
         }
         Token::Number { value: 0.0, .. } => SpecifiedLength::ZERO,
+        Token::Function(ref name) => {
+            let name = name.to_ascii_lowercase();
+            if matches!(name.as_str(), "calc" | "min" | "max" | "clamp") {
+                return parse_calc(input, &name, 1)
+                    .map(|expr| SpecifiedLength::Calc(Rc::new(expr)));
+            }
+            return invalid();
+        }
         _ => return invalid(),
     };
     if length.is_negative() && !rules.negative {
         return invalid();
     }
     Ok(length)
+}
+
+/// Parses `calc()`, `min()`, `max()` or `clamp()` after the function name
+/// and opening paren have been consumed. `depth` counts nested functions;
+/// deeper than 32 is invalid at parse time (spec 0010, AC-8).
+fn parse_calc(input: &mut Parser<'_>, name: &str, depth: u32) -> ParseResult<SpecifiedCalcExpr> {
+    if depth > 32 {
+        return invalid();
+    }
+    input.parse_nested_block(|input| match name {
+        "calc" => parse_calc_sum(input, depth + 1),
+        "min" => parse_comma(input, depth + 1).and_then(|terms| {
+            if terms.is_empty() {
+                return invalid();
+            }
+            Ok(SpecifiedCalcExpr::Min(terms))
+        }),
+        "max" => parse_comma(input, depth + 1).and_then(|terms| {
+            if terms.is_empty() {
+                return invalid();
+            }
+            Ok(SpecifiedCalcExpr::Max(terms))
+        }),
+        "clamp" => {
+            let mut terms = parse_comma(input, depth + 1)?;
+            if terms.len() != 3 {
+                return invalid();
+            }
+            Ok(SpecifiedCalcExpr::Clamp(
+                Box::new(terms.remove(0)),
+                Box::new(terms.remove(0)),
+                Box::new(terms.remove(0)),
+            ))
+        }
+        _ => invalid(),
+    })
+}
+
+/// A `calc()` sum: terms added or subtracted.
+fn parse_calc_sum(input: &mut Parser<'_>, depth: u32) -> ParseResult<SpecifiedCalcExpr> {
+    let mut terms = Vec::new();
+    terms.push(parse_calc_product(input, depth)?);
+    loop {
+        if input.try_parse(|i| i.expect_delim('+')).is_ok() {
+            terms.push(parse_calc_product(input, depth)?);
+        } else if input.try_parse(|i| i.expect_delim('-')).is_ok() {
+            terms.push(SpecifiedCalcExpr::Product(
+                Box::new(parse_calc_product(input, depth)?),
+                -1.0,
+            ));
+        } else {
+            break;
+        }
+    }
+    Ok(if terms.len() == 1 {
+        terms.remove(0)
+    } else {
+        SpecifiedCalcExpr::Sum(terms)
+    })
+}
+
+/// A product: a value optionally multiplied or divided by a number.
+fn parse_calc_product(input: &mut Parser<'_>, depth: u32) -> ParseResult<SpecifiedCalcExpr> {
+    let base = parse_calc_value(input, depth)?;
+    if input.try_parse(|i| i.expect_delim('*')).is_ok() {
+        let factor: f32 = input.expect_number()?;
+        return Ok(SpecifiedCalcExpr::Product(Box::new(base), factor));
+    }
+    if input.try_parse(|i| i.expect_delim('/')).is_ok() {
+        let divisor: f32 = input.expect_number()?;
+        return Ok(SpecifiedCalcExpr::Product(Box::new(base), 1.0 / divisor));
+    }
+    Ok(base)
+}
+
+/// One value: a dimension, a percentage, a parenthesised sum, or a nested
+/// `calc()`/`min()`/`max()`/`clamp()`.
+fn parse_calc_value(input: &mut Parser<'_>, depth: u32) -> ParseResult<SpecifiedCalcExpr> {
+    if input.try_parse(|i| i.expect_delim('(')).is_ok() {
+        let inner = parse_calc_sum(input, depth)?;
+        input.expect_delim(')')?;
+        return Ok(inner);
+    }
+    match *input.next()? {
+        Token::Dimension {
+            value, ref unit, ..
+        } => length_from_unit(value, unit)
+            .map(SpecifiedCalcExpr::Leaf)
+            .ok_or(ParseError::unexpected_token()),
+        Token::Percentage { unit_value, .. } => Ok(SpecifiedCalcExpr::Leaf(
+            SpecifiedLength::Percent(unit_value * 100.0),
+        )),
+        Token::Function(ref name) => {
+            let name = name.to_ascii_lowercase();
+            if matches!(name.as_str(), "calc" | "min" | "max" | "clamp") {
+                parse_calc(input, &name, depth + 1)
+            } else {
+                invalid()
+            }
+        }
+        _ => invalid(),
+    }
+}
+
+/// Comma separated calc sums, as for `min()`, `max()` and `clamp()`.
+fn parse_comma(input: &mut Parser<'_>, depth: u32) -> ParseResult<Vec<SpecifiedCalcExpr>> {
+    input.parse_comma_separated(|input| parse_calc_sum(input, depth))
 }
 
 fn length_from_unit(value: f32, unit: &str) -> Option<SpecifiedLength> {
@@ -419,7 +582,7 @@ pub(crate) fn parse_url(
 }
 
 /// Parses one of `keywords`, ASCII case insensitively, giving its value.
-pub(crate) fn parse_keyword<T: Copy>(
+pub(crate) fn parse_keyword<T: Clone>(
     input: &mut Parser<'_>,
     keywords: &[(&str, T)],
 ) -> ParseResult<T> {
@@ -427,7 +590,7 @@ pub(crate) fn parse_keyword<T: Copy>(
     keywords
         .iter()
         .find(|(name, _)| ident.eq_ignore_ascii_case(name))
-        .map(|&(_, value)| value)
+        .map(|(_, value)| value.clone())
         .ok_or(ParseError::unexpected_token())
 }
 
@@ -499,7 +662,49 @@ mod tests {
         assert_eq!(length("-4px", LengthRules::NON_NEGATIVE), None);
         assert_eq!(length("10%", LengthRules::ABSOLUTE), None);
         assert_eq!(length("12", any), None, "only zero may drop its unit");
-        assert_eq!(length("calc(1px + 2px)", any), None);
+        assert!(matches!(
+            length("calc(1px + 2px)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("min(10px, 20%)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("max(1em, 2rem)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("clamp(100px, 50vw, 200px)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        // Deeper than 32 nested functions is invalid at parse time.
+        let deep = "calc(".repeat(33) + "0px" + &")".repeat(33);
+        assert_eq!(length(&deep, any), None);
+    }
+
+    #[test]
+    fn calc_family_parses_minus_and_nested() {
+        // Subtraction becomes a product by -1; `*` and `/` scale terms.
+        let any = LengthRules::ANY;
+        assert!(matches!(
+            length("calc(10px - 3px)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("calc(2px * 3)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("calc(10px / 2)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("min(calc(1px + 2px), 50%)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        // Non-math functions still fail.
+        assert_eq!(length("foo(1px)", any), None);
     }
 
     #[test]

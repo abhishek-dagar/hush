@@ -82,9 +82,17 @@ impl SettingsWindow {
         let inner = window.inner_size();
         let renderer = Renderer::new(Arc::clone(&window), inner.width, inner.height)?;
         let (render, receiver) = mpsc::channel();
-        // No page: the render thread draws only the chrome document.
-        let thread =
-            render_thread::spawn(renderer, Arc::clone(&window), CHROME_PAGE, receiver, proxy)?;
+        // No page: the render thread draws only the chrome document. No
+        // perf scenario runs in a settings window (spec 0007).
+        let thread = render_thread::spawn(
+            renderer,
+            Arc::clone(&window),
+            CHROME_PAGE,
+            receiver,
+            proxy,
+            None,
+            render.clone(),
+        )?;
         let mut settings = Self {
             window,
             render,

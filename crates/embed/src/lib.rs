@@ -8,10 +8,10 @@
 //! browser chrome: settings, OS appearance, a frameless frame and native
 //! menus (spec 0003).
 
-// The chrome's OS hooks need `unsafe` (AppKit, Win32); only their modules
-// allow it, each block with a `// SAFETY:` comment.
-#![cfg_attr(not(feature = "chrome"), forbid(unsafe_code))]
-#![cfg_attr(feature = "chrome", deny(unsafe_code))]
+// The chrome's OS hooks need `unsafe` (AppKit, Win32), as does mapping a
+// read only system font file; only their modules allow it, each block with a
+// `// SAFETY:` comment.
+#![deny(unsafe_code)]
 
 mod browser;
 #[cfg(feature = "chrome")]
@@ -19,9 +19,12 @@ mod chrome_host;
 #[cfg(feature = "chrome")]
 mod clipboard;
 mod content;
+mod fonts;
 mod input;
 mod lifecycle;
+mod memory_report;
 mod page_view;
+mod perf;
 mod render_thread;
 mod scrolling;
 mod start_url;
@@ -87,6 +90,15 @@ pub enum EmbedError {
     /// The content process flag came without a server name.
     #[error("{CONTENT_PROCESS_FLAG} needs a bootstrap server name")]
     MissingServerName,
+    /// `--perf` named a scenario that does not exist (spec 0007, AC-11).
+    #[error("--perf needs one of start, memory, scroll, load (got {0})")]
+    PerfUnknownScenario(String),
+    /// `--perf` came without `--perf-report <file>` (spec 0007, AC-11).
+    #[error("--perf needs --perf-report <file> to name the run report")]
+    PerfMissingReport,
+    /// The perf run report could not be written (spec 0007, Run report).
+    #[error("could not write the perf run report")]
+    PerfReport(#[source] std::io::Error),
 }
 
 /// Runs the app until its window closes, or until the browser tells this
@@ -94,12 +106,30 @@ pub enum EmbedError {
 pub fn run(config: Config) -> Result<(), EmbedError> {
     init_tracing();
 
-    let mut args = env::args().skip(1);
-    if args.next().as_deref() == Some(CONTENT_PROCESS_FLAG) {
-        let server_name = args.next().ok_or(EmbedError::MissingServerName)?;
-        return content::run(&server_name);
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some(CONTENT_PROCESS_FLAG) {
+        let server_name = args.get(1).ok_or(EmbedError::MissingServerName)?;
+        // The content process learns perf mode only from this launch
+        // argument, set by the browser (spec 0007, Security model).
+        let perf = perf::content_args(args.get(2..).unwrap_or(&[]));
+        return content::run(server_name, perf);
     }
-    browser::run(config)
+    // Perf flags are parsed before any window opens, so a bad flag is a
+    // clear error, not a surprise (spec 0007, AC-11).
+    let perf = perf::browser_args(&args)?;
+    // The memory report is a launch flag too, never reachable from a page
+    // (spec 0032, Security model).
+    let memory_report = memory_report::path_arg(&args).map(memory_report::State::new);
+    // The start scenario always measures the start page, whatever else the
+    // command line said (spec 0007, Scenarios).
+    let config = match &perf {
+        Some(args) if args.scenario == perf::Scenario::Start => Config {
+            start_url: None,
+            ..config
+        },
+        _ => config,
+    };
+    browser::run(config, perf, memory_report)
 }
 
 fn init_tracing() {

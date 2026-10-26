@@ -259,11 +259,15 @@ impl Images {
         let Some(entry) = self.entry_mut(fetch) else {
             return;
         };
-        let State::Loading { bytes, ok } = &entry.state else {
-            return;
+        let (bytes, ok) = match std::mem::replace(&mut entry.state, State::Failed) {
+            State::Loading { bytes, ok } => (bytes, ok),
+            state => {
+                entry.state = state;
+                return;
+            }
         };
-        let decoded = if *ok {
-            image::decode(bytes, &image::Limits::default()).map_err(|err| err.to_string())
+        let decoded = if ok {
+            image::decode(&bytes, &image::Limits::default()).map_err(|err| err.to_string())
         } else {
             Err("not a success response".into())
         };
@@ -274,7 +278,7 @@ impl Images {
                     picture.width, picture.height, "image decoded"
                 );
                 let size = (picture.width, picture.height);
-                let key = resources.add_image(size, ImageFormat::Rgba8, &picture.pixels);
+                let key = resources.add_image(size, ImageFormat::Rgba8, picture.pixels, bytes);
                 State::Ready {
                     key,
                     width: picture.width,

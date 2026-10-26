@@ -23,6 +23,7 @@ mod dump;
 mod exclusion;
 mod flex;
 mod fragment;
+mod grid;
 mod hit_test;
 mod inline;
 mod intrinsic;
@@ -42,10 +43,11 @@ use exclusion::ExclusionSpace;
 use block::InProgress;
 pub use box_tree::{BoxFlags, BoxKind, BoxTree, InlineItem, LayoutBox, NaturalSize};
 pub use fragment::{
-    BlockMargins, BoxFragment, Fragment, FragmentTree, InlineEdges, LineFragment, MarginStrut,
-    PendingAbsolute, PlacedGlyph, TextFragment,
+    BackgroundLayer, BlockMargins, BoxFragment, Fragment, FragmentTree, InlineEdges, LineFragment,
+    MarginStrut, PendingAbsolute, PlacedGlyph, TextFragment,
 };
 pub use hit_test::{HitTestResult, hit_test};
+pub use table::borders::CollapsedEdge;
 
 /// Space available along one axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -209,13 +211,14 @@ pub fn corner_radii(
         (css::Length::Percent(percent), true) => {
             (width * percent / 100.0, height * percent / 100.0)
         }
+        (css::Length::Calc(_), true) => (0.0, 0.0),
     };
     let (start, end) = edges.map_or((true, true), |e| (e.start, e.end));
     let [tl, tr, br, bl] = [
-        corner(radius.top_left, start),
-        corner(radius.top_right, end),
-        corner(radius.bottom_right, end),
-        corner(radius.bottom_left, start),
+        corner(radius.top_left.clone(), start),
+        corner(radius.top_right.clone(), end),
+        corner(radius.bottom_right.clone(), end),
+        corner(radius.bottom_left.clone(), start),
     ];
     let radii = [tl.0, tl.1, tr.0, tr.1, br.0, br.1, bl.0, bl.1];
     radii.iter().any(|r| *r > 0.0).then_some(radii)
@@ -270,21 +273,44 @@ fn step(
         return Some(Step::Reuse(fragment));
     }
     cx.stats.laid_out += 1;
-    // Inline blocks and floats shrink to fit (CSS 2.2 sections 10.3.9 and
-    // 10.3.5; spec 0009, child 0001).
-    let shrinks = (layout_box.inline_level || layout_box.is_float())
-        && layout_box.kind == BoxKind::BlockContainer
-        && layout_box.style.size.width.is_none_or(|width| {
+    // Inline blocks, floats, inline tables and table wrappers shrink to fit
+    // (CSS 2.2 sections 10.3.9, 10.3.5 and 17.5.2; spec 0009, child 0001 and
+    // child 0004). A wrapper's width is the table's width, so it never fills
+    // its containing block the way a plain block does.
+    let shrinks = (layout_box.inline_level
+        || layout_box.is_float()
+        || layout_box.kind == BoxKind::TableWrapper)
+        && matches!(
+            layout_box.kind,
+            BoxKind::BlockContainer | BoxKind::TableWrapper
+        )
+        && layout_box.style.size.width.as_ref().is_none_or(|width| {
             matches!(width, css::Length::Percent(_)) && space.percentage_basis.width.is_none()
         });
     let intrinsic = shrinks.then(|| intrinsic::content_sizes(tree, id, cx));
     let is_root = tree.root() == Some(id);
+    // A table lays out its cells into columns and rows itself, instead of
+    // the block path (spec 0009, child 0004, AC-16).
+    if layout_box.kind == BoxKind::Table
+        && cx.depth < MAX_NESTING
+        && let Some(fragment) = crate::table::lay_out_table(tree, id, space.clone(), cx)
+    {
+        if let Some(lb) = tree.boxes.get_mut(id) {
+            lb.cache = Some(LayoutCache {
+                space,
+                fragment: Rc::new(Fragment::Box((*fragment).clone())),
+                intrinsic: None,
+            });
+        }
+        return Some(Step::Reuse(Rc::new(Fragment::Box((*fragment).clone()))));
+    }
     let layout_box = tree.get(id)?;
     let is_flex_item = layout_box
         .parent
         .and_then(|parent| tree.get(parent))
         .is_some_and(|parent| parent.kind == BoxKind::FlexContainer);
     let is_flex = layout_box.kind == BoxKind::FlexContainer;
+    let is_grid = layout_box.kind == BoxKind::GridContainer;
     let mut in_progress =
         InProgress::start(id, layout_box, space, is_root, is_flex_item, intrinsic);
     if !layout_box.inline.is_empty() {
@@ -326,6 +352,11 @@ fn step(
         // nested calls and the stack has no children left to visit.
         cx.depth += 1;
         flex::lay_out(tree, &mut in_progress, cx);
+        cx.depth -= 1;
+    }
+    if is_grid && cx.depth < MAX_NESTING {
+        cx.depth += 1;
+        grid::lay_out(tree, &mut in_progress, cx);
         cx.depth -= 1;
     }
     Some(Step::Run(Box::new(in_progress)))
@@ -1122,5 +1153,93 @@ mod tests {
             })
             .expect("the fixed box is a child of the root fragment");
         assert_eq!(fixed_child.0, Point::default());
+    }
+
+    fn sized_box(
+        width: Option<f32>,
+        height: Option<f32>,
+        ratio: Option<(f32, f32)>,
+    ) -> Rc<ComputedStyle> {
+        let mut style = block(0.0, 0.0, height);
+        if let Some(w) = width {
+            Rc::make_mut(&mut Rc::make_mut(&mut style).size).width = Some(Length::px(w));
+        }
+        if let Some((rw, rh)) = ratio {
+            Rc::make_mut(&mut Rc::make_mut(&mut style).size).aspect_ratio = css::AspectRatio {
+                auto: false,
+                ratio: Some((rw, rh)),
+            };
+        }
+        style
+    }
+
+    #[test]
+    fn aspect_ratio_derives_height_from_width() {
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+        add(
+            &mut doc,
+            html,
+            sized_box(Some(200.0), None, Some((2.0, 1.0))),
+        );
+        let mut boxes = BoxTree::build(&mut doc);
+        let (tree, _) = layout(
+            &mut boxes,
+            Size::new(px(800.0), px(600.0)),
+            &mut FontContext::new(),
+            &text::WebFontLayer::default(),
+        );
+        let (_, fragment) = tree.root.unwrap();
+        let html_fragment = fragment.as_box().unwrap();
+        let child = html_fragment.children[0].1.as_box().unwrap();
+        assert_eq!(child.size.width, px(200.0));
+        assert_eq!(child.size.height, px(100.0));
+    }
+
+    #[test]
+    fn aspect_ratio_derives_width_from_height() {
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+        add(
+            &mut doc,
+            html,
+            sized_box(None, Some(200.0), Some((2.0, 1.0))),
+        );
+        let mut boxes = BoxTree::build(&mut doc);
+        let (tree, _) = layout(
+            &mut boxes,
+            Size::new(px(800.0), px(600.0)),
+            &mut FontContext::new(),
+            &text::WebFontLayer::default(),
+        );
+        let (_, fragment) = tree.root.unwrap();
+        let html_fragment = fragment.as_box().unwrap();
+        let child = html_fragment.children[0].1.as_box().unwrap();
+        assert_eq!(child.size.width, px(400.0));
+        assert_eq!(child.size.height, px(200.0));
+    }
+
+    #[test]
+    fn aspect_ratio_clamps_to_max_height() {
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+        let mut style = sized_box(Some(200.0), None, Some((1.0, 1.0)));
+        Rc::make_mut(&mut Rc::make_mut(&mut style).size).max_height = Some(Length::px(50.0));
+        add(&mut doc, html, style);
+        let mut boxes = BoxTree::build(&mut doc);
+        let (tree, _) = layout(
+            &mut boxes,
+            Size::new(px(800.0), px(600.0)),
+            &mut FontContext::new(),
+            &text::WebFontLayer::default(),
+        );
+        let (_, fragment) = tree.root.unwrap();
+        let html_fragment = fragment.as_box().unwrap();
+        let child = html_fragment.children[0].1.as_box().unwrap();
+        assert_eq!(child.size.width, px(200.0));
+        assert_eq!(child.size.height, px(50.0));
     }
 }

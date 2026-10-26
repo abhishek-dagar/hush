@@ -18,10 +18,11 @@ use crate::values::{
     parse_font_family, parse_keyword, parse_length, parse_url,
 };
 use crate::{
-    AlignItems, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect, Cursor,
-    Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, JustifyContent,
-    ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position, TableLayout, TextAlign,
-    TextDecorationLine, TextOverflow, UserSelect, VerticalAlign, Visibility, WhiteSpace,
+    AlignItems, AspectRatio, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect,
+    Cursor, Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, GridArea, GridAutoFlow,
+    GridLine, JustifyContent, Length, ListStylePosition, ListStyleType, OutlineStyle, Overflow,
+    Position, TableLayout, TextAlign, TextDecorationLine, TextOverflow, TrackSize, Transform,
+    TransformFn, UserSelect, VerticalAlign, Visibility, WhiteSpace,
 };
 
 macro_rules! longhands {
@@ -112,6 +113,17 @@ longhands! {
     AlignItems = "align-items", false;
     AlignSelf = "align-self", false;
     Order = "order", false;
+    Transform = "transform", false;
+    GridTemplateColumns = "grid-template-columns", false;
+    GridTemplateRows = "grid-template-rows", false;
+    GridAutoColumns = "grid-auto-columns", false;
+    GridAutoRows = "grid-auto-rows", false;
+    GridAutoFlow = "grid-auto-flow", false;
+    GridColumnStart = "grid-column-start", false;
+    GridColumnEnd = "grid-column-end", false;
+    GridRowStart = "grid-row-start", false;
+    GridRowEnd = "grid-row-end", false;
+    GridTemplateAreas = "grid-template-areas", false;
     OverflowX = "overflow-x", false;
     OverflowY = "overflow-y", false;
     Float = "float", false;
@@ -136,6 +148,7 @@ longhands! {
     BorderSpacing = "border-spacing", true;
     CaptionSide = "caption-side", true;
     EmptyCells = "empty-cells", true;
+    AspectRatio = "aspect-ratio", false;
 }
 
 impl Longhand {
@@ -287,7 +300,7 @@ impl Shorthand {
 }
 
 /// `font-size` as written.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum FontSize {
     /// A keyword, as its factor of `medium`.
     Keyword(f32),
@@ -311,7 +324,7 @@ pub(crate) enum FontWeight {
 }
 
 /// `line-height` as written.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LineHeight {
     /// `normal`.
     Normal,
@@ -322,7 +335,7 @@ pub(crate) enum LineHeight {
 }
 
 /// `flex-basis` as written.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum FlexBasis {
     /// `auto`.
     Auto,
@@ -386,18 +399,205 @@ pub(crate) enum Value {
     BorderSpacing((Au, Au)),
     CaptionSide(CaptionSide),
     EmptyCells(EmptyCells),
+    /// `aspect-ratio`: the computed width-to-height ratio.
+    AspectRatio(AspectRatio),
+    /// `transform`: the computed transform functions.
+    Transform(Rc<Transform>),
+    /// `grid-template-columns` / `grid-template-rows`.
+    GridTracks(Vec<TrackSize>),
+    /// `grid-auto-columns` / `grid-auto-rows`.
+    GridAutoTracks(Vec<TrackSize>),
+    /// `grid-auto-flow`.
+    GridAutoFlow(GridAutoFlow),
+    /// `grid-column-start` / `grid-column-end` / `grid-row-start` /
+    /// `grid-row-end`.
+    GridLine(Option<GridLine>),
+    /// `grid-template-areas`: named area cell ranges.
+    GridAreas(Vec<GridArea>),
 }
 
 impl Value {
     fn uses_viewport(&self) -> bool {
-        match *self {
+        match self {
             Self::Size(Some(length))
             | Self::Length(length)
             | Self::FlexBasis(FlexBasis::Length(length))
             | Self::FontSize(FontSize::Length(length))
             | Self::LineHeight(LineHeight::Length(length)) => length.uses_viewport(),
+            Self::GridTracks(_)
+            | Self::GridAutoTracks(_)
+            | Self::GridAutoFlow(_)
+            | Self::GridLine(_)
+            | Self::GridAreas(_) => false,
             _ => false,
         }
+    }
+}
+
+/// The `<syntax>` of a registered custom property, as written in `@property`
+/// (spec 0010, AC-10). `*` accepts anything; a named type accepts only that
+/// type; `|` lists accept any alternative; `+` and `#` accept one or more
+/// comma separated repetitions of the inner type.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertySyntax {
+    /// `*`: any value.
+    Star,
+    /// `<length>`: a length or percentage.
+    Length,
+    /// `<number>`: a number.
+    Number,
+    /// `<percentage>`: a percentage.
+    Percentage,
+    /// `<length-percentage>`: a length or a percentage.
+    LengthPercentage,
+    /// `<color>`: a color.
+    Color,
+    /// `<angle>`: an angle.
+    Angle,
+    /// `<integer>`: an integer.
+    Integer,
+    /// `<transform-list>`: a list of transform functions.
+    TransformList,
+    /// `a | b`: any of the alternatives.
+    Or(Vec<PropertySyntax>),
+    /// `a+` or `a#`: one or more comma separated repetitions of `a`.
+    Repeated(Box<PropertySyntax>),
+}
+
+/// Whether `text` parses as `syntax`. `text` is the raw declared value of a
+/// custom property, after `var()` substitution.
+pub(crate) fn syntax_matches(text: &str, syntax: &PropertySyntax) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    match syntax {
+        PropertySyntax::Star => true,
+        PropertySyntax::Length => parse_length_only(text).is_some(),
+        PropertySyntax::Number => text.parse::<f32>().is_ok(),
+        PropertySyntax::Percentage => parse_percentage_only(text).is_some(),
+        PropertySyntax::LengthPercentage => {
+            parse_length_only(text).is_some() || parse_percentage_only(text).is_some()
+        }
+        PropertySyntax::Color => parse_color_only(text).is_some(),
+        PropertySyntax::Angle => parse_angle_only(text).is_some(),
+        PropertySyntax::Integer => text.parse::<i32>().is_ok(),
+        PropertySyntax::TransformList => parse_transform_list_only(text).is_some(),
+        PropertySyntax::Or(alts) => alts.iter().any(|alt| syntax_matches(text, alt)),
+        PropertySyntax::Repeated(inner) => {
+            let parts: Vec<&str> = text.split(',').map(|p| p.trim()).collect();
+            !parts.is_empty() && parts.iter().all(|p| syntax_matches(p, inner))
+        }
+    }
+}
+
+/// Parses a single `<length>` or `<length-percentage>` from `text`, accepting
+/// only when the whole string is consumed.
+fn parse_length_only(text: &str) -> Option<SpecifiedLength> {
+    let mut parser = Parser::new(text);
+    let value = parse_length(&mut parser, LengthRules::ANY).ok()?;
+    parser.is_exhausted().then_some(value)
+}
+
+/// Parses a single `<percentage>` from `text`, accepting only the whole string.
+fn parse_percentage_only(text: &str) -> Option<SpecifiedLength> {
+    let mut parser = Parser::new(text);
+    match *parser.next().ok()? {
+        Token::Percentage { unit_value, .. } => parser
+            .is_exhausted()
+            .then_some(SpecifiedLength::Percent(unit_value * 100.0)),
+        _ => None,
+    }
+}
+
+/// Parses a single `<color>` from `text`, accepting only the whole string.
+fn parse_color_only(text: &str) -> Option<SpecifiedColor> {
+    let mut parser = Parser::new(text);
+    let value = parse_color(&mut parser).ok()?;
+    parser.is_exhausted().then_some(value)
+}
+
+/// Parses a single `<angle>` from `text`, accepting only the whole string.
+fn parse_angle_only(text: &str) -> Option<()> {
+    let mut parser = Parser::new(text);
+    let ok = match *parser.next().ok()? {
+        Token::Dimension { ref unit, .. } => {
+            let unit = unit.to_ascii_lowercase();
+            matches!(unit.as_ref(), "deg" | "rad" | "grad" | "turn")
+        }
+        Token::Number { value: 0.0, .. } => true,
+        _ => false,
+    };
+    parser.is_exhausted().then_some(()).filter(|_| ok)
+}
+
+/// Parses a single `<transform-list>` from `text`, accepting only the whole
+/// string. One or more transform functions separated by whitespace or commas.
+fn parse_transform_list_only(text: &str) -> Option<()> {
+    let mut parser = Parser::new(text);
+    let mut saw_fn = false;
+    loop {
+        match parser.next_including_whitespace_and_comments() {
+            Ok(Token::Function(name)) => {
+                let name = name.as_ref().to_ascii_lowercase();
+                if !matches!(
+                    name.as_str(),
+                    "translate"
+                        | "translatex"
+                        | "translatey"
+                        | "translatez"
+                        | "scale"
+                        | "scalex"
+                        | "scaley"
+                        | "scalez"
+                        | "scale3d"
+                        | "rotate"
+                        | "rotatex"
+                        | "rotatey"
+                        | "rotatez"
+                        | "rotate3d"
+                        | "skew"
+                        | "skewx"
+                        | "skewy"
+                        | "matrix"
+                        | "matrix3d"
+                        | "perspective"
+                ) {
+                    return None;
+                }
+                saw_fn = true;
+                parser
+                    .parse_nested_block(|_| -> Result<(), ParseError<()>> { Ok(()) })
+                    .ok()?;
+            }
+            Ok(Token::WhiteSpace(_)) | Ok(Token::Comment(_)) | Ok(Token::Comma) => continue,
+            Ok(_) => break,
+            Err(_) => break,
+        }
+    }
+    parser.is_exhausted().then_some(()).filter(|_| saw_fn)
+}
+
+/// Parses the `syntax` string of an `@property` rule (spec 0010, AC-10).
+/// Handles `*` and the simple bracketed types (`<length>`, `<number>`, and so
+/// on). `|` / `+` / `#` micro syntax is not parsed here; such a rule is
+/// ignored as a whole, which is spec compliant.
+pub(crate) fn parse_property_syntax(text: &str) -> Option<PropertySyntax> {
+    let text = text.trim().trim_matches(|c| c == '"' || c == '\'');
+    if text.eq_ignore_ascii_case("*") {
+        return Some(PropertySyntax::Star);
+    }
+    let inner = text.strip_prefix('<').and_then(|t| t.strip_suffix('>'))?;
+    match inner.to_ascii_lowercase().as_str() {
+        "length" => Some(PropertySyntax::Length),
+        "number" => Some(PropertySyntax::Number),
+        "percentage" => Some(PropertySyntax::Percentage),
+        "length-percentage" => Some(PropertySyntax::LengthPercentage),
+        "color" => Some(PropertySyntax::Color),
+        "angle" => Some(PropertySyntax::Angle),
+        "integer" => Some(PropertySyntax::Integer),
+        "transform-list" => Some(PropertySyntax::TransformList),
+        _ => None,
     }
 }
 
@@ -753,6 +953,14 @@ fn parse_longhand(
             }
         }
         L::Order => Value::Integer(input.expect_integer()?),
+        L::Transform => Value::Transform(Rc::new(parse_transform(input)?)),
+        L::GridTemplateColumns | L::GridTemplateRows => Value::GridTracks(parse_track_list(input)?),
+        L::GridAutoColumns | L::GridAutoRows => Value::GridAutoTracks(parse_track_list(input)?),
+        L::GridAutoFlow => Value::GridAutoFlow(parse_auto_flow(input)?),
+        L::GridTemplateAreas => Value::GridAreas(parse_grid_template_areas(input)?),
+        L::GridColumnStart | L::GridColumnEnd | L::GridRowStart | L::GridRowEnd => {
+            Value::GridLine(parse_grid_line(input)?)
+        }
         L::OverflowX | L::OverflowY => Value::Overflow(parse_overflow(input, context, longhand)?),
         L::Float => Value::Float(parse_float(input)?),
         L::Clear => Value::Clear(parse_clear(input)?),
@@ -833,6 +1041,7 @@ fn parse_longhand(
             &[("show", EmptyCells::Show)],
             &[("hide", EmptyCells::Hide)],
         )?),
+        L::AspectRatio => Value::AspectRatio(parse_aspect_ratio(input)?),
     })
 }
 
@@ -972,6 +1181,9 @@ fn parse_outline(
         ),
     ])
 }
+
+/// The initial border width, `medium`.
+const MEDIUM_BORDER: SpecifiedLength = SpecifiedLength::Px(3.0);
 
 /// One `overflow` axis (spec 0009, child 0002, AC-6). No keyword maps away
 /// anymore: `scroll`, `auto` and `clip` compute to themselves.
@@ -1168,7 +1380,8 @@ fn parse_display(input: &mut Parser<'_>) -> ParseResult<Display> {
         // Inline level keywords whose layout arrives later.
         "inline-grid" | "contents" | "ruby" | "ruby-text" | "ruby-base" => Display::Inline,
         // Block level ones (spec 0006, AC-3).
-        "grid" | "run-in" => Display::Block,
+        "grid" => Display::Grid,
+        "run-in" => Display::Block,
         // Table parts (spec 0009, child 0004, AC-14).
         "inline-table" => Display::InlineTable,
         "table" => Display::Table,
@@ -1223,8 +1436,260 @@ fn parse_gap(input: &mut Parser<'_>) -> ParseResult<SpecifiedLength> {
     parse_length(input, LengthRules::NON_NEGATIVE)
 }
 
-/// The initial border width, `medium`.
-const MEDIUM_BORDER: SpecifiedLength = SpecifiedLength::Px(3.0);
+/// `transform`: `scale(s)` in this slice; every other function is dropped
+/// and the declaration computes to the identity (spec 0010, AC-19).
+fn parse_transform(input: &mut Parser<'_>) -> ParseResult<Transform> {
+    if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+        return Ok(Transform::default());
+    }
+    let mut fns: Vec<TransformFn> = Vec::new();
+    let name = input.expect_function()?.to_ascii_lowercase();
+    if name != "scale" {
+        return invalid();
+    }
+    let s = input.parse_nested_block(|input| {
+        let value = input.expect_number()?;
+        Ok(value)
+    })?;
+    fns.push(TransformFn::Scale(s));
+    let scale_value = Some(s);
+    Ok(Transform {
+        transform: Rc::from(fns),
+        scale: scale_value,
+        origin: Default::default(),
+        binding_id: None,
+    })
+}
+
+/// `grid-template-columns` / `grid-template-rows`: one or more track
+/// sizes, each a length, percentage, `fr` fraction, `minmax()` or
+/// `repeat()` (thin thread: fixed and `fr` tracks, `repeat(auto-fill,
+/// minmax())`).
+fn parse_track_list(input: &mut Parser<'_>) -> ParseResult<Vec<TrackSize>> {
+    let mut tracks = Vec::new();
+    loop {
+        if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+            tracks.push(TrackSize::Length(Length::ZERO));
+            continue;
+        }
+        if input
+            .try_parse(|i| i.expect_function_matching("repeat"))
+            .is_ok()
+        {
+            tracks.push(parse_repeat(input)?);
+            continue;
+        }
+        if input
+            .try_parse(|i| i.expect_function_matching("minmax"))
+            .is_ok()
+        {
+            tracks.push(parse_minmax(input)?);
+            continue;
+        }
+        if input
+            .try_parse(|i| i.expect_function_matching("fit-content"))
+            .is_ok()
+        {
+            tracks.push(parse_track_size(input)?);
+            continue;
+        }
+        if input
+            .try_parse(|i| i.expect_ident_matching("min-content"))
+            .is_ok()
+        {
+            tracks.push(TrackSize::MinContent);
+            continue;
+        }
+        if input
+            .try_parse(|i| i.expect_ident_matching("max-content"))
+            .is_ok()
+        {
+            tracks.push(TrackSize::MaxContent);
+            continue;
+        }
+        match parse_length(input, LengthRules::NON_NEGATIVE) {
+            Ok(length) => match length {
+                SpecifiedLength::Px(px) => tracks.push(TrackSize::Length(Length::px(px))),
+                SpecifiedLength::Percent(percent) => {
+                    tracks.push(TrackSize::Length(Length::Percent(percent)))
+                }
+                _ => break,
+            },
+            Err(_) => break,
+        }
+        if input.try_parse(Parser::expect_comma).is_err() {
+            break;
+        }
+    }
+    if tracks.is_empty() {
+        return invalid();
+    }
+    Ok(tracks)
+}
+
+/// `repeat(auto-fill, minmax(100px, 1fr))` or `repeat(3, 200px)`.
+fn parse_repeat(input: &mut Parser<'_>) -> ParseResult<TrackSize> {
+    input.parse_nested_block(|input| {
+        let count = if input
+            .try_parse(|i| i.expect_ident_matching("auto-fill"))
+            .is_ok()
+            || input
+                .try_parse(|i| i.expect_ident_matching("auto-fit"))
+                .is_ok()
+        {
+            None
+        } else {
+            Some(input.expect_integer()? as usize)
+        };
+        input.expect_comma()?;
+        let track = parse_track_size(input)?;
+        Ok(TrackSize::Repeat {
+            count,
+            track: Box::new(track),
+        })
+    })
+}
+
+/// A single track size: a length/percent or an `fr` fraction.
+fn parse_track_size(input: &mut Parser<'_>) -> ParseResult<TrackSize> {
+    if input
+        .try_parse(|i| i.expect_function_matching("minmax"))
+        .is_ok()
+    {
+        return parse_minmax(input);
+    }
+    if input
+        .try_parse(|i| i.expect_function_matching("fit-content"))
+        .is_ok()
+    {
+        return input.parse_nested_block(|input| {
+            let length = parse_length(input, LengthRules::NON_NEGATIVE)?;
+            match length {
+                SpecifiedLength::Px(px) => Ok(TrackSize::FitContent(Length::px(px))),
+                SpecifiedLength::Percent(percent) => {
+                    Ok(TrackSize::FitContent(Length::Percent(percent)))
+                }
+                _ => invalid(),
+            }
+        });
+    }
+    if input
+        .try_parse(|i| i.expect_ident_matching("min-content"))
+        .is_ok()
+    {
+        return Ok(TrackSize::MinContent);
+    }
+    if input
+        .try_parse(|i| i.expect_ident_matching("max-content"))
+        .is_ok()
+    {
+        return Ok(TrackSize::MaxContent);
+    }
+    let length = parse_length(input, LengthRules::NON_NEGATIVE)?;
+    match length {
+        SpecifiedLength::Px(px) => Ok(TrackSize::Length(Length::px(px))),
+        SpecifiedLength::Percent(percent) => Ok(TrackSize::Length(Length::Percent(percent))),
+        _ => invalid(),
+    }
+}
+
+/// `minmax(min, max)`.
+fn parse_minmax(input: &mut Parser<'_>) -> ParseResult<TrackSize> {
+    input.parse_nested_block(|input| {
+        let min = parse_track_size(input)?;
+        input.expect_comma()?;
+        let max = parse_track_size(input)?;
+        Ok(TrackSize::Minmax {
+            min: Box::new(min),
+            max: Box::new(max),
+        })
+    })
+}
+
+/// `grid-auto-flow`: `row`, `column`, optionally followed by `dense`.
+fn parse_auto_flow(input: &mut Parser<'_>) -> ParseResult<GridAutoFlow> {
+    let mut flow = GridAutoFlow::Row;
+    if input
+        .try_parse(|i| i.expect_ident_matching("column"))
+        .is_ok()
+    {
+        flow = GridAutoFlow::Column;
+    }
+    if input
+        .try_parse(|i| i.expect_ident_matching("dense"))
+        .is_ok()
+    {
+        flow = GridAutoFlow::Dense;
+    }
+    Ok(flow)
+}
+
+/// `grid-template-areas`: quoted strings where each token is an area name
+/// or `.` for empty (spec 0010, AC-2).
+fn parse_grid_template_areas(input: &mut Parser<'_>) -> ParseResult<Vec<GridArea>> {
+    let mut areas = Vec::new();
+    let mut row = 0usize;
+    loop {
+        match input.next() {
+            Ok(Token::Ident(ident)) => {
+                let name = ident.as_ref();
+                if name == "." {
+                    continue;
+                }
+                areas.push(GridArea {
+                    name: Atom::from(name),
+                    row_start: row,
+                    row_end: row + 1,
+                    col_start: 0,
+                    col_end: 1,
+                });
+                row += 1;
+            }
+            Ok(Token::QuotedString(s)) => {
+                let name = s.as_ref();
+                if name == "." {
+                    continue;
+                }
+                areas.push(GridArea {
+                    name: Atom::from(name),
+                    row_start: row,
+                    row_end: row + 1,
+                    col_start: 0,
+                    col_end: 1,
+                });
+                row += 1;
+            }
+            _ => break,
+        }
+        if input.try_parse(Parser::expect_whitespace).is_err() {
+            break;
+        }
+    }
+    if areas.is_empty() {
+        return invalid();
+    }
+    Ok(areas)
+}
+
+/// `grid-column-start` / `grid-column-end` / `grid-row-start` /
+/// `grid-row-end`: `auto`, an integer line, or `span <n>`.
+fn parse_grid_line(input: &mut Parser<'_>) -> ParseResult<Option<GridLine>> {
+    if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+        return Ok(None);
+    }
+    if input.try_parse(|i| i.expect_ident_matching("span")).is_ok() {
+        let count = input.expect_integer()? as usize;
+        return Ok(Some(GridLine::Span(count)));
+    }
+    let value = input.expect_integer()?;
+    if value > 0 {
+        Ok(Some(GridLine::Line(value as usize)))
+    } else if value < 0 {
+        Ok(Some(GridLine::FromEnd((-value) as usize)))
+    } else {
+        invalid()
+    }
+}
 
 fn parse_border_style(input: &mut Parser<'_>) -> ParseResult<BorderStyle> {
     parse_keyword(
@@ -1271,6 +1736,38 @@ fn parse_opacity(input: &mut Parser<'_>) -> ParseResult<f32> {
         _ => return invalid(),
     };
     Ok(value.clamp(0.0, 1.0))
+}
+
+/// `aspect-ratio: auto [<ratio>]?` or `<ratio>` (spec 0010, AC-7). A
+/// `<ratio>` is `width / height`; a single number means width over 1.
+fn parse_aspect_ratio(input: &mut Parser<'_>) -> ParseResult<AspectRatio> {
+    let auto = input.try_parse(|i| i.expect_ident_matching("auto")).is_ok();
+    let ratio = if auto {
+        parse_optional_ratio(input)?
+    } else {
+        Some(parse_ratio(input)?)
+    };
+    Ok(AspectRatio { auto, ratio })
+}
+
+/// `width / height`, or a single number meaning width over 1.
+fn parse_ratio(input: &mut Parser<'_>) -> ParseResult<(f32, f32)> {
+    let width = parse_non_negative_number(input)?;
+    let height = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
+        parse_non_negative_number(input)?
+    } else {
+        1.0
+    };
+    Ok((width, height))
+}
+
+/// An optional `<ratio>`: `None` when the input does not start with one,
+/// leaving the parser position where it was.
+fn parse_optional_ratio(input: &mut Parser<'_>) -> ParseResult<Option<(f32, f32)>> {
+    match input.try_parse(parse_ratio) {
+        Ok(ratio) => Ok(Some(ratio)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// `clip: auto` or `clip: rect(top, right, bottom, left)` (CSS 2.2 section
@@ -1533,7 +2030,7 @@ fn parse_shorthand(
                 .enumerate()
                 .map(|(i, &longhand)| {
                     let value = match i / per_side {
-                        0 => Value::Length(width),
+                        0 => Value::Length(width.clone()),
                         1 => Value::BorderStyle(style),
                         _ => Value::Color(color),
                     };
@@ -1548,7 +2045,7 @@ fn parse_shorthand(
         Shorthand::Gap => {
             // `gap: <row> <column>?`, the column one defaulting to the row one.
             let row = parse_gap(input)?;
-            let column = input.try_parse(parse_gap).unwrap_or(row);
+            let column = input.try_parse(parse_gap).unwrap_or(row.clone());
             vec![
                 (Longhand::RowGap, Value::Length(row)),
                 (Longhand::ColumnGap, Value::Length(column)),
@@ -1953,7 +2450,7 @@ mod tests {
                 Value::Number(grow),
                 Value::Number(shrink),
                 Value::FlexBasis(basis),
-            ] => Some((*grow, *shrink, *basis)),
+            ] => Some((*grow, *shrink, basis.clone())),
             _ => None,
         }
     }
@@ -1964,8 +2461,8 @@ mod tests {
         let zero = FlexBasis::Length(SpecifiedLength::Percent(0.0));
         assert_eq!(flex("none"), Some((0.0, 0.0, FlexBasis::Auto)));
         assert_eq!(flex("auto"), Some((1.0, 1.0, FlexBasis::Auto)));
-        assert_eq!(flex("2"), Some((2.0, 1.0, zero)));
-        assert_eq!(flex("1 0"), Some((1.0, 0.0, zero)));
+        assert_eq!(flex("2"), Some((2.0, 1.0, zero.clone())));
+        assert_eq!(flex("1 0"), Some((1.0, 0.0, zero.clone())));
         assert_eq!(
             flex("1 1 120px"),
             Some((1.0, 1.0, FlexBasis::Length(SpecifiedLength::Px(120.0))))
@@ -2279,5 +2776,77 @@ mod tests {
             "unknown keyword acts as baseline"
         );
         assert!(!Longhand::VerticalAlign.is_inherited());
+    }
+
+    #[test]
+    fn grid_template_areas_parses_named_areas() {
+        let areas = parse_template_areas("header");
+        eprintln!("DEBUG: areas = {:?}", areas);
+        assert_eq!(
+            areas,
+            vec![GridArea {
+                name: Atom::from("header"),
+                row_start: 0,
+                row_end: 1,
+                col_start: 0,
+                col_end: 1,
+            }]
+        );
+    }
+
+    fn parse_template_areas(text: &str) -> Vec<GridArea> {
+        let mut parser = Parser::new(text);
+        parse_grid_template_areas(&mut parser).unwrap_or_default()
+    }
+
+    #[test]
+    fn syntax_matches_registered_custom_property_types() {
+        use super::PropertySyntax;
+        // `<length>` accepts lengths and percentages, rejects colors and keywords.
+        assert!(syntax_matches("12px", &PropertySyntax::Length));
+        assert!(syntax_matches("50%", &PropertySyntax::Length));
+        assert!(!syntax_matches("red", &PropertySyntax::Length));
+        assert!(!syntax_matches("auto", &PropertySyntax::Length));
+        // `<number>` accepts numbers only.
+        assert!(syntax_matches("3.5", &PropertySyntax::Number));
+        assert!(!syntax_matches("3px", &PropertySyntax::Number));
+        // `<integer>` accepts integers only.
+        assert!(syntax_matches("-2", &PropertySyntax::Integer));
+        assert!(!syntax_matches("2.5", &PropertySyntax::Integer));
+        // `<color>` accepts colors only.
+        assert!(syntax_matches("red", &PropertySyntax::Color));
+        assert!(syntax_matches("#ff0000", &PropertySyntax::Color));
+        assert!(!syntax_matches("12px", &PropertySyntax::Color));
+        // `<angle>` accepts angles.
+        assert!(syntax_matches("45deg", &PropertySyntax::Angle));
+        assert!(!syntax_matches("45", &PropertySyntax::Angle));
+        // `*` accepts anything.
+        assert!(syntax_matches("anything at all", &PropertySyntax::Star));
+        // `|` accepts any alternative.
+        assert!(syntax_matches(
+            "red",
+            &PropertySyntax::Or(vec![PropertySyntax::Length, PropertySyntax::Color,])
+        ));
+        assert!(syntax_matches(
+            "12px",
+            &PropertySyntax::Or(vec![PropertySyntax::Length, PropertySyntax::Color,])
+        ));
+        assert!(!syntax_matches(
+            "auto",
+            &PropertySyntax::Or(vec![PropertySyntax::Length, PropertySyntax::Color,])
+        ));
+        // `+` / `#` accept one or more comma separated repetitions.
+        assert!(syntax_matches(
+            "12px",
+            &PropertySyntax::Repeated(Box::new(PropertySyntax::Length))
+        ));
+        assert!(syntax_matches(
+            "12px, 4em",
+            &PropertySyntax::Repeated(Box::new(PropertySyntax::Length))
+        ));
+        assert!(!syntax_matches(
+            "",
+            &PropertySyntax::Repeated(Box::new(PropertySyntax::Length))
+        ));
     }
 }

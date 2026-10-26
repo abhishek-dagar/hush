@@ -170,6 +170,25 @@ pub struct SpatialNode {
     pub kind: SpatialKind,
 }
 
+/// A value that either stays fixed for the life of the list or is bound to
+/// an animation that the render side samples each frame (spec 0010, AC-28).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Binding<T> {
+    /// A fixed value.
+    Static(T),
+    /// Bound to an animation.
+    Bound {
+        /// Names the animation for the page's lifetime.
+        id: BindingId,
+        /// The last sampled value.
+        value: T,
+    },
+}
+
+/// An id that names a bound animation within one page lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct BindingId(pub u64);
+
 /// The kinds of spatial node.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SpatialKind {
@@ -192,10 +211,11 @@ pub enum SpatialKind {
         user_scrollable: [bool; 2],
     },
     /// A transformed space: `transform` maps points in it to the parent
-    /// space. A 4 by 4 matrix, column major.
+    /// space. A 4 by 4 matrix, column major. A pure translation is pixel
+    /// snapped so text stays crisp (spec 0010, AC-20).
     ReferenceFrame {
-        /// The matrix.
-        transform: [f32; 16],
+        /// The matrix, static or bound to an animation.
+        transform: Binding<[f32; 16]>,
     },
     /// A sticky box: laid out in flow, then shifted at full frame rate to
     /// stay inside its nearest scroll frame while that frame scrolls
@@ -227,10 +247,16 @@ impl SpatialKind {
                 x: frame_rect.origin.x + point.x - offset.x,
                 y: frame_rect.origin.y + point.y - offset.y,
             },
-            Self::ReferenceFrame { transform: m } => PointF {
-                x: m[0] * point.x + m[4] * point.y + m[12],
-                y: m[1] * point.x + m[5] * point.y + m[13],
-            },
+            Self::ReferenceFrame { transform: m } => {
+                let m = match m {
+                    Binding::Static(m) => *m,
+                    Binding::Bound { value, .. } => *value,
+                };
+                PointF {
+                    x: m[0] * point.x + m[4] * point.y + m[12],
+                    y: m[1] * point.x + m[5] * point.y + m[13],
+                }
+            }
             Self::Sticky { sticky_rect, .. } => PointF {
                 x: sticky_rect.origin.x + point.x,
                 y: sticky_rect.origin.y + point.y,
@@ -498,7 +524,7 @@ mod tests {
         let moved = list.push_spatial(
             SpatialId::ROOT,
             SpatialKind::ReferenceFrame {
-                transform: translate,
+                transform: Binding::Static(translate),
             },
         );
         let scrolled = list.push_spatial(

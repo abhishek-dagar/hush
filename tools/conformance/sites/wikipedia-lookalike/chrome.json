@@ -1,0 +1,59 @@
+{
+  "chrome_version": "155.0.8059.85",
+  "viewport": [
+    1280,
+    800
+  ],
+  "landmarks": [
+    {
+      "selector": "#mw-page-title",
+      "index": 0,
+      "rect": [
+        0.0,
+        12.0,
+        1280.0,
+        33.0
+      ]
+    },
+    {
+      "selector": "#toc",
+      "index": 1,
+      "rect": [
+        852.0,
+        57.0,
+        238.0,
+        114.5
+      ]
+    },
+    {
+      "selector": ".infobox",
+      "index": 2,
+      "rect": [
+        516.0,
+        57.0,
+        322.0,
+        143.0
+      ]
+    },
+    {
+      "selector": ".mw-parser-output",
+      "index": 3,
+      "rect": [
+        190.0,
+        81.0,
+        900.0,
+        443.0
+      ]
+    },
+    {
+      "selector": "footer",
+      "index": 4,
+      "rect": [
+        0.0,
+        582.0,
+        1280.0,
+        31.0
+      ]
+    }
+  ]
+}

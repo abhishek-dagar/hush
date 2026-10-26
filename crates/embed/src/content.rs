@@ -3,41 +3,100 @@
 use std::collections::HashMap;
 use std::process;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use display_list::PageId;
-use ipc::{BrowserChannel, PageNavigationAction, PageNavigationOrigin, ToBrowser, ToContent};
-use page::Page;
+use ipc::{
+    BrowserChannel, MemoryCategory, PageNavigationAction, PageNavigationOrigin, ToBrowser,
+    ToContent,
+};
+use page::{Page, ReadyState};
 use tracing::{error, info, info_span, trace, warn};
 
 use crate::EmbedError;
 
-pub(crate) fn run(server_name: &str) -> Result<(), EmbedError> {
+/// How long the content process waits with no task, timer or event before
+/// it runs one garbage collection pass (spec 0032, AC-9).
+const IDLE_GC_AFTER: Duration = Duration::from_secs(5);
+
+/// One page's perf marks in the content process (spec 0007, Value
+/// sourcing). Only tracked in perf mode.
+#[derive(Default)]
+struct PagePerf {
+    /// When this process handled the navigate command for the page.
+    nav_started: Option<Instant>,
+    /// Navigation start to `load`, in µs: recorded the first time after a
+    /// task that `ready_state()` is `Complete`.
+    nav_to_load_us: Option<u64>,
+}
+
+pub(crate) fn run(server_name: &str, perf: bool) -> Result<(), EmbedError> {
     let _span = info_span!("content", pid = process::id()).entered();
 
     let channel = BrowserChannel::connect(server_name)?;
     channel.send(ToBrowser::Ready { pid: process::id() })?;
     info!("connected to the browser process");
+    if perf {
+        // Full perf behaviour (marks, samples) arrives with the runtime
+        // metrics (spec 0007, Build plan tasks 4 to 6).
+        info!("content process in perf mode");
+    }
 
     // Parsed once for the whole process and shared by every page (spec
     // 0004, Key invariants).
     let ua = page::ua_stylesheet();
     let mut pages: HashMap<PageId, Page> = HashMap::new();
+    // Perf marks per page (spec 0007); only filled in perf mode.
+    let mut perf_marks: HashMap<PageId, PagePerf> = HashMap::new();
+    // The script engine's wall time, added up across every page (spec
+    // 0007, Script timing); only present in perf mode.
+    let script_timer = perf.then(std::sync::Arc::<crate::perf::ScriptTimer>::default);
+    // The last task, timer or event, for the idle garbage collection (spec
+    // 0032, AC-9).
+    let mut idle_since = Instant::now();
+    let mut idle_gc_done = false;
     loop {
-        // Wait for the browser, but only until the next timer is due
-        // (spec 0004, child 0006, Event loop).
+        // Wait for the browser, but only until the next timer is due, or
+        // until five idle seconds have passed (spec 0004, child 0006, Event
+        // loop; spec 0032, AC-9).
         let next_timer = pages.values().filter_map(Page::next_timer).min();
-        let received = match next_timer {
+        let idle_due = (!idle_gc_done).then_some(idle_since + IDLE_GC_AFTER);
+        let wake = match (next_timer, idle_due) {
+            (Some(timer), Some(idle)) => Some(timer.min(idle)),
+            (timer, idle) => timer.or(idle),
+        };
+        let received = match wake {
+            Some(wake) => channel.recv_timeout(wake.saturating_duration_since(Instant::now())),
+            // Nothing due: wait for the browser (spec 0032, AC-9).
             None => channel.recv().map(Some),
-            Some(due) => channel.recv_timeout(due.saturating_duration_since(Instant::now())),
         };
         let message = match received {
-            Ok(Some(message)) => message,
+            Ok(Some(message)) => {
+                // A message is a task: the idle count starts over.
+                idle_since = Instant::now();
+                idle_gc_done = false;
+                message
+            }
             Ok(None) => {
                 let now = Instant::now();
-                for page in pages.values_mut() {
-                    page.run_timers(now);
-                    after_task(&channel, page)?;
+                if next_timer.is_some_and(|due| due <= now) {
+                    for page in pages.values_mut() {
+                        page.run_timers(now);
+                        after_task(&channel, page)?;
+                    }
+                    // A timer is a task too.
+                    idle_since = now;
+                    idle_gc_done = false;
+                }
+                if now >= idle_since + IDLE_GC_AFTER && !idle_gc_done {
+                    // One pass per idle period (spec 0032, AC-9): the log
+                    // line makes it observable, and the next one waits for a
+                    // task to start the idle clock over.
+                    info!("content idle: one garbage collection pass");
+                    for page in pages.values_mut() {
+                        page.collect_garbage();
+                    }
+                    idle_gc_done = true;
                 }
                 continue;
             }
@@ -52,13 +111,60 @@ pub(crate) fn run(server_name: &str) -> Result<(), EmbedError> {
                 info!("shutting down");
                 return Ok(());
             }
+            ToContent::PerfSample => {
+                if perf {
+                    // The scenarios drive one page; answer with the marks
+                    // that page has (spec 0007, IPC messages).
+                    let marks = perf_marks
+                        .values()
+                        .find(|mark| mark.nav_to_load_us.is_some());
+                    let nav_to_load_us = marks.and_then(|mark| mark.nav_to_load_us);
+                    let script_us = script_timer.as_ref().map_or(0, |timer| timer.total_us());
+                    channel.send(ToBrowser::PerfSample {
+                        nav_to_load_us,
+                        script_us,
+                        footprint_bytes: crate::perf::footprint_bytes(),
+                    })?;
+                } else {
+                    // A browser that never launched us with `--perf` has no
+                    // business asking (spec 0007, IPC messages).
+                    warn!("PerfSample ignored: not launched with --perf");
+                }
+                continue;
+            }
+            ToContent::ReportMemory => {
+                let mut counters = Vec::new();
+                if let Some(bytes) = crate::perf::footprint_bytes() {
+                    counters.push((MemoryCategory::Footprint, bytes));
+                }
+                let mut js_heap = 0;
+                let mut nodes = 0;
+                for page in pages.values_mut() {
+                    js_heap += page.script_heap_bytes().unwrap_or(0);
+                    nodes += page.node_count();
+                }
+                counters.push((MemoryCategory::JsHeap, js_heap));
+                counters.push((MemoryCategory::DomNodes, nodes));
+                channel.send(ToBrowser::MemoryReport { counters })?;
+                continue;
+            }
             ToContent::CreatePage {
                 page,
                 viewport,
                 scale,
             } => {
                 // Empty until its first navigation commits (spec 0004).
-                pages.insert(page, Page::blank(page, viewport, scale, Rc::clone(&ua)));
+                let mut fresh = Page::blank(page, viewport, scale, Rc::clone(&ua));
+                if let Some(timer) = &script_timer {
+                    // Every script call's wall time adds up for the perf
+                    // report (spec 0007, Script timing).
+                    let hook = std::sync::Arc::clone(timer);
+                    fresh.set_script_wrap(Some(Box::new(move |engine| hook.wrap(engine))));
+                }
+                if perf {
+                    perf_marks.insert(page, PagePerf::default());
+                }
+                pages.insert(page, fresh);
                 page
             }
             ToContent::Resize {
@@ -116,6 +222,13 @@ pub(crate) fn run(server_name: &str) -> Result<(), EmbedError> {
             ToContent::Navigate { page, navigation } => {
                 if let Some(target) = pages.get_mut(&page) {
                     target.navigate(navigation);
+                }
+                // Navigation start (spec 0007, Value sourcing): when this
+                // process handles the navigate command for the page. A new
+                // navigation restarts the measurement.
+                if let Some(mark) = perf_marks.get_mut(&page) {
+                    mark.nav_started = Some(Instant::now());
+                    mark.nav_to_load_us = None;
                 }
                 page
             }
@@ -222,6 +335,16 @@ pub(crate) fn run(server_name: &str) -> Result<(), EmbedError> {
         // unblocked, sweep, and ask for what it found to load.
         page.end_task();
         after_task(&channel, page)?;
+        // The `load` mark (spec 0007, Value sourcing): the first time after
+        // a task that the page's ready state is `Complete`.
+        if perf
+            && let Some(mark) = perf_marks.get_mut(&page.id())
+            && mark.nav_to_load_us.is_none()
+            && let Some(started) = mark.nav_started
+            && page.ready_state() == ReadyState::Complete
+        {
+            mark.nav_to_load_us = Some(started.elapsed().as_micros() as u64);
+        }
     }
 }
 

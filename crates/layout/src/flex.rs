@@ -118,6 +118,7 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
     let space = container.child_space();
     let row = style.flex.direction == FlexDirection::Row;
     let flex = &style.flex;
+    let alignment = &style.alignment;
 
     // Absolute children are not items; their static position is the
     // content box's start corner (spec 0006, Layout rules worth pinning).
@@ -131,8 +132,8 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
     // `order`, keeping tree order among equals (section 5.4).
     items.sort_by_key(|item| item.style.flex.order);
 
-    let column_gap = flex.column_gap.resolve(Some(frame.content_width));
-    let row_gap = flex.row_gap.resolve(frame.height);
+    let column_gap = alignment.column_gap.resolve(Some(frame.content_width));
+    let row_gap = alignment.row_gap.resolve(frame.height);
     let (gap_main, gap_cross) = if row {
         (column_gap, row_gap)
     } else {
@@ -312,17 +313,20 @@ fn new_item(
         })
     };
     let size = &style.size;
-    let width = content(size.width, basis_width, edges_x);
-    let height = content(size.height, frame.height, edges_y);
-    let min_width = content(size.min_width, basis_width, edges_x);
-    let min_height = content(size.min_height, frame.height, edges_y);
-    let max_width = content(size.max_width, basis_width, edges_x);
-    let max_height = content(size.max_height, frame.height, edges_y);
+    let width = content(size.width.clone(), basis_width, edges_x);
+    let height = content(size.height.clone(), frame.height, edges_y);
+    let min_width = content(size.min_width.clone(), basis_width, edges_x);
+    let min_height = content(size.min_height.clone(), frame.height, edges_y);
+    let max_width = content(size.max_width.clone(), basis_width, edges_x);
+    let max_height = content(size.max_height.clone(), frame.height, edges_y);
     let margin = |length: Option<Length>| length.map(|l| l.resolve(basis_width));
     let margins = &style.margin;
-    let (left, right) = (margin(margins.left), margin(margins.right));
-    let (top, bottom) = (margin(margins.top), margin(margins.bottom));
-    let align = style.flex.align_self.unwrap_or(container.flex.align_items);
+    let (left, right) = (margin(margins.left.clone()), margin(margins.right.clone()));
+    let (top, bottom) = (margin(margins.top.clone()), margin(margins.bottom.clone()));
+    let align = style
+        .alignment
+        .align_self
+        .unwrap_or(container.alignment.align_items);
     let mut item = Item {
         id,
         style: Rc::clone(&style),
@@ -379,8 +383,8 @@ fn base_sizes(
         frame.height
     };
     let border_box = item.style.size.box_sizing == BoxSizing::BorderBox;
-    let basis = match item.style.flex.basis {
-        FlexBasis::Length(length) => resolve(Some(length), main_basis).map(|value| {
+    let basis = match &item.style.flex.basis {
+        FlexBasis::Length(length) => resolve(Some(length.clone()), main_basis).map(|value| {
             if border_box {
                 (value - item.edges_main).max(Au::ZERO)
             } else {
@@ -588,7 +592,7 @@ fn place(
             Au::ZERO
         };
         let count = line_items.len() as i32;
-        let (mut main, between) = justify(style.flex.justify_content, free, count);
+        let (mut main, between) = justify(style.alignment.justify_content, free, count);
         for item in line_items.iter_mut() {
             let start = item.margins[0].unwrap_or(auto_margin);
             let end = item.margins[1].unwrap_or(auto_margin);

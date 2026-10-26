@@ -41,28 +41,43 @@ fn properties(style: &ComputedStyle) -> Vec<(String, String)> {
         ("text-overflow", lower(&display_box.text_overflow)),
         ("inset", {
             let offsets = &style.position_offsets;
-            [offsets.top, offsets.right, offsets.bottom, offsets.left]
-                .map(auto)
-                .join(" ")
+            [
+                offsets.top.clone(),
+                offsets.right.clone(),
+                offsets.bottom.clone(),
+                offsets.left.clone(),
+            ]
+            .map(auto)
+            .join(" ")
         }),
         ("box-sizing", lower(&size.box_sizing)),
-        ("width", auto(size.width)),
-        ("height", auto(size.height)),
-        ("min-width", auto(size.min_width)),
-        ("min-height", auto(size.min_height)),
-        ("max-width", none(size.max_width)),
-        ("max-height", none(size.max_height)),
+        ("width", auto(size.width.clone())),
+        ("height", auto(size.height.clone())),
+        ("min-width", auto(size.min_width.clone())),
+        ("min-height", auto(size.min_height.clone())),
+        ("max-width", none(size.max_width.clone())),
+        ("max-height", none(size.max_height.clone())),
         (
             "margin",
-            [margin.top, margin.right, margin.bottom, margin.left]
-                .map(auto)
-                .join(" "),
+            [
+                margin.top.clone(),
+                margin.right.clone(),
+                margin.bottom.clone(),
+                margin.left.clone(),
+            ]
+            .map(auto)
+            .join(" "),
         ),
         (
             "padding",
-            [padding.top, padding.right, padding.bottom, padding.left]
-                .map(length)
-                .join(" "),
+            [
+                padding.top.clone(),
+                padding.right.clone(),
+                padding.bottom.clone(),
+                padding.left.clone(),
+            ]
+            .map(length)
+            .join(" "),
         ),
         ("border-top", side(&border.top)),
         ("border-right", side(&border.right)),
@@ -71,10 +86,10 @@ fn properties(style: &ComputedStyle) -> Vec<(String, String)> {
         (
             "border-radius",
             [
-                radius.top_left,
-                radius.top_right,
-                radius.bottom_right,
-                radius.bottom_left,
+                radius.top_left.clone(),
+                radius.top_right.clone(),
+                radius.bottom_right.clone(),
+                radius.bottom_left.clone(),
             ]
             .map(length)
             .join(" "),
@@ -93,10 +108,10 @@ fn properties(style: &ComputedStyle) -> Vec<(String, String)> {
         ("color", color(text.color)),
         (
             "line-height",
-            match text.line_height {
+            match &text.line_height {
                 LineHeight::Normal => "normal".into(),
-                LineHeight::Number(n) => number(n),
-                LineHeight::Length(l) => length(l),
+                LineHeight::Number(n) => number(*n),
+                LineHeight::Length(l) => length(l.clone()),
             },
         ),
         ("text-align", lower(&text.text_align)),
@@ -115,24 +130,27 @@ fn properties(style: &ComputedStyle) -> Vec<(String, String)> {
         ("list-style-type", lower(&style.list.style_type)),
         ("list-style-position", lower(&style.list.position)),
         ("flex-direction", lower(&style.flex.direction)),
-        ("row-gap", length(style.flex.row_gap)),
-        ("column-gap", length(style.flex.column_gap)),
+        ("row-gap", length(style.alignment.row_gap.clone())),
+        ("column-gap", length(style.alignment.column_gap.clone())),
         ("flex-wrap", lower(&style.flex.wrap)),
-        ("justify-content", lower(&style.flex.justify_content)),
-        ("align-items", lower(&style.flex.align_items)),
+        ("justify-content", lower(&style.alignment.justify_content)),
+        ("align-items", lower(&style.alignment.align_items)),
         ("flex-grow", number(style.flex.grow)),
         ("flex-shrink", number(style.flex.shrink)),
         (
             "flex-basis",
-            match style.flex.basis {
+            match &style.flex.basis {
                 FlexBasis::Auto => "auto".into(),
                 FlexBasis::Content => "content".into(),
-                FlexBasis::Length(l) => length(l),
+                FlexBasis::Length(l) => length(l.clone()),
             },
         ),
         (
             "align-self",
-            style.flex.align_self.map_or("auto".into(), |a| lower(&a)),
+            style
+                .alignment
+                .align_self
+                .map_or("auto".into(), |a| lower(&a)),
         ),
         ("order", style.flex.order.to_string()),
         ("opacity", number(style.effects.opacity)),
@@ -187,6 +205,7 @@ fn length(length: Length) -> String {
     match length {
         Length::Au(au) => format!("{}px", number(au.to_f32_px())),
         Length::Percent(percent) => format!("{}%", number(percent)),
+        Length::Calc(_) => "calc()".into(),
     }
 }
 

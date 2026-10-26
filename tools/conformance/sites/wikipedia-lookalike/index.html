@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Classic box layout &middot; Wikipedia look alike</title>
+<style>
+  html { font: 16px/1.5 serif; }
+  body { margin: 0; padding: 0; color: #202122; background: #fff; }
+  #mw-page-title { font-size: 22px; font-weight: bold; margin: 12px 0 0 0; }
+  #content { margin: 0 auto; max-width: 900px; padding: 12px 16px; }
+  #toc { float: right; width: 220px; margin: 0 0 12px 14px; border: 1px solid #a2a9b1;
+         background: #f8f9fa; padding: 8px; font-size: 14px; }
+  #toc h2 { font-size: 14px; margin: 0 0 6px 0; border-bottom: 1px solid #a2a9b1;
+            padding-bottom: 4px; }
+  #toc ul { list-style: none; margin: 0; padding: 0; }
+  #toc li { margin: 2px 0; font-size: 13px; }
+  .infobox { float: right; width: 300px; margin: 0 0 12px 14px; border: 1px solid #a2a9b1;
+             background: #f8f9fa; padding: 10px; font-size: 14px; }
+  .infobox table { width: 100%; border-collapse: collapse; }
+  .infobox td, .infobox th { border: 1px solid #a2a9b1; padding: 4px 6px; vertical-align: top; }
+  .mw-parser-output p { margin: 0 0 14px 0; text-align: justify; }
+  .mw-parser-output img { display: block; max-width: 100%; height: auto; }
+  .mw-parser-output h2 { font-size: 20px; margin: 24px 0 8px 0; border-bottom: 1px solid #a2a9b1; }
+  footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #a2a9b1;
+           font-size: 12px; color: #54595d; }
+</style>
+<h1 id="mw-page-title">Classic box layout</h1>
+<div id="content">
+  <div id="toc">
+    <h2>Contents</h2>
+    <ul>
+      <li><a href="#floats">Floats</a></li>
+      <li><a href="#tables">Tables</a></li>
+      <li><a href="#sticky">Sticky headers</a></li>
+    </ul>
+  </div>
+
+  <div class="infobox">
+    <table>
+      <tr><th colspan="2">Classic box layout</th></tr>
+      <tr><td>Introduced</td><td>CSS 2.2</td></tr>
+      <tr><td>Module</td><td>CSS Box Model</td></tr>
+      <tr><td>W3C status</td><td>Recommendation</td></tr>
+    </table>
+  </div>
+
+  <div class="mw-parser-output">
+    <h2 id="floats">Floats</h2>
+    <p>
+      A <b>float</b> is a box that is shifted to the left or right on the
+      current line, allowing text and inline content to wrap around it.
+      Floats are a core part of the classic box layout model and are used
+      extensively in encyclopedia articles for images and sidebars.
+    </p>
+    <p>
+      The float is taken out of the normal flow and shifted to the left or
+      right until its outer edge touches the containing block's edge or
+      another float's margin box. Line boxes beside the float are shortened
+      so content wraps around it.
+    </p>
+
+    <h2 id="tables">Tables</h2>
+    <p>
+      CSS tables build a grid of rows and columns from table display types.
+      Cells can span multiple columns (<code>colspan</code>) or rows
+      (<code>rowspan</code>), and borders can be separate or collapsed.
+    </p>
+
+    <h2 id="sticky">Sticky positioning</h2>
+    <p>
+      A <b>sticky</b> box is laid out in flow like a relatively positioned
+      box, but is offset relative to its nearest scroll container based on
+      the scroll position. Sticky headers remain visible while the page
+      scrolls, which is essential for long articles.
+    </p>
+  </div>
+</div>
+<footer>
+  &mdash; Wikipedia look alike &middot; conformance proof page &mdash;
+</footer>

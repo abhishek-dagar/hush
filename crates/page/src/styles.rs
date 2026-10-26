@@ -511,12 +511,16 @@ fn attribute(doc: &Document, node: NodeId, name: &str) -> Option<String> {
 
 /// The text of `node`'s text children, joined: a `<style>` sheet.
 fn text_content(doc: &Document, node: NodeId) -> String {
-    doc.children(node)
+    let text: String = doc
+        .children(node)
         .filter_map(|child| match doc.node(child)?.data() {
             NodeData::Text(text) => Some(text.as_str()),
             _ => None,
         })
-        .collect()
+        .collect();
+    // An `.xht` style element wraps its sheet in `<![CDATA[ ... ]]>`, which
+    // an XHTML parser strips (spec 0005, AC-18).
+    crate::strip_cdata(&text).to_owned()
 }
 
 /// The absolute URL a `<link>` loads as a style sheet: `rel` holds

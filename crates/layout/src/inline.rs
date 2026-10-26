@@ -218,10 +218,10 @@ fn edges(tree: &BoxTree, id: BoxId, basis: Option<Au>) -> (SideOffsets, SideOffs
     };
     let side = |l: Option<css::Length>| l.map_or(Au::ZERO, |l| l.resolve(basis));
     let margin = SideOffsets {
-        top: side(style.margin.top),
-        right: side(style.margin.right),
-        bottom: side(style.margin.bottom),
-        left: side(style.margin.left),
+        top: side(style.margin.top.clone()),
+        right: side(style.margin.right.clone()),
+        bottom: side(style.margin.bottom.clone()),
+        left: side(style.margin.left.clone()),
     };
     let padding = SideOffsets {
         top: style.padding.top.resolve(basis),
@@ -948,6 +948,8 @@ fn close_box(
         sticky: None,
         absolutes: Vec::new(),
         exclusions_out: None,
+        collapsed_borders: None,
+        background_layers: None,
     };
     push_child(
         stack,
@@ -1011,9 +1013,9 @@ pub(crate) fn intrinsic_sizes(
 /// 10.8.1).
 fn extents(metrics: LineMetrics, style: &ComputedStyle) -> (Au, Au) {
     let content = metrics.ascent + metrics.descent;
-    let line_height = match style.inherited_text.line_height {
+    let line_height = match &style.inherited_text.line_height {
         LineHeight::Normal => content + metrics.line_gap,
-        LineHeight::Number(factor) => style.font.size.scale_by(factor),
+        LineHeight::Number(factor) => style.font.size.scale_by(*factor),
         LineHeight::Length(length) => length.resolve(Some(style.font.size)),
     };
     let half_leading = (line_height - content).scale_by(0.5);

@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use base::Au;
 use base::atoms::Atom;
+use base::{Au, Point};
 
 use crate::{Color, Length};
 
@@ -59,7 +59,7 @@ impl Default for Font {
 }
 
 /// `line-height`.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum LineHeight {
     /// `normal`, the initial value: the font decides.
     #[default]
@@ -303,6 +303,8 @@ pub enum Display {
     ListItem,
     /// `display: flex`: a block level flex container (spec 0006, AC-3).
     Flex,
+    /// `display: grid`: a block level grid container (spec 0010, AC-1).
+    Grid,
     /// `display: flow-root`: a block that always establishes a block
     /// formatting context, so its `height: auto` holds its floats
     /// (spec 0009, child 0001).
@@ -474,6 +476,22 @@ pub struct Sizes {
     pub max_height: Option<Length>,
     /// `box-sizing`.
     pub box_sizing: BoxSizing,
+    /// `aspect-ratio`: the preferred width-to-height ratio (spec 0010, AC-7).
+    pub aspect_ratio: AspectRatio,
+}
+
+/// `aspect-ratio`: the preferred width-to-height ratio of a box (spec 0010,
+/// AC-7). The initial value is `auto`: replaced elements use their natural
+/// ratio, other boxes are unaffected. An explicit ratio (with or without
+/// `auto`) sizes the box when exactly one dimension is automatic.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AspectRatio {
+    /// `auto` was specified: replaced elements fall back to their natural
+    /// ratio; other boxes are unaffected unless a ratio is also given.
+    pub auto: bool,
+    /// The explicit ratio, width divided by height. A single number means
+    /// width over 1.
+    pub ratio: Option<(f32, f32)>,
 }
 
 /// One length per side. `None` is `auto` (margins only).
@@ -493,10 +511,10 @@ impl Margin {
     /// The same margin on every side.
     pub fn all(length: Length) -> Self {
         Self {
-            top: Some(length),
-            right: Some(length),
-            bottom: Some(length),
-            left: Some(length),
+            top: Some(length.clone()),
+            right: Some(length.clone()),
+            bottom: Some(length.clone()),
+            left: Some(length.clone()),
         }
     }
 }
@@ -524,10 +542,10 @@ impl Padding {
     /// The same padding on every side.
     pub fn all(length: Length) -> Self {
         Self {
-            top: length,
-            right: length,
-            bottom: length,
-            left: length,
+            top: length.clone(),
+            right: length.clone(),
+            bottom: length.clone(),
+            left: length.clone(),
         }
     }
 }
@@ -585,7 +603,7 @@ impl Default for BorderSide {
 
 /// The radius of each corner. One value per corner: elliptical corners
 /// arrive with a later slice.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BorderRadius {
     /// `border-top-left-radius`.
     pub top_left: Length,
@@ -720,7 +738,7 @@ pub enum AlignItems {
 }
 
 /// `flex-basis`.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum FlexBasis {
     /// `auto`, the initial value: the main size property decides.
     #[default]
@@ -739,25 +757,175 @@ pub struct Flex {
     pub direction: FlexDirection,
     /// `flex-wrap`.
     pub wrap: FlexWrap,
-    /// `justify-content`.
-    pub justify_content: JustifyContent,
-    /// `align-items`.
-    pub align_items: AlignItems,
-    /// `row-gap`.
-    pub row_gap: Length,
-    /// `column-gap`.
-    pub column_gap: Length,
     /// `flex-grow`.
     pub grow: f32,
     /// `flex-shrink`.
     pub shrink: f32,
     /// `flex-basis`.
     pub basis: FlexBasis,
+    /// `order`.
+    pub order: i32,
+}
+
+impl Default for Flex {
+    fn default() -> Self {
+        Self {
+            direction: FlexDirection::default(),
+            wrap: FlexWrap::default(),
+            grow: 0.0,
+            shrink: 1.0,
+            basis: FlexBasis::default(),
+            order: 0,
+        }
+    }
+}
+
+/// Box alignment shared by flex and grid containers and items: the gap and
+/// the content / item / self alignment (spec 0010, AC-4). It is a reset
+/// group: an element that sets none of it shares the initial `Rc`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Alignment {
+    /// `row-gap`.
+    pub row_gap: Length,
+    /// `column-gap`.
+    pub column_gap: Length,
+    /// `justify-content`.
+    pub justify_content: JustifyContent,
+    /// `align-content`. `baseline` behaves as `start` in this feature.
+    pub align_content: AlignItems,
+    /// `justify-items`.
+    pub justify_items: AlignItems,
+    /// `align-items`.
+    pub align_items: AlignItems,
+    /// `justify-self`; `None` is `auto`, which takes the parent's
+    /// `justify-items`.
+    pub justify_self: Option<AlignItems>,
     /// `align-self`; `None` is `auto`, which takes the parent's
     /// `align-items`.
     pub align_self: Option<AlignItems>,
-    /// `order`.
-    pub order: i32,
+}
+
+impl Default for Alignment {
+    fn default() -> Self {
+        Self {
+            row_gap: Length::ZERO,
+            column_gap: Length::ZERO,
+            justify_content: JustifyContent::default(),
+            align_content: AlignItems::default(),
+            justify_items: AlignItems::default(),
+            align_items: AlignItems::default(),
+            justify_self: None,
+            align_self: None,
+        }
+    }
+}
+
+/// One track size in a grid template: a fixed length, or a fraction of
+/// the free space (spec 0010, AC-1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrackSize {
+    /// A fixed length or percentage.
+    Length(Length),
+    /// A fraction of the free space.
+    Fr(f32),
+    /// `minmax(min, max)`: at least `min`, at most `max`.
+    Minmax {
+        /// The minimum track size.
+        min: Box<TrackSize>,
+        /// The maximum track size.
+        max: Box<TrackSize>,
+    },
+    /// `repeat(count, track)` or `repeat(auto-fill|auto-fit, track)`.
+    Repeat {
+        /// `None` for `auto-fill`/`auto-fit`, else the repetition count.
+        count: Option<usize>,
+        /// The track to repeat.
+        track: Box<TrackSize>,
+    },
+    /// `min-content`: the track's minimum content size.
+    MinContent,
+    /// `max-content`: the track's maximum content size.
+    MaxContent,
+    /// `fit-content(<length>)`: clamp the content size to the given limit.
+    FitContent(Length),
+}
+
+impl Default for TrackSize {
+    fn default() -> Self {
+        Self::Length(Length::ZERO)
+    }
+}
+
+/// The direction auto-placed items flow in (spec 0010, AC-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GridAutoFlow {
+    /// Place items row by row.
+    #[default]
+    Row,
+    /// Place items column by column.
+    Column,
+    /// Place items to fill the earliest empty cell (dense packing).
+    Dense,
+}
+
+/// Grid container properties (spec 0010, AC-1 to AC-3). A grid container
+/// lays its items out into explicit and implicit tracks.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Grid {
+    /// `grid-template-columns`: one track size per column track.
+    pub template_columns: Vec<TrackSize>,
+    /// `grid-template-rows`: one track size per row track.
+    pub template_rows: Vec<TrackSize>,
+    /// `grid-auto-columns`: sizes for implicitly created columns.
+    pub auto_columns: Vec<TrackSize>,
+    /// `grid-auto-rows`: sizes for implicitly created rows.
+    pub auto_rows: Vec<TrackSize>,
+    /// `grid-auto-flow`: the direction auto-placed items flow in.
+    pub auto_flow: GridAutoFlow,
+    /// `grid-column-start` / `grid-row-start`: where the item begins,
+    /// `None` means auto placement.
+    pub column_start: Option<GridLine>,
+    /// `grid-column-end` / `grid-row-end`: where the item ends.
+    pub column_end: Option<GridLine>,
+    /// `grid-row-start`: where the item begins in the row axis.
+    pub row_start: Option<GridLine>,
+    /// `grid-row-end`: where the item ends in the row axis.
+    pub row_end: Option<GridLine>,
+    /// Named areas from `grid-template-areas`, mapping area names to cell
+    /// ranges (spec 0010, AC-2).
+    pub grid_template_areas: Vec<GridArea>,
+}
+
+/// One named grid area from `grid-template-areas`: its name and the cell
+/// range it spans (row start/end, col start/end, ends exclusive)
+/// (spec 0010, AC-2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridArea {
+    /// The area name.
+    pub name: Atom,
+    /// Row start index (0-based).
+    pub row_start: usize,
+    /// Row end index (exclusive).
+    pub row_end: usize,
+    /// Column start index (0-based).
+    pub col_start: usize,
+    /// Column end index (exclusive).
+    pub col_end: usize,
+}
+
+/// One side of grid item placement: a line number, a span, a named line, or
+/// auto (spec 0010, AC-2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum GridLine {
+    /// A positive line number, counting from the start (1-indexed).
+    Line(usize),
+    /// Count `count` lines from the end (Grid §8 counts from `-1`).
+    FromEnd(usize),
+    /// Span `count` tracks.
+    Span(usize),
+    /// Auto-placed: let the grid algorithm decide.
+    #[default]
+    Auto,
 }
 
 /// `table-layout`: `auto` sizes columns from cell content; `fixed` sizes
@@ -832,24 +1000,6 @@ pub struct InheritedTable {
     pub empty_cells: EmptyCells,
 }
 
-impl Default for Flex {
-    fn default() -> Self {
-        Self {
-            direction: FlexDirection::default(),
-            wrap: FlexWrap::default(),
-            justify_content: JustifyContent::default(),
-            align_items: AlignItems::default(),
-            row_gap: Length::ZERO,
-            column_gap: Length::ZERO,
-            grow: 0.0,
-            shrink: 1.0,
-            basis: FlexBasis::default(),
-            align_self: None,
-            order: 0,
-        }
-    }
-}
-
 /// `outline-style`. Every style but `none` draws as `Solid` (spec 0006,
 /// Unsupported keywords).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -882,6 +1032,108 @@ impl Default for Outline {
             style: OutlineStyle::None,
             color: Color::BLACK,
             offset: Au::ZERO,
+        }
+    }
+}
+
+/// `transform` and the separate `scale` property (spec 0010, AC-19). Only
+/// `scale` is computed in this slice; every other function computes to
+/// `none` and draws as the identity.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransformFn {
+    /// `scale(s)`: a uniform 2D scale.
+    Scale(f32),
+}
+
+/// `transform` plus the separate `scale` property, and `transform-origin`.
+/// Computes to the identity when nothing is set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transform {
+    /// `transform`: the functions, in order. Empty means no transform.
+    pub transform: Rc<[TransformFn]>,
+    /// `scale`; `None` means `auto`, i.e. take `transform`.
+    pub scale: Option<f32>,
+    /// `transform-origin`, in border box coordinates.
+    pub origin: Point,
+    /// The display-list binding id when this transform is animated, `None`
+    /// when it is static (spec 0010, AC-28).
+    pub binding_id: Option<u64>,
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self {
+            transform: Rc::new([]),
+            scale: None,
+            origin: Point::default(),
+            binding_id: None,
+        }
+    }
+}
+
+/// How a transition or animation interpolates over time (spec 0010,
+/// AC-23, AC-24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimingFunction {
+    /// `linear`: constant speed.
+    Linear,
+    /// `ease`: slow start, fast middle, slow end.
+    Ease,
+    /// `ease-in`: slow start.
+    EaseIn,
+    /// `ease-out`: slow end.
+    EaseOut,
+    /// `ease-in-out`: slow start and end.
+    EaseInOut,
+    /// `steps(n)`: `n` discrete steps.
+    Steps(usize),
+}
+
+/// One transition spec: which property, how long, how it eases (spec
+/// 0010, AC-23).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionSpec {
+    /// The property being transitioned; `None` means `all`.
+    pub property: Option<Atom>,
+    /// Duration in seconds.
+    pub duration: f64,
+    /// Delay in seconds.
+    pub delay: f64,
+    /// The timing function.
+    pub timing: TimingFunction,
+}
+
+/// `transition-property` / `transition-duration` / `transition-delay` /
+/// `transition-timing-function` / `transition` shorthand (spec 0010,
+/// AC-23).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Motion {
+    /// The transitions to run.
+    pub transitions: Rc<[TransitionSpec]>,
+    /// The `@keyframes` animations to run.
+    pub animations: Rc<[AnimationSpec]>,
+}
+
+/// One `@keyframes` animation spec (spec 0010, AC-24).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationSpec {
+    /// The animation name.
+    pub name: Atom,
+    /// Duration in seconds.
+    pub duration: f64,
+    /// Delay in seconds.
+    pub delay: f64,
+    /// Iteration count; `None` means `infinite`.
+    pub iteration_count: Option<f64>,
+    /// The timing function.
+    pub timing: TimingFunction,
+}
+
+impl Default for Motion {
+    fn default() -> Self {
+        Self {
+            transitions: Rc::new([]),
+            animations: Rc::new([]),
         }
     }
 }
@@ -959,12 +1211,21 @@ pub struct ComputedStyle {
     pub background: Rc<Background>,
     /// Reset: opacity, z index.
     pub effects: Rc<Effects>,
-    /// Reset: flex container and flex item properties.
+    /// Reset: flex container and flex item properties not shared with grid.
     pub flex: Rc<Flex>,
+    /// Reset: box alignment shared by flex and grid (spec 0010, AC-4).
+    pub alignment: Rc<Alignment>,
     /// Reset: `table-layout`.
     pub table: Rc<Table>,
+    /// Reset: `grid-template-*`, `grid-auto-*` and item placement.
+    pub grid: Rc<Grid>,
     /// Reset: the outline.
     pub outline: Rc<Outline>,
+    /// Reset: `transform` and the separate `scale` property (spec 0010,
+    /// AC-19).
+    pub transform: Rc<Transform>,
+    /// Reset: `transition-*` and `animation-*` (spec 0010, AC-23, AC-24).
+    pub motion: Rc<Motion>,
     /// Inherited: custom properties, for `var()`.
     pub custom: Rc<CustomProperties>,
     /// Inherited: `border-collapse`, `border-spacing`, `caption-side`,
@@ -991,8 +1252,12 @@ thread_local! {
         background: Rc::default(),
         effects: Rc::default(),
         flex: Rc::default(),
+        alignment: Rc::default(),
         table: Rc::default(),
+        grid: Rc::default(),
         outline: Rc::default(),
+        transform: Rc::default(),
+        motion: Rc::default(),
         custom: Rc::default(),
         inherited_table: Rc::default(),
     });

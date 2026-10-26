@@ -11,6 +11,8 @@ mod budgets;
 mod build;
 mod machine;
 mod report;
+mod runner;
+mod serve;
 mod size;
 mod status;
 
@@ -25,6 +27,8 @@ use status::Status as CoreStatus;
 const BUDGETS_PATH: &str = "perf/budgets.toml";
 /// The baseline file, written only by `--accept`.
 const BASELINE_PATH: &str = "perf/baseline.json";
+/// The pinned pages, served locally for the runtime scenarios.
+const PAGES_PATH: &str = "perf/pages";
 
 fn main() {
     match run() {
@@ -68,10 +72,25 @@ fn run() -> anyhow::Result<i32> {
     // build is exit 2 (AC-1).
     build::build_native()?;
 
+    // The local page server for the scenarios that load a page (spec 0007,
+    // Pinned pages). Started once; the OS picks a free port.
+    let pages = serve::PageServer::start(Path::new(PAGES_PATH))?;
+    let article_url = format!("{}/article/", pages.base_url);
+    let script_url = format!("{}/script/", pages.base_url);
+
     // Measure every budget row that applies to this OS.
     let mut rows = Vec::new();
     let mut any_fail = false;
     let mut any_hard_fail = false;
+    let mut v8_signal = report::V8Signal {
+        script_share: 0.0,
+        triggered: false,
+    };
+    // The two memory rows share one set of runs (spec 0007, AC-5).
+    let mut memory_cache: Option<Result<Vec<runner::MemorySample>, runner::RunError>> = None;
+    // The after browse row has its own runs: the session is part of the
+    // measurement (spec 0032, AC-11).
+    let mut browse_cache: Option<Result<Vec<runner::MemorySample>, runner::RunError>> = None;
 
     for budget in &budgets.rows {
         if let Some(ref only) = args.only
@@ -84,8 +103,30 @@ fn run() -> anyhow::Result<i32> {
             let key = budgets.baseline_key(budget, os);
             let baseline_value = baseline.values.get(&key).copied();
 
-            let (samples, value, note) = measure_metric(budget, os)?;
-            let status = core_status(value, budget, baseline_value, machine_matches);
+            let measurement = measure_metric(
+                budget,
+                os,
+                &article_url,
+                &script_url,
+                &mut memory_cache,
+                &mut browse_cache,
+            )?;
+            // The V8 signal (AC-7): reported, never failing the gate.
+            if let Some(share) = measurement.v8_share {
+                v8_signal = report::V8Signal {
+                    script_share: share,
+                    triggered: share > 0.6,
+                };
+                if v8_signal.triggered {
+                    println!(
+                        "V8 signal: script share {:.0}% > 60%, see scope Deferred \"Optional V8 build\"",
+                        share * 100.0
+                    );
+                }
+            }
+            let status = measurement.forced.unwrap_or_else(|| {
+                core_status(measurement.value, budget, baseline_value, machine_matches)
+            });
             if status.is_fail() {
                 any_fail = true;
             }
@@ -96,12 +137,13 @@ fn run() -> anyhow::Result<i32> {
                 budget.metric,
                 budget.target,
                 os,
-                samples,
-                value.unwrap_or(0.0),
+                measurement.samples,
+                measurement.value.unwrap_or(0.0),
                 budget.limit,
+                budget.goal,
                 baseline_value,
                 status,
-                note,
+                measurement.note,
             ));
         }
     }
@@ -117,10 +159,7 @@ fn run() -> anyhow::Result<i32> {
         machine: machine_report,
         machine_matches,
         rows: rows.clone(),
-        v8_signal: report::V8Signal {
-            script_share: 0.0,
-            triggered: false,
-        },
+        v8_signal,
     };
     report::Report::write(&report, &report::report_path())?;
 
@@ -152,32 +191,244 @@ fn current_os() -> budgets::Os {
     }
 }
 
+/// What measuring one row produced.
+struct Measurement {
+    /// The measured samples for this run.
+    samples: Vec<f64>,
+    /// The aggregated value compared to the budget, or `None` when the row
+    /// could not be measured.
+    value: Option<f64>,
+    /// A one line note for the report.
+    note: Option<String>,
+    /// When measuring itself failed (a timed out run, a crash), the row
+    /// fails regardless of the budget (AC-13); otherwise the pure status
+    /// function decides.
+    forced: Option<CoreStatus>,
+    /// The script share, when this row measured the script workload (AC-7).
+    v8_share: Option<f64>,
+}
+
+impl Measurement {
+    /// A measurement whose run failed: the reason goes in the note, the
+    /// row fails (AC-13).
+    fn failed(err: runner::RunError) -> Self {
+        Self::failed_note(err.to_string())
+    }
+
+    /// A measurement whose run failed, with the reason already rendered.
+    fn failed_note(note: String) -> Self {
+        Self {
+            samples: vec![],
+            value: None,
+            note: Some(note),
+            forced: Some(CoreStatus::Fail),
+            v8_share: None,
+        }
+    }
+
+    /// An honest not-measured row with a reason.
+    fn not_measured(note: impl Into<String>) -> Self {
+        Self {
+            samples: vec![],
+            value: None,
+            note: Some(note.into()),
+            forced: None,
+            v8_share: None,
+        }
+    }
+
+    /// A measured row.
+    fn measured(samples: Vec<f64>, value: f64, note: Option<String>) -> Self {
+        Self {
+            samples,
+            value: Some(value),
+            note,
+            forced: None,
+            v8_share: None,
+        }
+    }
+}
+
 /// Measures one budget row on the current OS. The measured value is `None`
 /// when the row could not be measured: a missing cross tool (AC-3), or a
-/// runtime metric whose task has not landed yet (spec 0007, Build plan
-/// tasks 3 to 6). An unmeasured row is honestly `not_measured`, never a
-/// fake pass.
+/// footprint reader this OS lacks (spec 0007, Failure handling). An
+/// unmeasured row is honestly `not_measured`, never a fake pass.
 fn measure_metric(
     budget: &budgets::BudgetRow,
     os: budgets::Os,
-) -> anyhow::Result<(Vec<f64>, Option<f64>, Option<String>)> {
+    article_url: &str,
+    script_url: &str,
+    memory_cache: &mut Option<Result<Vec<runner::MemorySample>, runner::RunError>>,
+    browse_cache: &mut Option<Result<Vec<runner::MemorySample>, runner::RunError>>,
+) -> anyhow::Result<Measurement> {
+    let exe = || build::native_exe(budget.target);
+    let runs_dir = || report::perf_dir().join("runs");
     match budget.metric {
         budgets::Metric::BundleSize => match size::measure(budget.target, os) {
-            Some(value) => Ok((vec![value], Some(value), None)),
+            Some(value) => Ok(Measurement::measured(vec![value], value, None)),
             None if os == current_os() => Err(anyhow::anyhow!("could not measure bundle size")),
             // AC-3: the cross tool is missing or the cross build failed.
-            None => Ok((
-                vec![],
-                None,
-                Some(format!("not measured: {}", cross_hint(os))),
-            )),
+            None => Ok(Measurement::not_measured(format!(
+                "not measured: {}",
+                cross_hint(os)
+            ))),
         },
-        _ => Ok((
-            vec![],
-            None,
-            Some("not measured: runtime metrics land in build plan tasks 3 to 6".to_owned()),
-        )),
+        budgets::Metric::ColdStart => {
+            // A run that times out or crashes fails this row, it never
+            // aborts the gate (AC-13).
+            let first = match runner::cold_start(&exe(), &runs_dir()) {
+                Ok((samples, _)) => samples,
+                Err(err) => return Ok(Measurement::failed(err)),
+            };
+            let first_median = runner::median(&first);
+            if first_median > budget.limit {
+                // AC-9: a timing miss gets one rerun with the same repeat
+                // count; the metric fails only when the second result also
+                // misses, and the report shows both results.
+                let second = match runner::cold_start(&exe(), &runs_dir()) {
+                    Ok((samples, _)) => samples,
+                    Err(err) => return Ok(Measurement::failed(err)),
+                };
+                let second_median = runner::median(&second);
+                let mut samples = first;
+                samples.extend_from_slice(&second);
+                return Ok(Measurement {
+                    samples,
+                    value: Some(second_median),
+                    note: Some(format!(
+                        "near miss on the first run ({first_median:.1} ms); rerun once"
+                    )),
+                    forced: None,
+                    v8_share: None,
+                });
+            }
+            Ok(Measurement::measured(first, first_median, None))
+        }
+        budgets::Metric::MemoryTotal | budgets::Metric::MemoryContent => {
+            // The two memory rows share one set of 3 runs (spec 0007, AC-5).
+            if memory_cache.is_none() {
+                *memory_cache = Some(runner::memory(&exe(), article_url, &runs_dir()));
+            }
+            let Some(samples) = memory_cache.as_ref() else {
+                return Ok(Measurement::not_measured("not measured: no memory runs"));
+            };
+            Ok(memory_measurement(
+                samples,
+                budget.metric == budgets::Metric::MemoryContent,
+            ))
+        }
+        budgets::Metric::MemoryAfterBrowse => {
+            // A browsing session, then the same sample as the memory rows
+            // (spec 0032, AC-11): the row catches memory that outlives its
+            // page, which the single page rows cannot see.
+            if browse_cache.is_none() {
+                *browse_cache = Some(runner::browse(&exe(), article_url, &runs_dir()));
+            }
+            let Some(samples) = browse_cache.as_ref() else {
+                return Ok(Measurement::not_measured("not measured: no browse runs"));
+            };
+            Ok(memory_measurement(samples, false))
+        }
+        budgets::Metric::ScrollFrameCpuP95 => {
+            let first = match runner::scroll(&exe(), article_url, &runs_dir()) {
+                Ok(frames) => frames,
+                Err(err) => return Ok(Measurement::failed(err)),
+            };
+            let first_p95 = runner::percentile(&first, 95.0) / 1000.0;
+            if first_p95 > budget.limit {
+                // AC-9, as for every timing metric.
+                let second = match runner::scroll(&exe(), article_url, &runs_dir()) {
+                    Ok(frames) => frames,
+                    Err(err) => return Ok(Measurement::failed(err)),
+                };
+                let second_p95 = runner::percentile(&second, 95.0) / 1000.0;
+                let mut samples = first;
+                samples.extend_from_slice(&second);
+                let samples = samples.into_iter().map(|us| us / 1000.0).collect();
+                return Ok(Measurement {
+                    samples,
+                    value: Some(second_p95),
+                    note: Some(format!(
+                        "near miss on the first run ({first_p95:.2} ms); rerun once"
+                    )),
+                    forced: None,
+                    v8_share: None,
+                });
+            }
+            let samples = first.into_iter().map(|us| us / 1000.0).collect();
+            Ok(Measurement::measured(samples, first_p95, None))
+        }
+        budgets::Metric::ScriptLoad => {
+            let (first_loads, first_share) =
+                match runner::script_load(&exe(), script_url, &runs_dir()) {
+                    Ok(result) => result,
+                    Err(err) => return Ok(Measurement::failed(err)),
+                };
+            let first_median = runner::median(&first_loads);
+            if first_median > budget.limit {
+                // AC-9, as for every timing metric.
+                let (second_loads, second_share) =
+                    match runner::script_load(&exe(), script_url, &runs_dir()) {
+                        Ok(result) => result,
+                        Err(err) => return Ok(Measurement::failed(err)),
+                    };
+                let second_median = runner::median(&second_loads);
+                let mut samples = first_loads;
+                samples.extend_from_slice(&second_loads);
+                return Ok(Measurement {
+                    samples,
+                    value: Some(second_median),
+                    note: Some(format!(
+                        "near miss on the first run ({first_median:.1} ms); rerun once"
+                    )),
+                    forced: None,
+                    v8_share: Some(second_share),
+                });
+            }
+            Ok(Measurement {
+                samples: first_loads,
+                value: Some(first_median),
+                note: None,
+                forced: None,
+                v8_share: Some(first_share),
+            })
+        }
     }
+}
+
+/// The measured values of a memory row from its 3 runs: browser plus
+/// content for `memory_total` and `memory_after_browse`, content alone for
+/// `memory_content`, in MB (10^6 bytes). A run failure fails the row (AC-13);
+/// a missing footprint reader leaves it unmeasured, never a fake pass (spec
+/// 0007, Failure handling).
+fn memory_measurement(
+    samples: &Result<Vec<runner::MemorySample>, runner::RunError>,
+    content_only: bool,
+) -> Measurement {
+    let samples = match samples {
+        Ok(samples) => samples,
+        Err(err) => return Measurement::failed_note(err.to_string()),
+    };
+    // A footprint reader this OS lacks leaves the row unmeasured.
+    if samples
+        .iter()
+        .any(|sample| sample.browser_bytes.is_none() || sample.content_bytes.is_none())
+    {
+        return Measurement::not_measured("not measured: no footprint reader on this OS");
+    }
+    let values: Vec<f64> = samples
+        .iter()
+        .map(|sample| {
+            let bytes = if content_only {
+                sample.content_bytes.unwrap_or(0)
+            } else {
+                sample.browser_bytes.unwrap_or(0) + sample.content_bytes.unwrap_or(0)
+            };
+            bytes as f64 / 1_000_000.0
+        })
+        .collect();
+    let value = runner::median(&values);
+    Measurement::measured(values, value, None)
 }
 
 /// The one line install hint for a cross OS whose build did not happen
@@ -304,27 +555,5 @@ mod tests {
         assert_eq!(civil_from_days(59), (1970, 3, 1)); // 1970 is not a leap year
         assert_eq!(civil_from_days(365), (1971, 1, 1));
         assert_eq!(civil_from_days(20750), (2026, 10, 24));
-    }
-
-    #[test]
-    fn runtime_metrics_are_not_measured_not_fake_pass() {
-        let budget = crate::budgets::BudgetRow {
-            metric: crate::budgets::Metric::ColdStart,
-            target: crate::budgets::Target::Browser,
-            os: vec![crate::budgets::Os::Macos],
-            limit: 200.0,
-            unit: crate::budgets::Unit::Ms,
-            alarm_pct: None,
-            reason: "a reason".to_owned(),
-        };
-        let (samples, value, note) = measure_metric(&budget, crate::budgets::Os::Macos).unwrap();
-        assert!(samples.is_empty());
-        assert!(value.is_none());
-        assert!(note.is_some());
-        // The status function turns a missing value into not_measured.
-        assert_eq!(
-            status::status(value, &budget, None, true),
-            status::Status::NotMeasured
-        );
     }
 }

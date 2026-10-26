@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::ops::{Deref, Range};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use base::Au;
@@ -29,7 +30,7 @@ use base::atoms::Atom;
 pub use display_list::FontKey;
 use fontique::{
     Attributes, Blob, CharmapIndex, Collection, CollectionOptions, FontStyle as QueryStyle,
-    FontWeight, FontWidth, GenericFamily, QueryFamily, QueryFont, SourceCache,
+    FontWeight, FontWidth, GenericFamily, QueryFamily, QueryFont, SourceCache, SourceKind,
 };
 use harfrust::{Direction, ShapeOptions, ShaperData, ShaperInstance, UnicodeBuffer};
 use skrifa::MetadataProvider;
@@ -267,12 +268,26 @@ impl Deref for FontData {
     }
 }
 
+/// Where a face's file came from, so `AddFont` can name it instead of
+/// sending its bytes (spec 0032, AC-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FaceSource {
+    /// An installed font file on the browser's disk, which the browser can
+    /// map or read once instead of receiving a copy.
+    System(PathBuf),
+    /// A web face's bytes, by the id of the blob the document holds. Every
+    /// face of that one file sends the same id (spec 0032, AC-4).
+    Web(u64),
+}
+
 /// A face that got its key since the last [`FontContext::take_new_fonts`]:
 /// send it with `AddFont` before the next list.
 #[derive(Debug, Clone)]
 pub struct NewFont {
     /// The key lists name it by.
     pub key: FontKey,
+    /// Where the face's file came from.
+    pub source: FaceSource,
     /// The font file.
     pub data: FontData,
     /// The face's index in a collection file, 0 otherwise.
@@ -286,6 +301,7 @@ pub struct NewFont {
 /// units, and the shaper's cached tables.
 struct FontEntry {
     key: FontKey,
+    source: FaceSource,
     data: Blob<u8>,
     index: u32,
     /// `fontique`'s cached cmap location; `None` for a web face, which looks
@@ -580,6 +596,7 @@ impl FontContext {
             .filter_map(|i| self.entry(i))
             .map(|entry| NewFont {
                 key: entry.key,
+                source: entry.source.clone(),
                 data: FontData(entry.data.clone()),
                 index: entry.index,
                 variations: entry
@@ -747,11 +764,12 @@ impl FontContext {
     /// The entry for a loaded web face at `variations`, made and keyed on
     /// first use.
     fn web_entry(&mut self, data: FontData, variations: Vec<(Tag, f32)>) -> Option<usize> {
-        let face = (data.0.id(), 0, variation_bits(&variations));
+        let blob = data.0.id();
+        let face = (blob, 0, variation_bits(&variations));
         if let Some(&index) = self.by_face.get(&face) {
             return Some(index);
         }
-        let mut entry = self.make_entry(data.0, 0, None, variations)?;
+        let mut entry = self.make_entry(data.0, 0, None, variations, FaceSource::Web(blob))?;
         entry.web = true;
         debug!(key = entry.key.0, "web font loaded");
         Some(self.push_entry(face, entry))
@@ -765,7 +783,14 @@ impl FontContext {
         if let Some(&index) = self.by_face.get(&face) {
             return Some(index);
         }
-        let entry = self.make_entry(font.blob, font.index, Some(font.charmap_index), variations)?;
+        let source = self.face_source(&font);
+        let entry = self.make_entry(
+            font.blob,
+            font.index,
+            Some(font.charmap_index),
+            variations,
+            source,
+        )?;
         debug!(
             key = entry.key.0,
             index = entry.index,
@@ -773,6 +798,32 @@ impl FontContext {
             "font loaded"
         );
         Some(self.push_entry(face, entry))
+    }
+
+    /// The installed file a system face came from, when fontique knows a
+    /// path for it. A face whose bytes live in memory has no path, so it is
+    /// sent by bytes like a web face (spec 0032, AC-1).
+    fn face_source(&mut self, font: &QueryFont) -> FaceSource {
+        let blob = font.blob.id();
+        let Some(system) = self.system.as_mut() else {
+            return FaceSource::Web(blob);
+        };
+        let Some(family) = system.collection.family(font.family.0) else {
+            return FaceSource::Web(blob);
+        };
+        match family
+            .fonts()
+            .get(font.family.1)
+            .map(|info| info.source().kind())
+        {
+            Some(SourceKind::Path(path)) => match path.to_str() {
+                Some(path) => FaceSource::System(PathBuf::from(path)),
+                // A non UTF 8 path cannot cross the IPC boundary as a
+                // string, so its bytes go instead (spec 0032, FontSource).
+                None => FaceSource::Web(blob),
+            },
+            _ => FaceSource::Web(blob),
+        }
     }
 
     /// Stores a new entry and queues it for `AddFont`.
@@ -792,6 +843,7 @@ impl FontContext {
         index: u32,
         charmap: Option<CharmapIndex>,
         variations: Vec<(Tag, f32)>,
+        source: FaceSource,
     ) -> Option<FontEntry> {
         let font = skrifa::FontRef::from_index(data.as_ref(), index).ok()?;
         let location = font.axes().location(variations.iter().copied());
@@ -802,6 +854,7 @@ impl FontContext {
         self.next_key = self.next_key.saturating_add(1);
         Some(FontEntry {
             key,
+            source,
             index,
             charmap,
             web: false,

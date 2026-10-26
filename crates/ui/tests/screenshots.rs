@@ -58,10 +58,21 @@ fn apply(renderer: &mut Renderer, messages: Vec<ToBrowser>) {
             ToBrowser::AddFont {
                 page,
                 key,
-                data,
+                source,
                 index,
                 variations,
-            } => renderer.add_font(page, key, &data, index, &variations),
+            } => {
+                let bytes = match source {
+                    ipc::FontSource::System { path } => {
+                        std::fs::read(path).ok().map(render::FontBytes::heap)
+                    }
+                    ipc::FontSource::Bytes(data) => Some(render::FontBytes::shared(data)),
+                    ipc::FontSource::SameBytesAs(previous) => renderer.font_bytes(page, previous),
+                };
+                if let Some(bytes) = bytes {
+                    renderer.add_font(page, key, bytes, index, &variations);
+                }
+            }
             ToBrowser::AddImage {
                 page,
                 key,

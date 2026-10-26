@@ -201,24 +201,30 @@ pub fn discover(root: &Path, subset: &Subset) -> Result<Vec<Test>> {
         .collect();
     let mut tests = Vec::new();
     for (path, meta) in files.iter().zip(&metas) {
-        let Some(area) = subset.area_of(path) else {
+        let areas = subset.areas_of(path);
+        if areas.is_empty() {
             continue;
-        };
+        }
         let Some(kind) = classify(root, path, meta, &referenced) else {
             continue;
         };
         let name = path.rsplit('/').next().unwrap_or(path);
-        tests.push(Test {
-            path: path.clone(),
-            area: area.name.clone(),
-            kind,
-            timeout: if meta.long_timeout {
-                Timeout::Long
-            } else {
-                Timeout::Normal
-            },
-            xhtml: name.ends_with(".xht") || name.ends_with(".xhtml"),
-        });
+        // A path can belong to multiple areas when their paths overlap
+        // (e.g. `css/CSS2/normal-flow` is covered by both `normal-flow`
+        // and `floats`), so one Test per area.
+        for area in areas {
+            tests.push(Test {
+                path: path.clone(),
+                area: area.name.clone(),
+                kind,
+                timeout: if meta.long_timeout {
+                    Timeout::Long
+                } else {
+                    Timeout::Normal
+                },
+                xhtml: name.ends_with(".xht") || name.ends_with(".xhtml"),
+            });
+        }
     }
     Ok(tests)
 }

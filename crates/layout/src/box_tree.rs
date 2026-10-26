@@ -43,6 +43,11 @@ pub enum BoxKind {
     /// in a row or a column (spec 0006, AC-3). It never holds inline
     /// content; a run of text inside it becomes an anonymous flex item.
     FlexContainer,
+    /// A block level grid container: its children are grid items placed in
+    /// columns and rows from `grid-template-*` (spec 0010, AC-1). It never
+    /// holds inline content; a run of text inside it becomes an anonymous
+    /// grid item.
+    GridContainer,
     /// An inline element: it has no layout of its own, but its start and
     /// end items in the inline content give it edges on each line it
     /// spans.
@@ -188,6 +193,12 @@ pub struct LayoutBox {
     /// A list item's marker text (`•`, `3.`), from its `list-style-type`
     /// and its place among its siblings.
     pub marker: Option<String>,
+    /// A table cell's `colspan`, clamped to 1..=1000 (spec 0009, child 0004,
+    /// AC-15). Only meaningful on `BoxKind::TableCell` and `TableColumn`.
+    pub colspan: u32,
+    /// A table cell's `rowspan`, clamped to 0..=65534 (spec 0009, child
+    /// 0004, AC-15). Only meaningful on `BoxKind::TableCell`.
+    pub rowspan: u32,
     /// A replaced box's natural size.
     pub natural: NaturalSize,
     /// The picture a replaced box draws, by its display list image key,
@@ -517,6 +528,30 @@ impl BoxTree {
                     }
                 };
                 let mut layout_box = LayoutBox::new(child_node, kind, style, Some(container));
+                // A table cell's `colspan`/`rowspan` and a column's
+                // `colspan`/`span` attributes (spec 0009, child 0004, AC-15).
+                if let Some(node) = child_node {
+                    match kind {
+                        BoxKind::TableCell => {
+                            layout_box.colspan = attribute(doc, node, LocalName::from("colspan"))
+                                .and_then(|v| v.trim().parse::<u32>().ok())
+                                .unwrap_or(1)
+                                .clamp(1, 1000);
+                            layout_box.rowspan = attribute(doc, node, LocalName::from("rowspan"))
+                                .and_then(|v| v.trim().parse::<u32>().ok())
+                                .unwrap_or(1)
+                                .clamp(0, 65534);
+                        }
+                        BoxKind::TableColumn | BoxKind::TableColumnGroup => {
+                            layout_box.colspan = attribute(doc, node, local_name!("span"))
+                                .or_else(|| attribute(doc, node, LocalName::from("colspan")))
+                                .and_then(|v| v.trim().parse::<u32>().ok())
+                                .unwrap_or(1)
+                                .clamp(1, 1000);
+                        }
+                        _ => {}
+                    }
+                }
                 // A floated block level box is blockified already; a float
                 // among inline content leaves a marker instead (below).
                 if layout_box.float.is_none()
@@ -708,7 +743,9 @@ impl BoxTree {
                 push(&mut run, &open, &mut reopen, item);
                 continue;
             }
-            if !block_level && (replaced || display == Display::InlineBlock) {
+            if !block_level
+                && (replaced || matches!(display, Display::InlineBlock | Display::InlineTable))
+            {
                 // A floated inline level box becomes a BFC root box and leaves
                 // a marker in the inline content where it appeared
                 // (spec 0009, child 0001).
@@ -720,6 +757,10 @@ impl BoxTree {
                 let floated = float_side.is_some();
                 let kind = if replaced {
                     BoxKind::Replaced
+                } else if display == Display::InlineTable {
+                    // An `inline-table` sits on its line as one piece
+                    // (spec 0009, child 0004, AC-14).
+                    BoxKind::Table
                 } else {
                     BoxKind::BlockContainer
                 };
@@ -858,6 +899,8 @@ impl LayoutBox {
             inline: Vec::new(),
             inline_level: false,
             marker: None,
+            colspan: 1,
+            rowspan: 1,
             natural: NaturalSize::default(),
             image: None,
             text_field: false,
@@ -991,6 +1034,7 @@ fn clear_children(doc: &mut Document, node: NodeId) {
 fn container_kind(style: &ComputedStyle) -> BoxKind {
     match style.display_box.display {
         Display::Flex => BoxKind::FlexContainer,
+        Display::Grid => BoxKind::GridContainer,
         Display::Table | Display::InlineTable => BoxKind::Table,
         Display::TableRowGroup => BoxKind::TableRowGroup,
         Display::TableHeaderGroup => BoxKind::TableHeaderGroup,

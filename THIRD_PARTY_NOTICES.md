@@ -61,3 +61,58 @@ Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 Licensed under the Creative Commons Attribution 4.0 International License
 (https://creativecommons.org/licenses/by/4.0/).
 ```
+
+## Wikipedia article snapshot (perf pages)
+
+`perf/pages/article/` is a local snapshot of the Wikipedia article
+[Mona Lisa](https://en.wikipedia.org/wiki/Mona_Lisa), fetched on 2026-10-25
+for the performance budget gate (spec 0007). The article text and the
+snapshot's structure come from Wikipedia; scripts and external references
+were removed and images are stored beside the page.
+
+```text
+Text: Wikipedia contributors, "Mona Lisa," Wikipedia, The Free Encyclopedia,
+https://en.wikipedia.org/wiki/Mona_Lisa — licensed under the Creative
+Commons Attribution-ShareAlike 4.0 License (CC BY-SA 4.0),
+https://creativecommons.org/licenses/by-sa/4.0/.
+Images: each file keeps its own Wikimedia Commons licensing; they are
+snapshots used for local rendering tests only.
+```
+
+## Octane benchmark kernels (perf pages)
+
+`perf/pages/script/richards.js` and `perf/pages/script/deltablue.js` are
+unmodified kernel files from the Octane JavaScript benchmark
+(https://github.com/chromium/octane), fetched on 2026-10-25 for the script
+load scenario (spec 0007).
+
+```text
+Copyright (c) 2013, the V8 project authors (http://code.google.com/p/v8/)
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of Google, Inc. nor the names of its contributors may be
+  used to endorse or promote products derived from this software without
+  specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+```

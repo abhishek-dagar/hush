@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>classic_box_layout &middot; docs.rs look alike</title>
+<style>
+  html { font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { margin: 0; color: #24292e; background: #fff; }
+  #crate-title { display: flex; align-items: center; gap: 12px; margin: 16px 0;
+                 font-size: 24px; }
+  .sidebar { float: left; width: 260px; margin: 0 24px 24px 0;
+             background: #f6f8fa; border: 1px solid #d0d0d0; padding: 16px;
+             font-size: 13px; }
+  .sidebar h3 { font-size: 13px; margin: 0 0 10px 0; text-transform: uppercase;
+                letter-spacing: 0.04em; }
+  .sidebar ul { list-style: none; margin: 0; padding: 0; }
+  .sidebar li { margin: 4px 0; font-size: 12px; }
+  .item-decl { margin: 24px 0; padding: 12px; background: #f6f8fa;
+               border: 1px solid #d0d0d0; border-radius: 4px; }
+  .item-decl code { font-size: 13px; }
+  #search { margin: 16px 0; padding: 8px; width: 100%; font-size: 14px; }
+  .search-box { border: 1px solid #d0d0d0; border-radius: 4px; }
+  p { margin: 0 0 14px 0; line-height: 1.6; }
+  footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #d0d0d0;
+           font-size: 12px; color: #666; }
+</style>
+<div id="crate-title">
+  <h1>classic_box_layout</h1>
+  <span>&middot; v0.1.0</span>
+</div>
+<div class="sidebar">
+  <h3>Crates</h3>
+  <ul>
+    <li>classic_box_layout</li>
+    <li>css_engine</li>
+    <li>layout</li>
+    <li>paint</li>
+  </ul>
+</div>
+<div style="margin-left: 300px;">
+  <div class="item-decl">
+    <h2>Struct <code>LayoutBox</code></h2>
+    <p>A box in the layout tree, representing a CSS box with its computed size
+       and position.</p>
+    <code>pub struct LayoutBox { ... }</code>
+  </div>
+  <div class="item-decl">
+    <h2>Struct <code>ConstraintSpace</code></h2>
+    <p>The constraints passed to a box during layout, including available size,
+       exclusion space, and clearance.</p>
+    <code>pub struct ConstraintSpace { ... }</code>
+  </div>
+  <div class="item-decl">
+    <h2>Struct <code>Fragment</code></h2>
+    <p>The result of laying out a box: its size, position, and child fragments.</p>
+    <code>pub struct Fragment { ... }</code>
+  </div>
+  <input id="search" class="search-box" placeholder="Search items..." />
+</div>
+<footer>
+  &mdash; docs.rs look alike &middot; conformance proof page &mdash;
+</footer>

@@ -1,0 +1,59 @@
+{
+  "chrome_version": "155.0.8059.85",
+  "viewport": [
+    1280,
+    800
+  ],
+  "landmarks": [
+    {
+      "selector": "#main-content",
+      "index": 0,
+      "rect": [
+        216.0,
+        50.0,
+        848.0,
+        484.125
+      ]
+    },
+    {
+      "selector": ".sidebar",
+      "index": 1,
+      "rect": [
+        734.0,
+        126.0,
+        306.0,
+        132.5
+      ]
+    },
+    {
+      "selector": ".code-example",
+      "index": 2,
+      "rect": [
+        240.0,
+        343.09375,
+        800.0,
+        45.5
+      ]
+    },
+    {
+      "selector": "nav",
+      "index": 3,
+      "rect": [
+        0.0,
+        0.0,
+        1280.0,
+        34.0
+      ]
+    },
+    {
+      "selector": "footer",
+      "index": 4,
+      "rect": [
+        0.0,
+        566.125,
+        1280.0,
+        31.0
+      ]
+    }
+  ]
+}

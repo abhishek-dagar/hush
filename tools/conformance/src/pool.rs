@@ -67,6 +67,11 @@ fn spawn_child(
     if no_render {
         cmd.arg("--no-render");
     }
+    // The worker needs CARGO_MANIFEST_DIR to locate subset.toml and
+    // expectations/ (spec 0005, Where things live).
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        cmd.env("CARGO_MANIFEST_DIR", manifest_dir);
+    }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;

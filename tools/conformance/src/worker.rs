@@ -480,12 +480,21 @@ fn apply_resources(renderer: &mut Renderer, page: PageId, msgs: &[ToBrowser]) {
         match msg {
             ToBrowser::AddFont {
                 key,
-                data,
+                source,
                 index,
                 variations,
                 ..
             } => {
-                renderer.add_font(page, *key, data, *index, variations);
+                let bytes = match source {
+                    ipc::FontSource::System { path } => {
+                        std::fs::read(path).ok().map(render::FontBytes::heap)
+                    }
+                    ipc::FontSource::Bytes(data) => Some(render::FontBytes::shared(data.clone())),
+                    ipc::FontSource::SameBytesAs(previous) => renderer.font_bytes(page, *previous),
+                };
+                if let Some(bytes) = bytes {
+                    renderer.add_font(page, *key, bytes, *index, variations);
+                }
             }
             ToBrowser::AddImage {
                 key, size, pixels, ..

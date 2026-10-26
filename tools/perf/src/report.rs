@@ -20,6 +20,8 @@ pub struct ReportRow {
     pub value: f64,
     /// The committed limit.
     pub budget: f64,
+    /// The committed goal, if any (AC-16).
+    pub goal: Option<f64>,
     /// The last accepted baseline, if any.
     pub baseline: Option<f64>,
     pub status: String,
@@ -67,13 +69,17 @@ impl Report {
 /// Prints the one-table-row-per-metric report (AC-1).
 pub fn print_table(rows: &[ReportRow]) {
     println!(
-        "{:<32} {:<10} {:<8} {:>12} {:>10} {:>10} {:>10} {:<10}",
-        "metric", "target", "os", "value", "budget", "baseline", "status", "note"
+        "{:<32} {:<10} {:<8} {:>12} {:>10} {:>10} {:>10} {:<10} {:<10}",
+        "metric", "target", "os", "value", "budget", "goal", "baseline", "status", "note"
     );
     for row in rows {
         let baseline = row
             .baseline
             .map(|b| format!("{b:.1}"))
+            .unwrap_or_else(|| "-".to_owned());
+        let goal = row
+            .goal
+            .map(|g| format!("{g:.1}"))
             .unwrap_or_else(|| "-".to_owned());
         let value = if row.samples.len() > 1 {
             format!("{:.1} ({} samples)", row.value, row.samples.len())
@@ -81,12 +87,13 @@ pub fn print_table(rows: &[ReportRow]) {
             format!("{:.1}", row.value)
         };
         println!(
-            "{:<32} {:<10} {:<8} {:>12} {:>10} {:>10} {:>10} {:<10}",
+            "{:<32} {:<10} {:<8} {:>12} {:>10} {:>10} {:>10} {:<10} {:<10}",
             format!("{} ({})", row.metric, row.unit_label()),
             row.target,
             row.os,
             value,
             format!("{:.1}", row.budget),
+            goal,
             baseline,
             row.status,
             row.note.as_deref().unwrap_or("-")
@@ -98,7 +105,7 @@ impl ReportRow {
     /// The unit label for display.
     pub fn unit_label(&self) -> &'static str {
         match self.metric.as_str() {
-            "bundle_size" | "memory_total" | "memory_content" => "MB",
+            "bundle_size" | "memory_total" | "memory_content" | "memory_after_browse" => "MB",
             _ => "ms",
         }
     }
@@ -116,6 +123,7 @@ pub fn build_row(
     samples: Vec<f64>,
     value: f64,
     limit: f64,
+    goal: Option<f64>,
     baseline: Option<f64>,
     status: Status,
     note: Option<String>,
@@ -127,6 +135,7 @@ pub fn build_row(
         samples,
         value,
         budget: limit,
+        goal,
         baseline,
         status: status.as_str().to_owned(),
         note,
@@ -165,6 +174,7 @@ impl Default for ReportRow {
             samples: vec![],
             value: 0.0,
             budget: 0.0,
+            goal: None,
             baseline: None,
             status: String::new(),
             note: None,
@@ -185,6 +195,7 @@ mod tests {
             samples: vec![],
             value: 0.0,
             budget: 0.0,
+            goal: None,
             baseline: None,
             status: "pass".to_owned(),
             note: None,
@@ -195,6 +206,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(row.unit_label(), "ms");
+        let row = ReportRow {
+            metric: "memory_after_browse".to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(row.unit_label(), "MB");
     }
 
     #[test]

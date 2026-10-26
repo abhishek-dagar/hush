@@ -192,6 +192,21 @@ impl ScrollState {
             generation: applied.generation,
         })
     }
+
+    /// Records a user-set offset for `scroll_id` (used by thumb dragging), so
+    /// the render side and the scroll state stay in sync and a newly received
+    /// list does not revert a drag the user is still on
+    /// (spec 0009, child 0002, AC-13).
+    pub fn set_offset(&mut self, scroll_id: ScrollId, offset: ScrollOffset) {
+        self.frames.insert(
+            scroll_id,
+            Applied {
+                x: offset.x,
+                y: offset.y,
+                generation: offset.generation,
+            },
+        );
+    }
 }
 
 /// Keeps an offset between zero and how far the content overhangs the frame.
@@ -335,6 +350,36 @@ mod tests {
         assert_eq!(state.scroll_by(&mut shown, INSIDE, 0.0, 1.0), None);
         let outside = PointF { x: 150.0, y: 50.0 };
         assert_eq!(state.scroll_by(&mut shown, outside, 0.0, -1.0), None);
+    }
+
+    #[test]
+    fn a_user_drag_offset_survives_a_stale_list() {
+        // A drag sets the offset directly (thumb drag bypasses the page's
+        // script-scroll generation). Recording it in the scroll state keeps
+        // a later stale list from reverting it.
+        let mut state = ScrollState::default();
+        let mut shown = list(1, 0.0, 0);
+        state.apply(&mut shown);
+        assert_eq!(shown_y(&shown), 0.0);
+
+        // The user dragged to 300 px; record it like drag_thumb does.
+        state.set_offset(
+            ID,
+            ScrollOffset {
+                x: 0.0,
+                y: 300.0,
+                generation: 0,
+            },
+        );
+
+        // A stale list repaints at the old offset with the same generation.
+        let mut stale = list(2, 0.0, 0);
+        state.apply(&mut stale);
+        assert_eq!(
+            shown_y(&stale),
+            300.0,
+            "the drag offset is kept, not reverted"
+        );
     }
 
     #[test]

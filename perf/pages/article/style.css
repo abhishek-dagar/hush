@@ -1,0 +1,13 @@
+/* Minimal styling for the pinned article snapshot (spec 0007).
+   The page keeps Wikipedia's inline styles where the engine supports
+   them; this adds what a bare snapshot needs to read like an article. */
+body {
+    margin: 0 16px;
+    font: 16px/1.6 Georgia, "Times New Roman", serif;
+}
+img {
+    max-width: 100%;
+}
+figure {
+    margin: 1em 0;
+}

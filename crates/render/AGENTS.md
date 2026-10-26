@@ -19,6 +19,7 @@ The wgpu renderer. It owns the GPU device and the window's drawing surface, and 
 ## Gotchas
 
 - A zero sized window (minimized) must not reconfigure the surface; `resize` ignores it.
+- Perf frame marks read `last_present_at`, which moves only when a frame presents (spec 0007). A skipped frame presents nothing, so timing one would fake a cold start or scroll sample.
 - `wgpu` is one of the largest parts of the binary. Check bundle size before adding wgpu features.
 
 ## Agent skills

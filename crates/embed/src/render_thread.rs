@@ -10,15 +10,15 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use display_list::{
-    ColorF, DisplayList, PageId, PointF, RectF, ScrollId, ScrollOffset, SizeF, SpatialId,
+    ColorF, DisplayList, FontKey, PageId, PointF, RectF, ScrollId, ScrollOffset, SizeF, SpatialId,
     SpatialKind,
 };
-use ipc::{ContentSender, NavigationId, ToBrowser, ToContent};
+use ipc::{ContentSender, FontSource, NavigationId, ToBrowser, ToContent};
 use navigation::EntryId;
 use render::{Chrome, PageSlot, RenderError, Renderer, ScrollIndicator};
 use scrolling::{Axis, Bars, Gesture, GesturePhase, SmoothScroll};
@@ -79,6 +79,12 @@ pub(crate) enum RenderMsg {
     ContentGone { process: u32 },
     /// A drawing message from content process `process`, from its router.
     Content { process: u32, message: ToBrowser },
+    /// Start the perf scroll driver: 500 ms after `load` has passed
+    /// (spec 0007, AC-6). Perf mode only.
+    PerfScrollStart,
+    /// Send the renderer's memory counters (spec 0032, AC-10). Only asked
+    /// for when `--memory-report` is on.
+    ReportMemory,
     /// Free the GPU resources and end the thread.
     Shutdown,
 }
@@ -120,6 +126,12 @@ pub(crate) enum RenderEvent {
         /// Why.
         error: RenderError,
     },
+    /// A perf scenario's render side marks are complete (spec 0007): the
+    /// main thread merges them into the run report and ends the browser.
+    PerfDone(crate::perf::RenderMarks),
+    /// The renderer's memory counters, in answer to a report request
+    /// (spec 0032, AC-10).
+    Memory(render::MemoryCounters),
 }
 
 /// Starts the render thread for `page` in `window` (a window with only a
@@ -131,6 +143,8 @@ pub(crate) fn spawn(
     page: PageId,
     receiver: Receiver<RenderMsg>,
     proxy: EventLoopProxy<UserEvent>,
+    perf: Option<crate::perf::Scenario>,
+    render_tx: Sender<RenderMsg>,
 ) -> Result<JoinHandle<()>, EmbedError> {
     let size = window.inner_size();
     let state = RenderLoop {
@@ -152,6 +166,13 @@ pub(crate) fn spawn(
         bars: Bars::default(),
         scrolled_at: None,
         dirty: true,
+        perf,
+        perf_marked: false,
+        perf_scroll: None,
+        perf_scroll_taken: None,
+        perf_scroll_frames: Vec::new(),
+        render_tx,
+        fonts: crate::fonts::FontStore::new(),
     };
     thread::Builder::new()
         .name("render".into())
@@ -196,6 +217,22 @@ struct RenderLoop {
     scrolled_at: Option<Instant>,
     /// Something on screen changed since the last present.
     dirty: bool,
+    /// The perf scenario this run drives, when `--perf` started one
+    /// (spec 0007).
+    perf: Option<crate::perf::Scenario>,
+    /// Whether the perf scenario's mark was recorded yet, so it fires once.
+    perf_marked: bool,
+    /// The scroll driver, armed by `PerfScrollStart` (spec 0007, AC-6).
+    perf_scroll: Option<crate::perf::ScrollDriver>,
+    /// When the driver's wheel step was taken, for its frame's CPU time.
+    perf_scroll_taken: Option<Instant>,
+    /// Each scroll frame's CPU time, µs, in feed order (AC-6).
+    perf_scroll_frames: Vec<u32>,
+    /// This thread's own channel end, so the scroll driver's steps take
+    /// the same path a real wheel message does.
+    render_tx: Sender<RenderMsg>,
+    /// System font files, one set of bytes per canonical path (spec 0032).
+    fonts: crate::fonts::FontStore,
 }
 
 impl RenderLoop {
@@ -229,8 +266,12 @@ impl RenderLoop {
                     Err(RecvTimeoutError::Disconnected) => return,
                 },
             };
-            let mut go_on = first.is_none_or(|message| self.handle(message));
+            let mut go_on = first.is_none_or(|message| {
+                self.perf_note_take(&message);
+                self.handle(message)
+            });
             while go_on && let Ok(message) = receiver.try_recv() {
+                self.perf_note_take(&message);
                 go_on = self.handle(message);
             }
             if !go_on {
@@ -259,6 +300,20 @@ impl RenderLoop {
             }
             RenderMsg::Chrome(draw) => self.chrome_draw(*draw),
             RenderMsg::Redraw => self.dirty = true,
+            RenderMsg::PerfScrollStart => {
+                // Arm the driver and send its first step; each step comes
+                // back through the channel like a real wheel message
+                // (spec 0007, AC-6).
+                if self.perf == Some(crate::perf::Scenario::Scroll) && self.perf_scroll.is_none() {
+                    self.perf_scroll = Some(crate::perf::ScrollDriver::new());
+                    self.perf_feed_step();
+                }
+            }
+            RenderMsg::ReportMemory => {
+                let _ = self.proxy.send_event(UserEvent::Render(RenderEvent::Memory(
+                    self.renderer.memory_counters(),
+                )));
+            }
             RenderMsg::Scroll { at, dx, dy, phase } => {
                 // Wheel and touchpad gestures: latch to one frame so the
                 // rest of the gesture stays on it, then chain outward when
@@ -403,7 +458,12 @@ impl RenderLoop {
                 self.drag = None;
                 self.dirty = true;
             }
-            RenderMsg::NavigationStarted { navigation } => self.page.navigate(navigation),
+            RenderMsg::NavigationStarted { navigation } => {
+                // The old page's glyphs and layers must not outlive it
+                // (spec 0032, AC-7). Before the new page's first list.
+                self.renderer.trim_after_navigation();
+                self.page.navigate(navigation);
+            }
             RenderMsg::SaveScroll { entry } => {
                 if let Some((_, _, offset)) = self.page.viewport() {
                     let offset = (offset.x, offset.y);
@@ -445,10 +505,12 @@ impl RenderLoop {
                 ToBrowser::AddFont {
                     page,
                     key,
-                    data,
+                    source,
                     index,
                     variations,
-                } => self.renderer.add_font(page, key, &data, index, &variations),
+                } => {
+                    self.add_font(page, key, source, index, &variations);
+                }
                 ToBrowser::AddImage {
                     page,
                     key,
@@ -463,6 +525,41 @@ impl RenderLoop {
         }
         self.chrome = Some(draw);
         self.dirty = true;
+    }
+
+    /// Registers one font from `AddFont`, resolving its source (spec 0032,
+    /// AC-1 to AC-5). A refused font is logged and its key stays unknown to
+    /// the renderer, so its glyphs are skipped.
+    fn add_font(
+        &mut self,
+        page: PageId,
+        key: FontKey,
+        source: FontSource,
+        index: u32,
+        variations: &[(u32, f32)],
+    ) -> bool {
+        let bytes = match source {
+            FontSource::System { path } => self.fonts.system(page, key, &path, index),
+            FontSource::Bytes(data) => Some(render::FontBytes::shared(data)),
+            FontSource::SameBytesAs(previous) => self.renderer.font_bytes(page, previous),
+        };
+        let Some(bytes) = bytes else {
+            warn!(
+                page = page.0,
+                key = key.0,
+                "font refused; its glyphs are skipped"
+            );
+            return false;
+        };
+        if !self.renderer.add_font(page, key, bytes, index, variations) {
+            warn!(
+                page = page.0,
+                key = key.0,
+                "font refused; its glyphs are skipped"
+            );
+            return false;
+        }
+        true
     }
 
     /// A drawing message from the live content process. Resources for an
@@ -496,6 +593,9 @@ impl RenderLoop {
                 for key in self.page.take_fonts_to_free() {
                     self.renderer.delete_font(id, key);
                 }
+                for key in self.page.take_images_to_free() {
+                    self.renderer.delete_image(id, key);
+                }
                 // Draw even if the list was dropped, so the next
                 // `BeginFrame` goes out.
                 self.dirty = true;
@@ -504,12 +604,12 @@ impl RenderLoop {
             ToBrowser::AddFont {
                 page,
                 key,
-                data,
+                source,
                 index,
                 variations,
             } if page == id => {
                 self.page.add_font(key);
-                self.renderer.add_font(page, key, &data, index, &variations);
+                self.add_font(page, key, source, index, &variations);
             }
             ToBrowser::AddImage {
                 page,
@@ -632,7 +732,7 @@ impl RenderLoop {
             content_size,
             offset,
             ..
-        } = &mut list.spatial[index].kind
+        } = &list.spatial[index].kind
         else {
             return;
         };
@@ -667,8 +767,16 @@ impl RenderLoop {
             Axis::Y => (offset.x, target),
             Axis::X => (target, offset.y),
         };
-        *offset = ScrollOffset { x, y, ..*offset };
-        self.scrolled.insert(scroll_id, *offset);
+        let new_offset = ScrollOffset {
+            x,
+            y,
+            generation: offset.generation,
+        };
+        // Keep the render side and the scroll state in sync so a newly
+        // received display list does not revert the drag (spec 0009, child
+        // 0002, AC-13).
+        self.page.set_scroll_offset(scroll_id, new_offset);
+        self.scrolled.insert(scroll_id, new_offset);
         self.scrolled_at = Some(Instant::now());
     }
 
@@ -835,6 +943,7 @@ impl RenderLoop {
     /// when that fails too.
     fn draw(&mut self) -> bool {
         self.dirty = false;
+        let draw_started = Instant::now();
         let drawn = match self.render() {
             Err(RenderError::SurfaceLost) => {
                 warn!("the drawing surface was lost; making it again");
@@ -852,6 +961,7 @@ impl RenderLoop {
                 .send_event(UserEvent::Render(RenderEvent::Failed { window, error }));
             return false;
         }
+        self.perf_after_present(draw_started);
         let page = self.page.id();
         let scrolled: Vec<_> = self.scrolled.drain().collect();
         for (scroll_id, offset) in scrolled {
@@ -1012,6 +1122,135 @@ impl RenderLoop {
         };
         if let Err(err) = content.send(message) {
             warn!(%err, "could not reach the content process");
+        }
+    }
+
+    /// Notes when a wheel message is taken, for scroll frame CPU timing
+    /// (spec 0007, AC-6: the frame runs from taking the message to
+    /// `queue.submit` returning).
+    fn perf_note_take(&mut self, message: &RenderMsg) {
+        if self.perf == Some(crate::perf::Scenario::Scroll)
+            && matches!(message, RenderMsg::Scroll { .. })
+        {
+            self.perf_scroll_taken = Some(Instant::now());
+        }
+    }
+
+    /// Records perf marks that need a presented frame (spec 0007, Value
+    /// sourcing): right after `present()`. Called on every successful
+    /// draw; each mark fires once. `draw_started` is when this draw began,
+    /// so a skipped frame (an occluded window presents nothing) never
+    /// counts.
+    fn perf_after_present(&mut self, draw_started: Instant) {
+        match self.perf {
+            Some(crate::perf::Scenario::Start) => {
+                if self.perf_marked || !self.page.painted() {
+                    return;
+                }
+                // The cold start mark is the first frame showing the page's
+                // own content, and it must have reached the screen (AC-4).
+                if !self
+                    .renderer
+                    .last_present_at()
+                    .is_some_and(|at| at >= draw_started)
+                {
+                    return;
+                }
+                self.perf_marked = true;
+                let first_frame_unix_us = crate::perf::unix_now_us();
+                let _ = self
+                    .proxy
+                    .send_event(UserEvent::Render(RenderEvent::PerfDone(
+                        crate::perf::RenderMarks {
+                            first_frame_unix_us: Some(first_frame_unix_us),
+                            scroll_frames_us: Vec::new(),
+                        },
+                    )));
+            }
+            Some(crate::perf::Scenario::Scroll) => self.perf_scroll_frame(draw_started),
+            _ => {}
+        }
+    }
+
+    /// One driver step's frame was presented: record its CPU time and feed
+    /// the next step, or end the scenario after the 240th (spec 0007,
+    /// AC-6). A skipped frame records nothing; the step is spent and the
+    /// next one is fed.
+    fn perf_scroll_frame(&mut self, draw_started: Instant) {
+        let Some(taken) = self.perf_scroll_taken.take() else {
+            return;
+        };
+        // The frame's CPU time ends when `queue.submit` returned, before
+        // present (spec 0007, Value sourcing, frame CPU). A submit older
+        // than this draw means the frame was skipped: no drawable, nothing
+        // to time.
+        let fresh = self
+            .renderer
+            .last_submit_at()
+            .is_some_and(|at| at >= draw_started && at >= taken);
+        if fresh {
+            let us = self
+                .renderer
+                .last_submit_at()
+                .unwrap_or(taken)
+                .saturating_duration_since(taken)
+                .as_micros() as u32;
+            self.perf_scroll_frames.push(us);
+            debug!(
+                frames = self.perf_scroll_frames.len(),
+                us, "perf scroll frame"
+            );
+        } else {
+            debug!("perf scroll frame skipped: the surface presented nothing");
+        }
+        if self
+            .perf_scroll
+            .as_ref()
+            .is_some_and(|driver| driver.is_done())
+        {
+            let scroll_frames_us = std::mem::take(&mut self.perf_scroll_frames);
+            let _ = self
+                .proxy
+                .send_event(UserEvent::Render(RenderEvent::PerfDone(
+                    crate::perf::RenderMarks {
+                        first_frame_unix_us: None,
+                        scroll_frames_us,
+                    },
+                )));
+            return;
+        }
+        self.perf_feed_step();
+    }
+
+    /// Sends the driver's next wheel step through this thread's own
+    /// channel, so it takes the same path a real wheel message does
+    /// (spec 0007, AC-6).
+    fn perf_feed_step(&mut self) {
+        let Some((dx, dy)) = self
+            .perf_scroll
+            .as_mut()
+            .and_then(|driver| driver.next_step())
+        else {
+            return;
+        };
+        debug!(dy, "perf scroll step fed");
+        let message = RenderMsg::Scroll {
+            at: self.perf_scroll_at(),
+            dx,
+            dy,
+            phase: GesturePhase::None,
+        };
+        if self.render_tx.send(message).is_err() {
+            debug!("the render channel is gone; the scroll driver stops");
+        }
+    }
+
+    /// Where the driver's wheel steps land: the center of the window, in
+    /// page CSS px (the driver stands in for the pointer).
+    fn perf_scroll_at(&self) -> PointF {
+        PointF {
+            x: self.size.0 as f32 / self.scale / 2.0,
+            y: self.size.1 as f32 / self.scale / 2.0,
         }
     }
 }

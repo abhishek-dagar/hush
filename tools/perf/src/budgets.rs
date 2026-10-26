@@ -39,6 +39,10 @@ pub struct BudgetRow {
     pub os: Vec<Os>,
     /// The ceiling, in the row's unit.
     pub limit: f64,
+    /// A softer threshold below the limit: over goal warns but doesn't fail
+    /// (AC-16).
+    #[serde(default)]
+    pub goal: Option<f64>,
     #[allow(dead_code, reason = "used for display in later tasks")]
     /// `MB` (10^6 bytes) or `ms`.
     pub unit: Unit,
@@ -57,6 +61,9 @@ pub enum Metric {
     ColdStart,
     MemoryTotal,
     MemoryContent,
+    /// Footprint after a browsing session returns to the article (spec 0032,
+    /// AC-11).
+    MemoryAfterBrowse,
     ScrollFrameCpuP95,
     ScriptLoad,
 }
@@ -174,6 +181,7 @@ impl Metric {
             Metric::ColdStart => "cold_start",
             Metric::MemoryTotal => "memory_total",
             Metric::MemoryContent => "memory_content",
+            Metric::MemoryAfterBrowse => "memory_after_browse",
             Metric::ScrollFrameCpuP95 => "scroll_frame_cpu_p95",
             Metric::ScriptLoad => "script_load",
         }
@@ -236,6 +244,21 @@ fn validate_row(
         )));
     }
 
+    // Goal above zero and at most limit (AC-16).
+    if let Some(goal) = row.goal {
+        if !goal.is_finite() || goal <= 0.0 {
+            return Err(BudgetsError::Row(format!(
+                "{label}: `goal` must be greater than 0, got {goal}"
+            )));
+        }
+        if goal > row.limit {
+            return Err(BudgetsError::Row(format!(
+                "{label}: `goal` ({goal}) is above `limit` ({})",
+                row.limit
+            )));
+        }
+    }
+
     // alarm_pct only on size and memory, never on timing (AC-10).
     if let Some(pct) = row.alarm_pct {
         if row.metric.is_timing() {
@@ -295,6 +318,7 @@ mod tests {
             target,
             os,
             limit: 10.0,
+            goal: None,
             unit: Unit::Mb,
             alarm_pct: None,
             reason: "a reason".to_owned(),
@@ -351,5 +375,31 @@ mod tests {
         r.limit = 0.0;
         let err = validate_row(&r, "row 0", &mut seen).unwrap_err();
         assert!(err.to_string().contains("limit"));
+    }
+
+    #[test]
+    fn memory_after_browse_is_a_memory_metric() {
+        // The row is spelled as the spec and budgets file spell it, and it
+        // carries a footprint, so it alarms like the other memory rows
+        // (spec 0032, AC-11).
+        let metric = Metric::MemoryAfterBrowse;
+        assert_eq!(metric.as_str(), "memory_after_browse");
+        assert!(!metric.is_timing());
+        assert!(metric.supports_alarm());
+        // A timing metric stays alarm free, so the distinction is real.
+        assert!(Metric::ColdStart.is_timing());
+    }
+
+    #[test]
+    fn the_committed_budgets_file_loads() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/budgets.toml");
+        let budgets = Budgets::load(&path).expect("the committed budgets file loads");
+        assert!(
+            budgets
+                .rows
+                .iter()
+                .any(|row| row.metric == Metric::MemoryAfterBrowse),
+            "the memory_after_browse row is committed (spec 0032, AC-11)"
+        );
     }
 }

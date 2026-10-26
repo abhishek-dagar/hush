@@ -25,6 +25,7 @@ mod ua;
 mod values;
 
 use std::ops::BitOr;
+use std::rc::Rc;
 
 use base::Au;
 use base::atoms::{Atom, QualName};
@@ -37,16 +38,17 @@ pub use properties::Declaration;
 pub use selector::{MatchContext, PseudoElement, Selector, parse_selectors};
 pub use sharing::{SHARING_CACHE_SIZE, SharingCache};
 pub use sheet::{
-    Origin, Rule, Stylesheet, decode_stylesheet, parse_declarations, parse_stylesheet,
+    Origin, PropertyRule, Rule, Stylesheet, decode_stylesheet, parse_declarations, parse_stylesheet,
 };
 pub use style::{
-    AlignItems, Background, Border, BorderCollapse, BorderRadius, BorderSide, BorderStyle,
-    BoxSizing, CaptionSide, Clear, ClipRect, ComputedStyle, Cursor, CustomProperties, Direction,
-    Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis, FlexDirection, FlexWrap, Float,
-    Font, FontStyle, InheritedBox, InheritedTable, InheritedText, JustifyContent, LineHeight, List,
-    ListStylePosition, ListStyleType, Margin, Outline, OutlineStyle, Overflow, Padding, Position,
-    PositionOffsets, Sizes, Table, TableLayout, TextAlign, TextDecorationLine, TextOverflow,
-    UserSelect, VerticalAlign, Visibility, WhiteSpace, WritingMode,
+    AlignItems, AspectRatio, Background, Border, BorderCollapse, BorderRadius, BorderSide,
+    BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect, ComputedStyle, Cursor, CustomProperties,
+    Direction, Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis, FlexDirection, FlexWrap,
+    Float, Font, FontStyle, Grid, GridArea, GridAutoFlow, GridLine, InheritedBox, InheritedTable,
+    InheritedText, JustifyContent, LineHeight, List, ListStylePosition, ListStyleType, Margin,
+    Motion, Outline, OutlineStyle, Overflow, Padding, Position, PositionOffsets, Sizes, Table,
+    TableLayout, TextAlign, TextDecorationLine, TextOverflow, TimingFunction, TrackSize, Transform,
+    TransformFn, UserSelect, VerticalAlign, Visibility, WhiteSpace, WritingMode,
 };
 pub use stylist::Stylist;
 pub use ua::ua_stylesheet;
@@ -86,14 +88,38 @@ impl Color {
     }
 }
 
-/// A computed length: absolute, or a percentage resolved during layout.
-/// (`calc()` arrives with a later slice.)
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A cascade layer, assigned in first-appearance order across sheets
+/// (spec 0010, AC-9). Higher ids are later layers and win the cascade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct LayerId(pub u32);
+
+/// A computed length: absolute, a percentage, or a `calc()` family
+/// expression that resolves at used value time (spec 0010, AC-8).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Length {
     /// An absolute length.
     Au(Au),
     /// A percentage of the containing block's size, 0 to 100.
     Percent(f32),
+    /// A `calc()`, `min()`, `max()` or `clamp()` expression.
+    Calc(Rc<CalcExpr>),
+}
+
+/// A `calc()` family expression, simplified at parse time.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CalcExpr {
+    /// One leaf length.
+    Leaf(Length),
+    /// A sum of terms.
+    Sum(Vec<CalcExpr>),
+    /// A term scaled by a factor.
+    Product(Box<CalcExpr>, f32),
+    /// The smallest of several terms.
+    Min(Vec<CalcExpr>),
+    /// The largest of several terms.
+    Max(Vec<CalcExpr>),
+    /// `clamp(min, value, max)`.
+    Clamp(Box<CalcExpr>, Box<CalcExpr>, Box<CalcExpr>),
 }
 
 impl Length {
@@ -106,10 +132,39 @@ impl Length {
     }
 
     /// Resolves against `basis`; a percentage with no basis counts as zero.
+    /// A `calc()` family expression evaluates its leaves against `basis`.
     pub fn resolve(&self, basis: Option<Au>) -> Au {
-        match *self {
-            Self::Au(au) => au,
-            Self::Percent(percent) => basis.map_or(Au::ZERO, |b| b.scale_by(percent / 100.0)),
+        match self {
+            Self::Au(au) => *au,
+            Self::Percent(percent) => basis.map_or(Au::ZERO, |b| b.scale_by(*percent / 100.0)),
+            Self::Calc(expr) => expr.resolve(basis),
+        }
+    }
+}
+
+impl CalcExpr {
+    /// Evaluates the expression against `basis`, in CSS px.
+    pub fn resolve(&self, basis: Option<Au>) -> Au {
+        match self {
+            Self::Leaf(length) => length.resolve(basis),
+            Self::Sum(terms) => terms.iter().map(|t| t.resolve(basis)).sum(),
+            Self::Product(term, factor) => Au(term.resolve(basis).0 * factor.round() as i32),
+            Self::Min(terms) => terms
+                .iter()
+                .map(|t| t.resolve(basis))
+                .min()
+                .unwrap_or(Au::ZERO),
+            Self::Max(terms) => terms
+                .iter()
+                .map(|t| t.resolve(basis))
+                .max()
+                .unwrap_or(Au::ZERO),
+            Self::Clamp(min, value, max) => {
+                let value = value.resolve(basis);
+                let min = min.resolve(basis);
+                let max = max.resolve(basis);
+                value.clamp(min, max)
+            }
         }
     }
 }

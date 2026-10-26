@@ -10,7 +10,6 @@
 //! on screen is ever missing.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use display_list::{FontKey, PageId};
 use skrifa::instance::{LocationRef, NormalizedCoord, Size};
@@ -18,6 +17,8 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{GlyphId, MetadataProvider};
 use tracing::debug;
 use zeno::{Command, Mask, Vector};
+
+use crate::font::FontBytes;
 
 /// The atlas's first side length, in texels.
 const START_SIZE: u32 = 1024;
@@ -28,7 +29,7 @@ const PADDING: u32 = 1;
 
 /// A font file the page registered with `AddFont`.
 pub(crate) struct FontFile {
-    pub(crate) data: Arc<[u8]>,
+    pub(crate) data: FontBytes,
     pub(crate) index: u32,
     /// The variable face's position on its axes, normalized; empty for a
     /// static face or the default instance.
@@ -249,6 +250,19 @@ impl GlyphAtlas {
     pub(crate) fn reset(&mut self) {
         self.packer = ShelfPacker::new(self.size);
         self.glyphs.clear();
+    }
+
+    /// Empties the atlas and returns it to its start size, freeing a heavy
+    /// page's glyph memory (spec 0032, AC-7).
+    pub(crate) fn shrink(&mut self, device: &wgpu::Device) {
+        if self.size != START_SIZE {
+            let (texture, bind_group) =
+                Self::texture(device, &self.layout, &self.sampler, START_SIZE);
+            self.texture = texture;
+            self.bind_group = bind_group;
+            self.size = START_SIZE;
+        }
+        self.reset();
     }
 
     /// The glyph's place in the atlas, rasterizing it first if needed, or

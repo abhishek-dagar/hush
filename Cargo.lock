@@ -749,6 +749,8 @@ dependencies = [
  "hyper",
  "hyper-util",
  "ipc",
+ "libc",
+ "memmap2",
  "muda",
  "navigation",
  "net",
@@ -762,6 +764,7 @@ dependencies = [
  "render",
  "rfd",
  "rustls",
+ "skrifa",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
@@ -1652,6 +1655,7 @@ dependencies = [
  "css",
  "dom",
  "text",
+ "tracing",
 ]
 
 [[package]]

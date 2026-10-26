@@ -5,7 +5,9 @@
 
 use std::fmt::Write;
 
-use crate::{BorderStyle, ColorF, DisplayList, ItemKind, PointF, RectF, SizeF, SpatialKind};
+use crate::{
+    Binding, BorderStyle, ColorF, DisplayList, ItemKind, PointF, RectF, SizeF, SpatialKind,
+};
 
 impl DisplayList {
     /// The list as indented text: the spatial tree, the clips, then the items.
@@ -47,7 +49,11 @@ impl DisplayList {
                     offset.generation
                 )?,
                 SpatialKind::ReferenceFrame { transform } => {
-                    let values: Vec<String> = transform.iter().map(|v| num(*v)).collect();
+                    let matrix = match transform {
+                        Binding::Static(m) => *m,
+                        Binding::Bound { value, .. } => *value,
+                    };
+                    let values: Vec<String> = matrix.iter().map(|v| num(*v)).collect();
                     writeln!(out, "reference-frame transform=[{}]", values.join(" "))?;
                 }
                 SpatialKind::Sticky {

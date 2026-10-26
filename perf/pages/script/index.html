@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- The pinned script workload page (spec 0007, Pinned pages):
+     navigation start to `load` is the script_load metric, and the share
+     of it spent inside the script engine feeds the V8 signal. The kernels
+     run in order; richards.js and deltablue.js are Octane kernels (see
+     THIRD_PARTY_NOTICES.md), the rest are generated here. -->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Script workload</title>
+</head>
+<body>
+    <h1>Script workload</h1>
+    <p id="status">running</p>
+    <div id="dom-host"></div>
+    <script src="kernel-shim.js"></script>
+    <script src="richards.js"></script>
+    <script src="deltablue.js"></script>
+    <script src="json.js"></script>
+    <script src="regex.js"></script>
+    <script src="dom.js"></script>
+    <script>
+        // Runs every registered Octane suite. The round count is frozen
+        // once (spec 0007): changing it is a budget change and needs a
+        // reason in budgets.toml. Tuned so the whole page's first run on
+        // the reference machine lands between 0.5 and 0.9 s.
+        const OCTANE_ROUNDS = 20;
+        let sink = 0;
+        for (let round = 0; round < OCTANE_ROUNDS; round++) {
+            for (const suite of BenchmarkSuite.list) {
+                for (const benchmark of suite.benchmarks) {
+                    benchmark.run();
+                    sink += 1;
+                }
+            }
+        }
+        window.__octaneResult = sink;
+    </script>
+    <script>
+        // Ends the page with a visible change once every kernel ran.
+        document.getElementById('status').textContent = 'done';
+    </script>
+</body>
+</html>

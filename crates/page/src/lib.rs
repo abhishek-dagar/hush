@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
 
-use base::{Au, Point, Size};
-use css::{Device, Stylesheet};
+use base::{Au, Point, Size, atoms::Atom};
+use css::{Device, Stylesheet, TimingFunction};
 use display_list::{
     ColorF, DisplayList, Epoch, MAX_ENCODED_LEN, PageId, PointF, RectF, ScrollId, ScrollOffset,
     SizeF,
@@ -37,8 +37,13 @@ use dom::{Document, FrameChange, FrameId, NodeId, NodeRef};
 use html::{ParseStep, Parser, ParserOptions};
 use ipc::{Destination, DocumentKind, FetchError, FetchId, NavigationId, SharedBytes};
 use layout::{BoxTree, FragmentTree};
-pub use script::ReadyState;
-use script::{EventTarget, ScriptEngine, ScriptHost};
+pub use script::{EventTarget, ReadyState, ScriptEngine, ScriptError, TimerId};
+
+/// Wraps each page's script engine at creation time: perf mode installs a
+/// timing wrapper here (spec 0007, Script timing). The page never reads a
+/// clock; the hook owns the measuring.
+pub type ScriptWrap = Box<dyn Fn(Box<dyn ScriptEngine>) -> Box<dyn ScriptEngine>>;
+use script::ScriptHost;
 pub use text::FontContext;
 use tracing::{debug, debug_span, info, warn};
 
@@ -86,6 +91,138 @@ impl FetchIds {
         let id = FetchId(self.0);
         self.0 = self.0.saturating_add(1);
         id
+    }
+}
+
+/// A running transition: interpolates `from` to `to` over `duration`
+/// seconds starting at `start` (spec 0010, AC-23).
+#[derive(Debug, Clone)]
+struct RunningTransition {
+    from: f32,
+    to: f32,
+    start: f64,
+    delay: f64,
+    duration: f64,
+    timing: TimingFunction,
+    /// The display-list binding id for this animation, stable for its
+    /// lifetime on this element (spec 0010, AC-28).
+    binding_id: u64,
+}
+
+/// The running transitions and animations on one page, sampled each frame
+/// at `frame_time` (spec 0010, AC-27).
+#[derive(Debug, Clone, Default)]
+pub struct AnimationSet {
+    /// Transitions keyed by `(node, property)`.
+    transitions: HashMap<(NodeId, Atom), RunningTransition>,
+    /// The next binding id to hand out.
+    next_binding_id: u64,
+}
+
+impl AnimationSet {
+    /// Start a transition on `node` for `property`, from `from` to `to`,
+    /// beginning at `start`.
+    pub fn start_transition(
+        &mut self,
+        node: NodeId,
+        property: Atom,
+        from: f32,
+        to: f32,
+        duration: f64,
+        delay: f64,
+        timing: TimingFunction,
+        start: f64,
+    ) {
+        let binding_id = self.next_binding_id;
+        self.next_binding_id = self.next_binding_id.saturating_add(1);
+        self.transitions.insert(
+            (node, property),
+            RunningTransition {
+                from,
+                to,
+                start,
+                delay,
+                duration,
+                timing,
+                binding_id,
+            },
+        );
+    }
+
+    /// Sample every running transition at `frame_time`. Returns the current
+    /// scale value and binding id for each node whose transform changed.
+    /// Transitions past their end are removed.
+    pub fn sample(&mut self, frame_time: f64) -> AnimatedValues {
+        let mut transforms = HashMap::new();
+        let mut finished = Vec::new();
+        for ((node, property), running) in &self.transitions {
+            let elapsed = frame_time - running.start - running.delay;
+            let progress: f32 = if elapsed <= 0.0 {
+                0.0
+            } else if elapsed >= running.duration {
+                1.0
+            } else {
+                ease(running.timing, (elapsed / running.duration) as f32)
+            };
+            let value = running.from + (running.to - running.from) * progress as f32;
+            if *property == css_property_scale() {
+                transforms.insert(*node, (value, running.binding_id));
+            }
+            if elapsed >= running.duration {
+                finished.push((*node, property.clone()));
+            }
+        }
+        for key in finished {
+            self.transitions.remove(&key);
+        }
+        let dirty_nodes: Vec<NodeId> = transforms.keys().copied().collect();
+        AnimatedValues {
+            transforms,
+            dirty_nodes,
+        }
+    }
+
+    /// Whether anything is still running, so the page asks for the next
+    /// frame.
+    pub fn is_running(&self) -> bool {
+        !self.transitions.is_empty()
+    }
+}
+
+/// The sampled animation values for one frame.
+#[derive(Debug, Clone, Default)]
+pub struct AnimatedValues {
+    /// The sampled scale and binding id for each node whose transform
+    /// changed.
+    pub transforms: HashMap<NodeId, (f32, u64)>,
+    /// Nodes whose style must be recomputed from the sampled values.
+    pub dirty_nodes: Vec<NodeId>,
+}
+
+fn css_property_scale() -> Atom {
+    Atom::from("transform")
+}
+
+/// Ease `progress` (0 to 1) with `timing`.
+fn ease(timing: TimingFunction, progress: f32) -> f32 {
+    match timing {
+        TimingFunction::Linear => progress,
+        TimingFunction::Ease => {
+            // cubic-bezier(0.25, 0.1, 0.25, 1)
+            let p = progress.clamp(0.0, 1.0);
+            let t = p / (p + (1.0 - p) * 0.25 / 0.75);
+            t
+        }
+        TimingFunction::EaseIn => progress * progress,
+        TimingFunction::EaseOut => 1.0 - (1.0 - progress) * (1.0 - progress),
+        TimingFunction::EaseInOut => {
+            if progress < 0.5 {
+                2.0 * progress * progress
+            } else {
+                1.0 - 2.0 * (1.0 - progress) * (1.0 - progress)
+            }
+        }
+        TimingFunction::Steps(_) => progress,
     }
 }
 
@@ -154,6 +291,9 @@ pub struct Page {
     /// (spec 0002, Scrolling). Paint reads it; `ScrollChanged` and script
     /// scrolls write it.
     scroll: HashMap<ScrollId, ScrollOffset>,
+    /// The running transitions and animations, sampled each frame (spec
+    /// 0010, AC-27).
+    animation_set: AnimationSet,
     /// Font and image keys.
     resources: ResourceTable,
     /// The page's fonts, which text is shaped with.
@@ -197,6 +337,9 @@ pub struct Page {
     /// Committed documents get a script engine. Off for the browser's
     /// chrome documents, which run no script (spec 0003, key invariants).
     scripting: bool,
+    /// Wraps each committed document's script engine at creation, when
+    /// perf mode installed a timing hook (spec 0007, Script timing).
+    script_wrap: Option<ScriptWrap>,
     /// Each text input's caret and selection (spec 0008, AC-13).
     edits: editor::Edits,
     /// The input whose caret moved since the last frame, which scrolls
@@ -243,6 +386,7 @@ impl Page {
             needs_first_build: true,
             frame_requested: false,
             scroll: HashMap::new(),
+            animation_set: AnimationSet::default(),
             resources: ResourceTable::new(id),
             fonts: FontContext::new(),
             web_fonts: WebFonts::new(),
@@ -261,6 +405,7 @@ impl Page {
             last_style: StyleStats::default(),
             input: InputState::default(),
             scripting: true,
+            script_wrap: None,
             edits: editor::Edits::default(),
             caret_moved: None,
             selection_color: editor::PAGE_SELECTION,
@@ -289,6 +434,13 @@ impl Page {
     /// (spec 0003, key invariants; spec 0006, AC-21).
     pub fn set_scripting(&mut self, scripting: bool) {
         self.scripting = scripting;
+    }
+
+    /// Wraps each committed document's script engine with `wrap` from the
+    /// next navigation on (spec 0007, Script timing): perf mode installs a
+    /// timing wrapper. `None` restores the plain engine.
+    pub fn set_script_wrap(&mut self, wrap: Option<ScriptWrap>) {
+        self.script_wrap = wrap;
     }
 
     /// What selected text in text inputs sits on: the chrome passes its
@@ -395,7 +547,11 @@ impl Page {
         self.scripts = Scripts::default();
         self.lifecycle = Lifecycle::default();
         self.head = Head::default();
-        self.script = if self.scripting { new_script() } else { None };
+        self.script = if self.scripting {
+            new_script(self.script_wrap.as_ref())
+        } else {
+            None
+        };
         // The old document's iframes go with it.
         self.frames.clear();
         self.scroll.clear();
@@ -993,6 +1149,30 @@ impl Page {
         }
     }
 
+    /// Runs one garbage collection pass in the script engine (spec 0032,
+    /// AC-9). The content process calls it once after five idle seconds.
+    pub fn collect_garbage(&mut self) {
+        self.with_script(|engine| engine.collect_garbage());
+    }
+
+    /// The script heap's size in bytes, when the engine can report it
+    /// (spec 0032, AC-10).
+    pub fn script_heap_bytes(&mut self) -> Option<u64> {
+        self.with_script(|engine| engine.heap_bytes()).flatten()
+    }
+
+    /// How many DOM nodes every frame holds, for the memory report (spec
+    /// 0032, AC-10). A count, not bytes.
+    pub fn node_count(&self) -> u64 {
+        let main = self.main_frame.document.node_count();
+        let frames: usize = self
+            .frames
+            .values()
+            .map(|frame| frame.document.node_count())
+            .sum();
+        (main + frames) as u64
+    }
+
     /// Picks up `<style>` and `<link>` changes from the task that just ran,
     /// so linked sheets start loading at once.
     fn refresh_styles(&mut self) {
@@ -1213,7 +1393,8 @@ impl Page {
     pub fn take_frame_request(&mut self) -> bool {
         let has_work = self.needs_update
             || self.main_frame.document.needs_frame()
-            || self.input.has_pending_move();
+            || self.input.has_pending_move()
+            || self.animation_set.is_running();
         if has_work && !self.frame_requested {
             self.frame_requested = true;
             return true;
@@ -1223,7 +1404,7 @@ impl Page {
 
     /// Runs the rendering update for a `BeginFrame`. Returns the new list, or
     /// `None` when nothing changed (send `FrameSkipped`). At most one list per call.
-    pub fn begin_frame(&mut self, _frame_time: f64) -> Option<DisplayList> {
+    pub fn begin_frame(&mut self, frame_time: f64) -> Option<DisplayList> {
         self.frame_requested = false;
         if self
             .styles
@@ -1238,9 +1419,42 @@ impl Page {
         // One hit test per frame, however many moves came in (spec 0006,
         // Edge cases).
         self.apply_pending_move();
+        // Sample running transitions and animations at this frame's time,
+        // so their values feed the next style pass (spec 0010, AC-27).
+        let animated = self.animation_set.sample(frame_time);
+        if !animated.transforms.is_empty() {
+            tracing::debug!(animated = animated.transforms.len(), "sampled animations");
+            self.needs_update = true;
+        }
+        // Apply sampled values back to element styles so layout uses them
+        // on the next frame (spec 0010, AC-28).
+        let updates: Vec<(NodeId, f32, u64)> = animated
+            .transforms
+            .iter()
+            .map(|(node, (scale, binding_id))| (*node, *scale, *binding_id))
+            .collect();
+        let document = &mut self.main_frame.document;
+        for (node, scale, binding_id) in updates {
+            let new_style = {
+                let node_ref = document.node(node);
+                let Some(element) = node_ref.and_then(|n| n.as_element()) else {
+                    continue;
+                };
+                let Some(current) = element.style() else {
+                    continue;
+                };
+                let mut new_style = (*current).clone();
+                let computed = Rc::make_mut(&mut new_style);
+                let t = Rc::make_mut(&mut computed.transform);
+                t.scale = Some(scale);
+                t.binding_id = Some(binding_id);
+                new_style
+            };
+            let _ = document.set_style(node, Some(new_style));
+        }
         let frame = &mut self.main_frame;
         let document_changed = frame.document.take_needs_frame();
-        if !self.needs_update && !document_changed {
+        if !self.needs_update && !document_changed && !self.animation_set.is_running() {
             return None;
         }
         self.needs_update = false;
@@ -1322,8 +1536,13 @@ impl Page {
         self.web_fonts
             .need(&needed, &mut self.fetch_ids, Instant::now());
         for font in self.fonts.take_new_fonts() {
-            self.resources
-                .add_font(font.key, &font.data, font.index, font.variations);
+            self.resources.add_font(
+                font.key,
+                font.source,
+                &font.data,
+                font.index,
+                font.variations,
+            );
         }
         self.keep_caret_visible();
         self.apply_pending_scroll();
@@ -1369,11 +1588,11 @@ impl Page {
         self.scroll.retain(|id, _| live.contains(id));
         // Fonts and images in use count across both layers.
         if overlay.items.is_empty() {
-            self.resources.list_painted(&list);
+            self.resources.list_painted(&list, self.scale);
         } else {
             let mut both = list.clone();
             both.items.extend(overlay.items.iter().cloned());
-            self.resources.list_painted(&both);
+            self.resources.list_painted(&both, self.scale);
         }
         self.overlay = (!self.overlay_roots.is_empty()).then_some(overlay);
         self.settle_pending_scroll(&list);
@@ -1485,15 +1704,20 @@ fn apply_style_damage(frame: &mut Frame) {
 }
 
 /// A fresh script engine and its host for a committed document. A page
-/// whose engine cannot start still loads, without scripts.
-fn new_script() -> Option<Script> {
+/// whose engine cannot start still loads, without scripts. `wrap` is the
+/// perf mode timing hook, applied to the boxed engine (spec 0007, Script
+/// timing); the page itself never reads a clock.
+fn new_script(wrap: Option<&ScriptWrap>) -> Option<Script> {
     let host = Rc::new(RefCell::new(PageHost::new()));
     let shared: Rc<RefCell<dyn ScriptHost>> = host.clone();
     match script_quickjs::QuickJsEngine::new(shared) {
-        Ok(engine) => Some(Script {
-            engine: Box::new(engine),
-            host,
-        }),
+        Ok(engine) => {
+            let mut engine = Box::new(engine) as Box<dyn ScriptEngine>;
+            if let Some(wrap) = wrap {
+                engine = wrap(engine);
+            }
+            Some(Script { engine, host })
+        }
         Err(err) => {
             warn!(%err, "the script engine did not start; scripts are off");
             None
@@ -1556,6 +1780,20 @@ fn to_au(size: SizeF) -> Size {
     )
 }
 
+/// Strips an XHTML CDATA wrapper from the text of a `<style>` or `<script>`.
+///
+/// The engine parses `.xht` and `.xhtml` files as HTML (spec 0005, AC-18),
+/// where `<![CDATA[ ... ]]>` is not a CDATA section but plain text, so the
+/// markers would reach the CSS or script parser and swallow the first rule.
+/// An XHTML parser hands over the section's content alone, so we do the same.
+pub(crate) fn strip_cdata(text: &str) -> &str {
+    let Some(rest) = text.trim_start().strip_prefix("<![CDATA[") else {
+        return text;
+    };
+    let rest = rest.trim_end();
+    rest.strip_suffix("]]>").unwrap_or(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use base::atoms::QualName;
@@ -1571,6 +1809,24 @@ mod tests {
 
     fn page() -> Page {
         Page::new(PageId(7), sample::document(), VIEWPORT, 2.0)
+    }
+
+    #[test]
+    fn cdata_markers_are_stripped_from_style_and_script_text() {
+        assert_eq!(
+            strip_cdata("<![CDATA[div { color: red }]]>"),
+            "div { color: red }"
+        );
+        assert_eq!(
+            strip_cdata("\n  <![CDATA[\n  a { top: 0 }\n  ]]>\n").trim(),
+            "a { top: 0 }"
+        );
+        assert_eq!(strip_cdata("plain text"), "plain text");
+        assert_eq!(
+            strip_cdata("<![CDATA[unterminated"),
+            "unterminated",
+            "a broken section keeps its content"
+        );
     }
 
     #[test]

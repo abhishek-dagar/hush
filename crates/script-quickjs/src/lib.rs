@@ -220,6 +220,14 @@ impl ScriptEngine for QuickJsEngine {
             warn!(%err, "wrapper sweep failed");
         }
     }
+
+    fn collect_garbage(&mut self) {
+        self.runtime.run_gc();
+    }
+
+    fn heap_bytes(&self) -> Option<u64> {
+        Some(self.runtime.memory_usage().malloc_size as u64)
+    }
 }
 
 impl Drop for QuickJsEngine {

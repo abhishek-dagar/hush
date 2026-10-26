@@ -108,6 +108,80 @@ pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Decoded, ImageError> {
 /// The largest favicon side the browser is sent (spec 0004, AC-37).
 pub const MAX_ICON_SIDE: u32 = 256;
 
+/// Scales premultiplied RGBA8 pixels down to `out_width` by `out_height`
+/// with a box filter (spec 0032, AC-8): each output pixel is the area
+/// weighted average of the source pixels it covers, so edges stay smooth
+/// instead of dropping whole rows.
+///
+/// Returns an empty vector when `pixels` is not `width` by `height` RGBA,
+/// or a side is zero. Asking for the same size copies the pixels.
+pub fn downscale(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    out_width: u32,
+    out_height: u32,
+) -> Vec<u8> {
+    if width == 0 || height == 0 || out_width == 0 || out_height == 0 {
+        return Vec::new();
+    }
+    let (width_usize, height_usize) = (width as usize, height as usize);
+    if pixels.len() != width_usize * height_usize * 4 {
+        return Vec::new();
+    }
+    if (width, height) == (out_width, out_height) {
+        return pixels.to_vec();
+    }
+    let source_width = u64::from(width);
+    let source_height = u64::from(height);
+    let scale_x = u64::from(out_width);
+    let scale_y = u64::from(out_height);
+    let mut out = vec![0u8; out_width as usize * out_height as usize * 4];
+    for oy in 0..out_height {
+        // The source rows this output row covers, in units of 1/scale_y px.
+        let top = u64::from(oy) * source_height;
+        let bottom = top + source_height;
+        let first_y = (top / scale_y) as u32;
+        let last_y = (bottom.div_ceil(scale_y)).min(source_height) as u32;
+        for ox in 0..out_width {
+            let left = u64::from(ox) * source_width;
+            let right = left + source_width;
+            let first_x = (left / scale_x) as u32;
+            let last_x = (right.div_ceil(scale_x)).min(source_width) as u32;
+            let mut sum = [0u64; 4];
+            let mut total = 0u64;
+            for sy in first_y..last_y {
+                let sy = u64::from(sy);
+                let row = (bottom.min((sy + 1) * scale_y)) - top.max(sy * scale_y);
+                if row == 0 {
+                    continue;
+                }
+                for sx in first_x..last_x {
+                    let sx = u64::from(sx);
+                    let column = (right.min((sx + 1) * scale_x)) - left.max(sx * scale_x);
+                    let weight = column * row;
+                    if weight == 0 {
+                        continue;
+                    }
+                    let at = (sy as usize * width_usize + sx as usize) * 4;
+                    for (channel, value) in sum.iter_mut().zip(&pixels[at..at + 4]) {
+                        *channel += weight * u64::from(*value);
+                    }
+                    total += weight;
+                }
+            }
+            let at = (oy as usize * out_width as usize + ox as usize) * 4;
+            if total == 0 {
+                continue;
+            }
+            for (channel, value) in out[at..at + 4].iter_mut().zip(sum) {
+                *channel = ((value + total / 2) / total).min(255) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// A decoded favicon: straight alpha RGBA8, at most [`MAX_ICON_SIDE`] a
 /// side, the layout window icons take.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,5 +355,40 @@ mod tests {
             decode(&[], &Limits::default()),
             Err(ImageError::Unsupported)
         );
+    }
+
+    #[test]
+    fn downscaling_averages_the_pixels_it_covers() {
+        let pixels = [
+            255, 0, 0, 255, //
+            0, 255, 0, 255, //
+            0, 0, 255, 255, //
+            255, 255, 255, 255,
+        ];
+        let out = downscale(&pixels, 2, 2, 1, 1);
+        assert_eq!(out, [128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn downscaling_weights_partial_columns_by_area() {
+        let pixels = [
+            0, 0, 0, 255, //
+            255, 0, 0, 255, //
+            100, 0, 0, 255,
+        ];
+        let out = downscale(&pixels, 3, 1, 2, 1);
+        assert_eq!(out.len(), 8);
+        // Output 0 covers all of source 0 and a third of source 1;
+        // output 1 covers a third of source 1 and two thirds of source 2.
+        assert_eq!(out[0], 85);
+        assert_eq!(out[4], 152);
+    }
+
+    #[test]
+    fn downscaling_refuses_bad_sizes_and_copies_a_same_size_request() {
+        let pixels = [1, 2, 3, 4];
+        assert!(downscale(&pixels, 1, 1, 0, 1).is_empty());
+        assert!(downscale(&pixels[..3], 1, 1, 1, 1).is_empty());
+        assert_eq!(downscale(&pixels, 1, 1, 1, 1), pixels);
     }
 }

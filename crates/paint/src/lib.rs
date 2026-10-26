@@ -27,7 +27,7 @@ use display_list::{
     SpatialId, SpatialKind, sticky_offset,
 };
 use layout::stacking::{self, Placed, Step, Walker};
-use layout::{BoxFragment, BoxTree, FragmentTree, InlineEdges, TextFragment};
+use layout::{BoxFragment, BoxKind, BoxTree, FragmentTree, InlineEdges, TextFragment};
 
 /// A decoded picture a `background-image` can draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -190,6 +190,24 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
                 radii,
             }));
             return Some((Point::default(), (sticky_spatial, clip)));
+        }
+        // A transformed box creates a new coordinate space: children draw
+        // through its 4 by 4 matrix (spec 0010, AC-20). When the transform is
+        // animated, the matrix travels as a `Binding::Bound` so a later
+        // compositor can animate it without an IPC format change; otherwise
+        // it is static (spec 0010, AC-28).
+        if let Some(matrix) = transform_matrix(&style.transform) {
+            let binding = match style.transform.binding_id {
+                Some(id) => display_list::Binding::Bound {
+                    id: display_list::BindingId(id),
+                    value: matrix,
+                },
+                None => display_list::Binding::Static(matrix),
+            };
+            let transform_spatial = self
+                .list
+                .push_spatial(spatial, SpatialKind::ReferenceFrame { transform: binding });
+            return Some((Point::default(), (transform_spatial, None)));
         }
         // `clip: rect()` clips absolute and fixed boxes (and their
         // descendants) to a rectangle measured from the border box's top
@@ -414,6 +432,18 @@ pub fn paint_layers(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext
                 origin,
                 state: (spatial, clip),
             } => {
+                if let Some(edges) = &fragment.collapsed_borders {
+                    for edge in edges.iter() {
+                        let rect = RectF {
+                            origin: point_f(Point::new(
+                                origin.x + edge.rect.origin.x,
+                                origin.y + edge.rect.origin.y,
+                            )),
+                            size: size_f(edge.rect.size),
+                        };
+                        painter.push(spatial, clip, collapsed_edge_item(edge, rect));
+                    }
+                }
                 if let Some(kind) = painter
                     .style(fragment)
                     .and_then(|style| outline_item(style, fragment, origin))
@@ -463,6 +493,18 @@ impl<'a> Painter<'a> {
         if style.inherited_box.visibility != css::Visibility::Visible {
             return;
         }
+        // `empty-cells: hide` leaves an empty cell's background and borders
+        // unpainted (spec 0009, child 0004, AC-17). A cell with no laid out
+        // children is empty; white space only text never becomes a box.
+        if style.inherited_table.empty_cells == css::EmptyCells::Hide
+            && fragment.children.is_empty()
+            && self
+                .boxes
+                .get(fragment.box_id)
+                .is_some_and(|b| b.kind == BoxKind::TableCell)
+        {
+            return;
+        }
         let border_box = RectF {
             origin: point_f(origin),
             size: size_f(fragment.size),
@@ -470,6 +512,24 @@ impl<'a> Painter<'a> {
         let radii = layout::corner_radii(style, fragment.size, fragment.inline_edges)
             .map(|radii| display_list::clamp_radii(border_box, radii));
         let border = layout::border_widths(style);
+        let kind = self.boxes.get(fragment.box_id).map(|b| b.kind);
+        // With collapsed borders each edge is resolved once for the whole
+        // table and drawn in one pass later, so the parts' own borders do not
+        // paint (spec 0009, child 0004, AC-17).
+        let collapsed_part = style.inherited_table.border_collapse == css::BorderCollapse::Collapse
+            && matches!(
+                kind,
+                Some(
+                    BoxKind::Table
+                        | BoxKind::TableRow
+                        | BoxKind::TableRowGroup
+                        | BoxKind::TableHeaderGroup
+                        | BoxKind::TableFooterGroup
+                        | BoxKind::TableColumn
+                        | BoxKind::TableColumnGroup
+                        | BoxKind::TableCell
+                )
+            );
         // The canvas already took this box's background.
         if self.canvas != Some(fragment.box_id) {
             let background = style.background.color;
@@ -501,7 +561,26 @@ impl<'a> Painter<'a> {
                 self.push(spatial, Some(cut), kind);
             }
         }
-        if let Some(kind) = border_item(style, border_box, fragment.inline_edges, radii) {
+        if let Some(layers) = &fragment.background_layers {
+            for layer in layers.iter() {
+                let rect = RectF {
+                    origin: point_f(Point::new(
+                        origin.x + layer.rect.origin.x,
+                        origin.y + layer.rect.origin.y,
+                    )),
+                    size: size_f(layer.rect.size),
+                };
+                let kind = ItemKind::Rect {
+                    rect,
+                    color: color_f(layer.color),
+                    radii: None,
+                };
+                self.push(spatial, clip, kind);
+            }
+        }
+        if !collapsed_part
+            && let Some(kind) = border_item(style, border_box, fragment.inline_edges, radii)
+        {
             self.push(spatial, clip, kind);
         }
         // A decoded `<img>` fills its content box.
@@ -854,6 +933,39 @@ fn color_f(color: css::Color) -> ColorF {
     }
 }
 
+/// A resolved collapsed border edge as a `Border` item: a thin strip along
+/// the grid line, drawn on the side its orientation needs (spec 0009, child
+/// 0004, AC-17).
+fn collapsed_edge_item(edge: &layout::CollapsedEdge, rect: RectF) -> ItemKind {
+    let horizontal = rect.size.width >= rect.size.height;
+    let thickness = if horizontal {
+        rect.size.height
+    } else {
+        rect.size.width
+    };
+    let widths = if horizontal {
+        [thickness, 0.0, 0.0, 0.0]
+    } else {
+        [0.0, 0.0, 0.0, thickness]
+    };
+    let color = color_f(edge.color);
+    let style = match edge.style {
+        css::BorderStyle::None => BorderStyle::None,
+        css::BorderStyle::Hidden => BorderStyle::Hidden,
+        css::BorderStyle::Solid => BorderStyle::Solid,
+        css::BorderStyle::Dashed => BorderStyle::Dashed,
+        css::BorderStyle::Dotted => BorderStyle::Dotted,
+        css::BorderStyle::Double => BorderStyle::Double,
+    };
+    ItemKind::Border {
+        rect,
+        widths,
+        colors: [color; 4],
+        styles: [style; 4],
+        radii: None,
+    }
+}
+
 fn point_f(point: Point) -> PointF {
     PointF {
         x: point.x.to_f32_px(),
@@ -868,13 +980,42 @@ fn size_f(size: Size) -> SizeF {
     }
 }
 
+/// The 4 by 4 column-major matrix for a box's transform, or `None` when it
+/// is the identity (no transform and no scale). In this slice only `scale`
+/// is supported; `translate`, `rotate` and the rest arrive with later
+/// slices (spec 0010, AC-19, AC-20).
+fn transform_matrix(transform: &css::Transform) -> Option<[f32; 16]> {
+    // The separate `scale` property wins over `transform: scale()` when
+    // both are set (spec 0010, AC-19).
+    let scale = transform.scale.unwrap_or_else(|| {
+        transform
+            .transform
+            .iter()
+            .find_map(|f| match f {
+                css::TransformFn::Scale(s) => Some(*s),
+                _ => None,
+            })
+            .unwrap_or(1.0)
+    });
+    let has_transform = !transform.transform.is_empty() || transform.scale.is_some();
+    if !has_transform && (scale - 1.0).abs() < f32::EPSILON {
+        return None;
+    }
+    let mut m = [0.0; 16];
+    m[0] = scale;
+    m[5] = scale;
+    m[10] = 1.0;
+    m[15] = 1.0;
+    Some(m)
+}
+
 #[cfg(test)]
 mod tests {
     use base::atoms::QualName;
     use base::local_name;
     use css::{
-        Background, BorderSide, Color, ComputedStyle, Display, Float, Length, Margin, Overflow,
-        Position,
+        Background, BorderCollapse, BorderSide, Color, ComputedStyle, Display, EmptyCells, Float,
+        Length, Margin, Overflow, Position,
     };
     use dom::{Document, NodeId};
 
@@ -1556,5 +1697,128 @@ mod tests {
             SpatialKind::Sticky { offset, .. } => *offset,
             _ => PointF::default(),
         }
+    }
+
+    #[test]
+    fn empty_cells_hide_leaves_an_empty_cell_unpainted() {
+        // Spec 0009, child 0004, AC-17: `empty-cells: hide` skips an empty
+        // cell's background, while `show` paints it.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
+        let mut table = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut table.display_box).display = Display::Table;
+        let table = add(&mut doc, html, table);
+        let mut row = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut row.display_box).display = Display::TableRow;
+        let row = add(&mut doc, table, row);
+        for empty_cells in [EmptyCells::Hide, EmptyCells::Show] {
+            let mut cell = style(Color::rgb8(255, 0, 0), 0.0, Some(10.0));
+            Rc::make_mut(&mut cell.display_box).display = Display::TableCell;
+            Rc::make_mut(&mut cell.inherited_table).empty_cells = empty_cells;
+            add(&mut doc, row, cell);
+        }
+        let list = paint_doc(&mut doc, &HashMap::new());
+
+        let reds: Vec<_> = list
+            .items
+            .iter()
+            .filter_map(|item| match item.kind {
+                ItemKind::Rect { color, .. } if color.r > 0.0 => Some(color.r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reds.len(), 1, "only the showing cell paints its background");
+    }
+
+    #[test]
+    fn collapsed_borders_paint_one_edge_with_the_winner() {
+        // Spec 0009, child 0004, AC-17: a 3 px cell border beats a 1 px table
+        // border, and each shared edge paints once from the collapsed pass.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
+        let mut table = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut table.display_box).display = Display::Table;
+        Rc::make_mut(&mut table.inherited_table).border_collapse = BorderCollapse::Collapse;
+        Rc::make_mut(&mut table.size).width = Some(Length::px(100.0));
+        bordered(&mut table, 1.0);
+        let table = add(&mut doc, html, table);
+        let mut row = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut row.display_box).display = Display::TableRow;
+        let row = add(&mut doc, table, row);
+        for _ in 0..2 {
+            let mut cell = style(Color::TRANSPARENT, 0.0, Some(10.0));
+            Rc::make_mut(&mut cell.display_box).display = Display::TableCell;
+            bordered(&mut cell, 3.0);
+            add(&mut doc, row, cell);
+        }
+        let list = paint_doc(&mut doc, &HashMap::new());
+
+        let widths: Vec<[f32; 4]> = list
+            .items
+            .iter()
+            .filter_map(|item| match item.kind {
+                ItemKind::Border { widths, .. } => Some(widths),
+                _ => None,
+            })
+            .collect();
+        assert!(!widths.is_empty(), "the collapsed edges paint");
+        assert!(
+            widths.iter().all(|w| w.contains(&3.0)),
+            "every edge is the winning 3 px: {widths:?}"
+        );
+        assert!(
+            widths.iter().all(|w| !w.contains(&1.0)),
+            "the table's own border does not paint: {widths:?}"
+        );
+    }
+
+    #[test]
+    fn table_backgrounds_paint_in_six_layers() {
+        // Spec 0009, child 0004, AC-17: table, column groups, columns, row
+        // groups, rows, cells, in that order.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
+        let mut table = style(Color::rgb8(0, 0, 255), 0.0, None);
+        Rc::make_mut(&mut table.display_box).display = Display::Table;
+        Rc::make_mut(&mut table.size).width = Some(Length::px(100.0));
+        let table = add(&mut doc, html, table);
+        let mut row = style(Color::rgb8(0, 255, 0), 0.0, None);
+        Rc::make_mut(&mut row.display_box).display = Display::TableRow;
+        let row = add(&mut doc, table, row);
+        let mut cell = style(Color::rgb8(255, 0, 0), 0.0, Some(10.0));
+        Rc::make_mut(&mut cell.display_box).display = Display::TableCell;
+        add(&mut doc, row, cell);
+        let list = paint_doc(&mut doc, &HashMap::new());
+
+        let colors: Vec<(f32, f32, f32)> = list
+            .items
+            .iter()
+            .filter_map(|item| match item.kind {
+                ItemKind::Rect { color, .. } => Some((color.r, color.g, color.b)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            colors,
+            vec![(0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)],
+            "table, then row, then cell"
+        );
+    }
+
+    /// Gives `style` a solid black border `width` px wide on every side.
+    fn bordered(style: &mut ComputedStyle, width: f32) {
+        let side = BorderSide {
+            width: Au::from_px(width),
+            style: css::BorderStyle::Solid,
+            color: Color::BLACK,
+        };
+        let border = Rc::make_mut(&mut style.border);
+        border.top = side;
+        border.right = side;
+        border.bottom = side;
+        border.left = side;
     }
 }
