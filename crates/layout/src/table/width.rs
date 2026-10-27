@@ -20,8 +20,9 @@ pub(crate) type ColumnWidths = Vec<Au>;
 fn add_au(a: Au, b: Au) -> Au {
     Au(a.0.saturating_add(b.0))
 }
+/// `a - b`, never below zero: a width left over or still missing.
 fn sub_au(a: Au, b: Au) -> Au {
-    Au(a.0.saturating_sub(b.0))
+    Au(a.0.saturating_sub(b.0).max(0))
 }
 
 /// Sizes a table's columns (spec 0009, child 0004, AC-16).
@@ -54,66 +55,106 @@ pub(crate) fn size_columns(
         return fixed_widths(tree, grid, table_width, cells, &col_min);
     }
 
-    // Percent columns first.
-    let mut remaining = table_width;
-    let mut percent_sized = vec![false; ncols];
-    for (col, width) in widths.iter_mut().enumerate() {
-        if grid.columns[col].percent > 0.0 {
-            let pct = grid.columns[col].percent / 100.0;
-            *width = Au::from_px((table_width.to_f32_px() * pct).round());
-            remaining = sub_au(remaining, *width);
-            percent_sized[col] = true;
+    // A percent column aims at its share of the table, never below its min
+    // content (CSS Tables 3 §3.9.3).
+    let percents = column_percents(tree, grid, cells);
+    let target: Vec<Option<Au>> = (0..ncols)
+        .map(|col| {
+            (percents[col] > 0.0).then(|| {
+                let share = Au::from_px((table_width.to_f32_px() * percents[col] / 100.0).round());
+                share.max(col_min[col])
+            })
+        })
+        .collect();
+    let (mut auto_min, mut auto_max, mut pct_min, mut pct_target) =
+        (Au::ZERO, Au::ZERO, Au::ZERO, Au::ZERO);
+    for col in 0..ncols {
+        match target[col] {
+            Some(t) => {
+                pct_min = add_au(pct_min, col_min[col]);
+                pct_target = add_au(pct_target, t);
+            }
+            None => {
+                auto_min = add_au(auto_min, col_min[col]);
+                auto_max = add_au(auto_max, col_max[col]);
+            }
         }
     }
 
-    // Auto layout (CSS Tables 3 §3.9.3).
-    // 1. Min sizes first, for the columns a percent did not size.
-    let mut min_sum = Au::ZERO;
-    for (col, width) in widths.iter_mut().enumerate() {
-        if percent_sized[col] {
-            continue;
+    // When the percents and the auto columns' min content overflow the
+    // table, auto columns keep their min and percent columns share the rest.
+    if add_au(pct_target, auto_min) > table_width {
+        let room = sub_au(sub_au(table_width, auto_min), pct_min);
+        let scale = ratio(room, sub_au(pct_target, pct_min)).min(1.0);
+        for (col, width) in widths.iter_mut().enumerate() {
+            *width = match target[col] {
+                Some(t) => col_min[col] + Au::from_px(sub_au(t, col_min[col]).to_f32_px() * scale),
+                None => col_min[col],
+            };
         }
-        *width = col_min[col];
-        min_sum = add_au(min_sum, col_min[col]);
+        clamp_widths(&mut widths, &col_min, table_width);
+        return widths;
     }
-    let leftover = sub_au(remaining, min_sum);
 
-    // 2. The rest by max content. When the cells have no content, the
-    //    columns share the width equally so the table still reaches it.
-    let mut max_sum = Au::ZERO;
-    for (col, m) in col_max.iter().enumerate() {
-        if !percent_sized[col] {
-            max_sum = add_au(max_sum, *m);
-        }
+    // Auto columns grow from min towards max content as room allows, then
+    // share any excess in proportion to their max content, so the columns
+    // always fill the table. Columns with no content share it equally.
+    let remaining = sub_au(table_width, pct_target);
+    let auto_cols = target.iter().filter(|t| t.is_none()).count();
+    for (col, width) in widths.iter_mut().enumerate() {
+        *width = match target[col] {
+            Some(t) => t,
+            None if remaining <= auto_max => {
+                let scale = ratio(sub_au(remaining, auto_min), sub_au(auto_max, auto_min));
+                col_min[col] + Au::from_px(sub_au(col_max[col], col_min[col]).to_f32_px() * scale)
+            }
+            None if auto_max > Au::ZERO => {
+                let excess = sub_au(remaining, auto_max).to_f32_px();
+                col_max[col] + Au::from_px(excess * ratio(col_max[col], auto_max))
+            }
+            None => Au(remaining.0 / auto_cols as i32),
+        };
     }
-    if leftover > Au::ZERO {
-        if max_sum > Au::ZERO {
-            let scale = leftover.to_f32_px() / max_sum.to_f32_px();
-            for (col, width) in widths.iter_mut().enumerate() {
-                if percent_sized[col] {
-                    continue;
-                }
-                let guess = Au::from_px((col_max[col].to_f32_px() * scale).round());
-                *width = std::cmp::max(*width, guess);
-            }
-        } else {
-            let free = percent_sized.iter().filter(|sized| !**sized).count();
-            let mut left = leftover;
-            let mut columns_left = free;
-            for (col, width) in widths.iter_mut().enumerate() {
-                if percent_sized[col] {
-                    continue;
-                }
-                let take = Au(left.0 / columns_left.max(1) as i32);
-                *width = add_au(*width, take);
-                left = sub_au(left, take);
-                columns_left = columns_left.saturating_sub(1);
-            }
+    // With no auto column to take it, the excess goes to the percent columns.
+    if auto_cols == 0 && pct_target > Au::ZERO {
+        let excess = sub_au(table_width, pct_target).to_f32_px();
+        for width in widths.iter_mut() {
+            *width += Au::from_px(excess * ratio(*width, pct_target));
         }
     }
 
     clamp_widths(&mut widths, &col_min, table_width);
     widths
+}
+
+/// `part / whole`, or 0 when `whole` is empty.
+fn ratio(part: Au, whole: Au) -> f32 {
+    if whole > Au::ZERO {
+        part.to_f32_px() / whole.to_f32_px()
+    } else {
+        0.0
+    }
+}
+
+/// Each column's percent width: the largest of its `<col>` percent and the
+/// percent `width` of every cell that spans only it (CSS Tables 3 §3.9.3).
+fn column_percents(tree: &BoxTree, grid: &TableGrid, cells: &[Option<BoxId>]) -> Vec<f32> {
+    let mut percents: Vec<f32> = grid.columns.iter().map(|column| column.percent).collect();
+    for (slot, cell) in cells.iter().enumerate() {
+        let Some(cell) = cell else {
+            continue;
+        };
+        if slot_col_span(grid, slot) != (slot % grid.columns.len(), 1) {
+            continue;
+        }
+        if let Some(css::Length::Percent(percent)) =
+            tree.get(*cell).and_then(|b| b.style.size.width.clone())
+        {
+            let col = slot % grid.columns.len();
+            percents[col] = percents[col].max(percent);
+        }
+    }
+    percents
 }
 
 /// A table's min and max content widths: its columns' content plus the
@@ -185,22 +226,51 @@ pub(crate) fn column_content(
     let mut col_min = vec![Au::ZERO; ncols];
     let mut col_max = vec![Au::ZERO; ncols];
 
-    for slot in 0..cells.len().min(cell_min.len()).min(cell_max.len()) {
+    let slots = cells.len().min(cell_min.len()).min(cell_max.len());
+    let mut spanning = Vec::new();
+    for slot in 0..slots {
         if cells[slot].is_none() {
             continue;
         }
         let (col, span) = slot_col_span(grid, slot);
-        if span == 0 {
-            continue; // spanned slot, not an origin
-        }
-        for c in col..(col + span).min(ncols) {
-            if let Some(min) = cell_min[slot] {
-                col_min[c] = col_min[c].max(min);
+        match span {
+            0 => continue, // spanned slot, not an origin
+            1 => {
+                if let Some(min) = cell_min[slot] {
+                    col_min[col] = col_min[col].max(min);
+                }
+                if let Some(max) = cell_max[slot] {
+                    col_max[col] = col_max[col].max(max);
+                }
             }
-            if let Some(max) = cell_max[slot] {
-                col_max[c] = col_max[c].max(max);
-            }
+            _ => spanning.push((slot, col, (col + span).min(ncols))),
         }
+    }
+    // A spanning cell adds only what its columns lack, spread by their max
+    // content, or equally when they have none (CSS Tables 3 §3.9.3).
+    for (slot, start, end) in spanning {
+        let max_sum: Au = col_max[start..end].iter().copied().sum();
+        let shares: Vec<f32> = col_max[start..end]
+            .iter()
+            .map(|&max| {
+                if max_sum > Au::ZERO {
+                    ratio(max, max_sum)
+                } else {
+                    1.0 / (end - start) as f32
+                }
+            })
+            .collect();
+        let spread = |sizes: &mut [Au], need: Option<Au>| {
+            let Some(need) = need else {
+                return;
+            };
+            let excess = sub_au(need, sizes[start..end].iter().copied().sum());
+            for (size, share) in sizes[start..end].iter_mut().zip(&shares) {
+                *size += Au::from_px(excess.to_f32_px() * share);
+            }
+        };
+        spread(&mut col_min, cell_min[slot]);
+        spread(&mut col_max, cell_max[slot]);
     }
 
     // A `<col>` or `<colgroup>` width is a minimum in auto layout.
@@ -405,7 +475,8 @@ mod tests {
     #[test]
     fn auto_splits_by_max_content_under_table_width() {
         // Two columns, min 50 each, max 200 each, table 300 wide.
-        // leftover after mins = 200, max_sum = 400, scale = 0.5 → each 100.
+        // leftover after mins = 200, max_sum = 400, scale = 0.5 → each min
+        // 50 plus a 100 share, so the columns fill the table: 150 each.
         let widths = cell_widths(
             Au::from_px(300.0),
             [Some(Au::from_px(50.0)), Some(Au::from_px(50.0)), None, None],
@@ -417,8 +488,8 @@ mod tests {
             ],
         );
         assert_eq!(widths.len(), 2);
-        assert!((widths[0] - Au::from_px(100.0)).0.abs() < 1);
-        assert!((widths[1] - Au::from_px(100.0)).0.abs() < 1);
+        assert!((widths[0] - Au::from_px(150.0)).0.abs() < 1);
+        assert!((widths[1] - Au::from_px(150.0)).0.abs() < 1);
     }
 
     #[test]

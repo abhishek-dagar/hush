@@ -20,9 +20,9 @@ use crate::values::{
 use crate::{
     AlignItems, AspectRatio, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect,
     Cursor, Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, GridArea, GridAutoFlow,
-    GridLine, JustifyContent, Length, ListStylePosition, ListStyleType, OutlineStyle, Overflow,
-    Position, TableLayout, TextAlign, TextDecorationLine, TextOverflow, TrackSize, Transform,
-    TransformFn, UserSelect, VerticalAlign, Visibility, WhiteSpace,
+    GridLine, JustifyContent, ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position,
+    RepeatCount, TableLayout, TextAlign, TextDecorationLine, TextOverflow, Transform, TransformFn,
+    UserSelect, VerticalAlign, Visibility, WhiteSpace,
 };
 
 macro_rules! longhands {
@@ -110,7 +110,10 @@ longhands! {
     FlexShrink = "flex-shrink", false;
     FlexBasis = "flex-basis", false;
     JustifyContent = "justify-content", false;
+    AlignContent = "align-content", false;
+    JustifyItems = "justify-items", false;
     AlignItems = "align-items", false;
+    JustifySelf = "justify-self", false;
     AlignSelf = "align-self", false;
     Order = "order", false;
     Transform = "transform", false;
@@ -190,6 +193,14 @@ pub(crate) enum Shorthand {
     Flex,
     Overflow,
     Outline,
+    PlaceContent,
+    PlaceItems,
+    PlaceSelf,
+    GridRow,
+    GridColumn,
+    GridArea,
+    GridTemplate,
+    Grid,
 }
 
 impl Shorthand {
@@ -215,6 +226,14 @@ impl Shorthand {
             "flex" => Self::Flex,
             "overflow" => Self::Overflow,
             "outline" => Self::Outline,
+            "place-content" => Self::PlaceContent,
+            "place-items" => Self::PlaceItems,
+            "place-self" => Self::PlaceSelf,
+            "grid-row" => Self::GridRow,
+            "grid-column" => Self::GridColumn,
+            "grid-area" => Self::GridArea,
+            "grid-template" => Self::GridTemplate,
+            "grid" => Self::Grid,
             _ => return None,
         })
     }
@@ -295,6 +314,30 @@ impl Shorthand {
             Self::Flex => &[L::FlexGrow, L::FlexShrink, L::FlexBasis],
             Self::Overflow => &[L::OverflowX, L::OverflowY],
             Self::Outline => &[L::OutlineWidth, L::OutlineStyle, L::OutlineColor],
+            Self::PlaceContent => &[L::AlignContent, L::JustifyContent],
+            Self::PlaceItems => &[L::AlignItems, L::JustifyItems],
+            Self::PlaceSelf => &[L::AlignSelf, L::JustifySelf],
+            Self::GridRow => &[L::GridRowStart, L::GridRowEnd],
+            Self::GridColumn => &[L::GridColumnStart, L::GridColumnEnd],
+            Self::GridArea => &[
+                L::GridRowStart,
+                L::GridColumnStart,
+                L::GridRowEnd,
+                L::GridColumnEnd,
+            ],
+            Self::GridTemplate => &[
+                L::GridTemplateRows,
+                L::GridTemplateColumns,
+                L::GridTemplateAreas,
+            ],
+            Self::Grid => &[
+                L::GridTemplateRows,
+                L::GridTemplateColumns,
+                L::GridTemplateAreas,
+                L::GridAutoRows,
+                L::GridAutoColumns,
+                L::GridAutoFlow,
+            ],
         }
     }
 }
@@ -345,6 +388,57 @@ pub(crate) enum FlexBasis {
     Length(SpecifiedLength),
 }
 
+/// A grid template as written: its track entries keep lengths specified so
+/// the cascade can resolve `em` and `calc()` against the computed font size
+/// (spec 0010, AC-1).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SpecifiedTrackList {
+    /// The entries in source order.
+    pub(crate) entries: Vec<SpecifiedTrackEntry>,
+}
+
+/// One entry of a [`SpecifiedTrackList`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SpecifiedTrackEntry {
+    /// A single track size.
+    Size(SpecifiedTrackSize),
+    /// Names for the line at this position.
+    LineNames(Vec<Atom>),
+    /// `repeat(count, tracks)`.
+    Repeat {
+        /// How many times to repeat.
+        count: RepeatCount,
+        /// The tracks to repeat.
+        tracks: Vec<SpecifiedTrackEntry>,
+    },
+}
+
+/// One track's size as written.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SpecifiedTrackSize {
+    /// A single breadth.
+    Breadth(SpecifiedBreadth),
+    /// `minmax(min, max)`.
+    MinMax(SpecifiedBreadth, SpecifiedBreadth),
+    /// `fit-content(<length>)`.
+    FitContent(SpecifiedLength),
+}
+
+/// A track breadth as written.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SpecifiedBreadth {
+    /// A fixed length or percentage.
+    Length(SpecifiedLength),
+    /// A fraction of the free space.
+    Fr(f32),
+    /// `auto`.
+    Auto,
+    /// `min-content`.
+    MinContent,
+    /// `max-content`.
+    MaxContent,
+}
+
 /// A longhand's value as written.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Value {
@@ -379,7 +473,7 @@ pub(crate) enum Value {
     FlexBasis(FlexBasis),
     JustifyContent(JustifyContent),
     AlignItems(AlignItems),
-    /// `align-self`; `None` is `auto`.
+    /// `align-self` or `justify-self`; `None` is `auto`.
     AlignSelf(Option<AlignItems>),
     Overflow(Overflow),
     Float(Float),
@@ -404,14 +498,14 @@ pub(crate) enum Value {
     /// `transform`: the computed transform functions.
     Transform(Rc<Transform>),
     /// `grid-template-columns` / `grid-template-rows`.
-    GridTracks(Vec<TrackSize>),
+    GridTracks(SpecifiedTrackList),
     /// `grid-auto-columns` / `grid-auto-rows`.
-    GridAutoTracks(Vec<TrackSize>),
+    GridAutoTracks(Vec<SpecifiedTrackSize>),
     /// `grid-auto-flow`.
     GridAutoFlow(GridAutoFlow),
     /// `grid-column-start` / `grid-column-end` / `grid-row-start` /
     /// `grid-row-end`.
-    GridLine(Option<GridLine>),
+    GridLine(GridLine),
     /// `grid-template-areas`: named area cell ranges.
     GridAreas(Vec<GridArea>),
 }
@@ -943,19 +1037,25 @@ fn parse_longhand(
         )?),
         L::FlexGrow | L::FlexShrink => Value::Number(parse_non_negative_number(input)?),
         L::FlexBasis => Value::FlexBasis(parse_flex_basis(input)?),
-        L::JustifyContent => Value::JustifyContent(parse_justify_content(input, context)?),
-        L::AlignItems => Value::AlignItems(parse_align(input, context, longhand)?),
-        L::AlignSelf => {
+        L::JustifyContent | L::AlignContent => {
+            Value::JustifyContent(parse_content_alignment(input, context, longhand)?)
+        }
+        L::JustifyItems | L::AlignItems => {
+            Value::AlignItems(parse_item_alignment(input, context, longhand)?)
+        }
+        L::JustifySelf | L::AlignSelf => {
             if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
                 Value::AlignSelf(None)
             } else {
-                Value::AlignSelf(Some(parse_align(input, context, longhand)?))
+                Value::AlignSelf(Some(parse_item_alignment(input, context, longhand)?))
             }
         }
         L::Order => Value::Integer(input.expect_integer()?),
         L::Transform => Value::Transform(Rc::new(parse_transform(input)?)),
         L::GridTemplateColumns | L::GridTemplateRows => Value::GridTracks(parse_track_list(input)?),
-        L::GridAutoColumns | L::GridAutoRows => Value::GridAutoTracks(parse_track_list(input)?),
+        L::GridAutoColumns | L::GridAutoRows => {
+            Value::GridAutoTracks(parse_track_size_list(input)?)
+        }
         L::GridAutoFlow => Value::GridAutoFlow(parse_auto_flow(input)?),
         L::GridTemplateAreas => Value::GridAreas(parse_grid_template_areas(input)?),
         L::GridColumnStart | L::GridColumnEnd | L::GridRowStart | L::GridRowEnd => {
@@ -1287,40 +1387,42 @@ fn parse_flex_basis(input: &mut Parser<'_>) -> ParseResult<FlexBasis> {
     parse_length(input, LengthRules::NON_NEGATIVE).map(FlexBasis::Length)
 }
 
-/// `justify-content` on a flex container. `normal` and `stretch` behave as
-/// `flex-start` there; `start`, `end`, `left` and `right` map by meaning.
-fn parse_justify_content(
+/// `justify-content` or `align-content`: the content distribution used by
+/// flex and grid (spec 0010, AC-4). `safe` and `unsafe` are accepted and do
+/// not change the result.
+fn parse_content_alignment(
     input: &mut Parser<'_>,
     context: &ParseContext,
+    longhand: Longhand,
 ) -> ParseResult<JustifyContent> {
     skip_overflow_position(input);
     parse_mapped_keyword(
         input,
         context,
-        Longhand::JustifyContent,
+        longhand,
         &[
-            ("normal", JustifyContent::FlexStart),
+            ("normal", JustifyContent::Normal),
+            ("start", JustifyContent::Start),
+            ("end", JustifyContent::End),
             ("flex-start", JustifyContent::FlexStart),
             ("flex-end", JustifyContent::FlexEnd),
             ("center", JustifyContent::Center),
+            ("stretch", JustifyContent::Stretch),
             ("space-between", JustifyContent::SpaceBetween),
             ("space-around", JustifyContent::SpaceAround),
             ("space-evenly", JustifyContent::SpaceEvenly),
         ],
         &[
-            ("stretch", JustifyContent::FlexStart),
-            ("start", JustifyContent::FlexStart),
-            ("left", JustifyContent::FlexStart),
-            ("end", JustifyContent::FlexEnd),
-            ("right", JustifyContent::FlexEnd),
+            ("left", JustifyContent::Start),
+            ("right", JustifyContent::End),
         ],
     )
 }
 
-/// `align-items`, or `align-self` other than `auto`. `normal` behaves as
-/// `stretch` on flex items; the baseline and logical keywords map to the
-/// nearest flex keyword.
-fn parse_align(
+/// `align-items`, `justify-items`, `align-self` or `justify-self`: the item
+/// alignment used by flex and grid (spec 0010, AC-4). `baseline` behaves as
+/// `start` in this feature.
+fn parse_item_alignment(
     input: &mut Parser<'_>,
     context: &ParseContext,
     longhand: Longhand,
@@ -1335,7 +1437,7 @@ fn parse_align(
         .is_ok()
     {
         context.note_mapped(longhand.name(), "baseline");
-        return Ok(AlignItems::FlexStart);
+        return Ok(AlignItems::Baseline);
     }
     skip_overflow_position(input);
     parse_mapped_keyword(
@@ -1343,19 +1445,18 @@ fn parse_align(
         context,
         longhand,
         &[
-            ("normal", AlignItems::Stretch),
+            ("normal", AlignItems::Normal),
             ("stretch", AlignItems::Stretch),
+            ("start", AlignItems::Start),
+            ("end", AlignItems::End),
+            ("self-start", AlignItems::Start),
+            ("self-end", AlignItems::End),
             ("flex-start", AlignItems::FlexStart),
             ("flex-end", AlignItems::FlexEnd),
             ("center", AlignItems::Center),
+            ("baseline", AlignItems::Baseline),
         ],
-        &[
-            ("baseline", AlignItems::FlexStart),
-            ("start", AlignItems::FlexStart),
-            ("self-start", AlignItems::FlexStart),
-            ("end", AlignItems::FlexEnd),
-            ("self-end", AlignItems::FlexEnd),
-        ],
+        &[],
     )
 }
 
@@ -1378,7 +1479,8 @@ fn parse_display(input: &mut Parser<'_>) -> ParseResult<Display> {
         // block until inline flex layout exists.
         "inline-flex" => Display::InlineBlock,
         // Inline level keywords whose layout arrives later.
-        "inline-grid" | "contents" | "ruby" | "ruby-text" | "ruby-base" => Display::Inline,
+        "inline-grid" => Display::InlineGrid,
+        "contents" | "ruby" | "ruby-text" | "ruby-base" => Display::Inline,
         // Block level ones (spec 0006, AC-3).
         "grid" => Display::Grid,
         "run-in" => Display::Block,
@@ -1461,102 +1563,112 @@ fn parse_transform(input: &mut Parser<'_>) -> ParseResult<Transform> {
     })
 }
 
-/// `grid-template-columns` / `grid-template-rows`: one or more track
-/// sizes, each a length, percentage, `fr` fraction, `minmax()` or
-/// `repeat()` (thin thread: fixed and `fr` tracks, `repeat(auto-fill,
-/// minmax())`).
-fn parse_track_list(input: &mut Parser<'_>) -> ParseResult<Vec<TrackSize>> {
-    let mut tracks = Vec::new();
-    loop {
-        if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
-            tracks.push(TrackSize::Length(Length::ZERO));
-            continue;
-        }
-        if input
-            .try_parse(|i| i.expect_function_matching("repeat"))
-            .is_ok()
-        {
-            tracks.push(parse_repeat(input)?);
-            continue;
-        }
-        if input
-            .try_parse(|i| i.expect_function_matching("minmax"))
-            .is_ok()
-        {
-            tracks.push(parse_minmax(input)?);
-            continue;
-        }
-        if input
-            .try_parse(|i| i.expect_function_matching("fit-content"))
-            .is_ok()
-        {
-            tracks.push(parse_track_size(input)?);
-            continue;
-        }
-        if input
-            .try_parse(|i| i.expect_ident_matching("min-content"))
-            .is_ok()
-        {
-            tracks.push(TrackSize::MinContent);
-            continue;
-        }
-        if input
-            .try_parse(|i| i.expect_ident_matching("max-content"))
-            .is_ok()
-        {
-            tracks.push(TrackSize::MaxContent);
-            continue;
-        }
-        match parse_length(input, LengthRules::NON_NEGATIVE) {
-            Ok(length) => match length {
-                SpecifiedLength::Px(px) => tracks.push(TrackSize::Length(Length::px(px))),
-                SpecifiedLength::Percent(percent) => {
-                    tracks.push(TrackSize::Length(Length::Percent(percent)))
-                }
-                _ => break,
-            },
-            Err(_) => break,
-        }
-        if input.try_parse(Parser::expect_comma).is_err() {
-            break;
-        }
+/// `grid-template-columns` / `grid-template-rows`: `none`, or a list of
+/// track sizes and named lines (spec 0010, AC-1).
+fn parse_track_list(input: &mut Parser<'_>) -> ParseResult<SpecifiedTrackList> {
+    if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+        return Ok(SpecifiedTrackList::default());
     }
-    if tracks.is_empty() {
+    let entries = parse_track_entries(input, false)?;
+    if entries.is_empty() {
         return invalid();
     }
-    Ok(tracks)
+    Ok(SpecifiedTrackList { entries })
 }
 
-/// `repeat(auto-fill, minmax(100px, 1fr))` or `repeat(3, 200px)`.
-fn parse_repeat(input: &mut Parser<'_>) -> ParseResult<TrackSize> {
+/// A run of track entries: sizes, named lines and `repeat()`. Inside a
+/// `repeat()` the run ends at the block's end.
+fn parse_track_entries(
+    input: &mut Parser<'_>,
+    in_repeat: bool,
+) -> ParseResult<Vec<SpecifiedTrackEntry>> {
+    let mut entries = Vec::new();
+    loop {
+        if let Ok(names) = input.try_parse(parse_line_names) {
+            entries.push(SpecifiedTrackEntry::LineNames(names));
+            continue;
+        }
+        if let Ok(repeat) = input.try_parse(parse_repeat_entry) {
+            entries.push(repeat);
+            continue;
+        }
+        if in_repeat && input.is_exhausted() {
+            break;
+        }
+        match input.try_parse(parse_track_size) {
+            Ok(size) => entries.push(SpecifiedTrackEntry::Size(size)),
+            Err(_) => break,
+        }
+    }
+    Ok(entries)
+}
+
+/// `[name name]`: names for the line at this position.
+fn parse_line_names(input: &mut Parser<'_>) -> ParseResult<Vec<Atom>> {
+    match input.next()? {
+        Token::SquareBracketBlock => input.parse_nested_block(|input| {
+            let mut names = Vec::new();
+            while let Ok(name) = input.try_parse(|i| i.expect_ident().map(|name| name.to_string()))
+            {
+                names.push(Atom::from(name.as_str()));
+            }
+            if names.is_empty() {
+                return invalid();
+            }
+            Ok(names)
+        }),
+        _ => invalid(),
+    }
+}
+
+/// `repeat(auto-fill, [col] minmax(100px, 1fr))`.
+fn parse_repeat_entry(input: &mut Parser<'_>) -> ParseResult<SpecifiedTrackEntry> {
+    if input
+        .try_parse(|i| i.expect_function_matching("repeat"))
+        .is_err()
+    {
+        return invalid();
+    }
     input.parse_nested_block(|input| {
         let count = if input
             .try_parse(|i| i.expect_ident_matching("auto-fill"))
             .is_ok()
-            || input
-                .try_parse(|i| i.expect_ident_matching("auto-fit"))
-                .is_ok()
         {
-            None
+            RepeatCount::AutoFill
+        } else if input
+            .try_parse(|i| i.expect_ident_matching("auto-fit"))
+            .is_ok()
+        {
+            RepeatCount::AutoFit
         } else {
-            Some(input.expect_integer()? as usize)
+            let count = input.expect_integer()?;
+            if !(1..=1000).contains(&count) {
+                return invalid();
+            }
+            RepeatCount::Int(count as u16)
         };
         input.expect_comma()?;
-        let track = parse_track_size(input)?;
-        Ok(TrackSize::Repeat {
-            count,
-            track: Box::new(track),
-        })
+        let tracks = parse_track_entries(input, true)?;
+        if tracks.is_empty() {
+            return invalid();
+        }
+        Ok(SpecifiedTrackEntry::Repeat { count, tracks })
     })
 }
 
-/// A single track size: a length/percent or an `fr` fraction.
-fn parse_track_size(input: &mut Parser<'_>) -> ParseResult<TrackSize> {
+/// A single track size: a breadth, `minmax(min, max)` or
+/// `fit-content(<length>)`.
+fn parse_track_size(input: &mut Parser<'_>) -> ParseResult<SpecifiedTrackSize> {
     if input
         .try_parse(|i| i.expect_function_matching("minmax"))
         .is_ok()
     {
-        return parse_minmax(input);
+        return input.parse_nested_block(|input| {
+            let min = parse_breadth(input)?;
+            input.expect_comma()?;
+            let max = parse_breadth(input)?;
+            Ok(SpecifiedTrackSize::MinMax(min, max))
+        });
     }
     if input
         .try_parse(|i| i.expect_function_matching("fit-content"))
@@ -1564,131 +1676,197 @@ fn parse_track_size(input: &mut Parser<'_>) -> ParseResult<TrackSize> {
     {
         return input.parse_nested_block(|input| {
             let length = parse_length(input, LengthRules::NON_NEGATIVE)?;
-            match length {
-                SpecifiedLength::Px(px) => Ok(TrackSize::FitContent(Length::px(px))),
-                SpecifiedLength::Percent(percent) => {
-                    Ok(TrackSize::FitContent(Length::Percent(percent)))
-                }
-                _ => invalid(),
-            }
+            Ok(SpecifiedTrackSize::FitContent(length))
         });
+    }
+    parse_breadth(input).map(SpecifiedTrackSize::Breadth)
+}
+
+/// One track breadth: a length or percentage, `<n>fr`, `auto`,
+/// `min-content` or `max-content`.
+fn parse_breadth(input: &mut Parser<'_>) -> ParseResult<SpecifiedBreadth> {
+    if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+        return Ok(SpecifiedBreadth::Auto);
     }
     if input
         .try_parse(|i| i.expect_ident_matching("min-content"))
         .is_ok()
     {
-        return Ok(TrackSize::MinContent);
+        return Ok(SpecifiedBreadth::MinContent);
     }
     if input
         .try_parse(|i| i.expect_ident_matching("max-content"))
         .is_ok()
     {
-        return Ok(TrackSize::MaxContent);
+        return Ok(SpecifiedBreadth::MaxContent);
     }
-    let length = parse_length(input, LengthRules::NON_NEGATIVE)?;
-    match length {
-        SpecifiedLength::Px(px) => Ok(TrackSize::Length(Length::px(px))),
-        SpecifiedLength::Percent(percent) => Ok(TrackSize::Length(Length::Percent(percent))),
+    let fr = input.try_parse(|input| match input.next()? {
+        Token::Dimension { value, unit, .. }
+            if unit.eq_ignore_ascii_case("fr") && *value >= 0.0 && value.is_finite() =>
+        {
+            Ok(SpecifiedBreadth::Fr(*value))
+        }
         _ => invalid(),
+    });
+    if let Ok(fr) = fr {
+        return Ok(fr);
     }
+    parse_length(input, LengthRules::NON_NEGATIVE).map(SpecifiedBreadth::Length)
 }
 
-/// `minmax(min, max)`.
-fn parse_minmax(input: &mut Parser<'_>) -> ParseResult<TrackSize> {
-    input.parse_nested_block(|input| {
-        let min = parse_track_size(input)?;
-        input.expect_comma()?;
-        let max = parse_track_size(input)?;
-        Ok(TrackSize::Minmax {
-            min: Box::new(min),
-            max: Box::new(max),
-        })
-    })
+/// A list of track sizes for `grid-auto-columns` / `grid-auto-rows`, with
+/// names and `repeat()` ignored (those are template only).
+fn parse_track_size_list(input: &mut Parser<'_>) -> ParseResult<Vec<SpecifiedTrackSize>> {
+    let entries = parse_track_entries(input, false)?;
+    let mut sizes = Vec::new();
+    fn push(entries: Vec<SpecifiedTrackEntry>, sizes: &mut Vec<SpecifiedTrackSize>) {
+        for entry in entries {
+            match entry {
+                SpecifiedTrackEntry::Size(size) => sizes.push(size),
+                SpecifiedTrackEntry::Repeat {
+                    count: RepeatCount::Int(count),
+                    tracks,
+                } => {
+                    for _ in 0..count {
+                        push(tracks.clone(), sizes);
+                    }
+                }
+                SpecifiedTrackEntry::Repeat { .. } | SpecifiedTrackEntry::LineNames(_) => {}
+            }
+        }
+    }
+    push(entries, &mut sizes);
+    if sizes.is_empty() {
+        return invalid();
+    }
+    Ok(sizes)
 }
 
-/// `grid-auto-flow`: `row`, `column`, optionally followed by `dense`.
+/// `grid-auto-flow`: `row` or `column`, with `dense` in either order.
 fn parse_auto_flow(input: &mut Parser<'_>) -> ParseResult<GridAutoFlow> {
-    let mut flow = GridAutoFlow::Row;
-    if input
-        .try_parse(|i| i.expect_ident_matching("column"))
-        .is_ok()
-    {
-        flow = GridAutoFlow::Column;
-    }
-    if input
-        .try_parse(|i| i.expect_ident_matching("dense"))
-        .is_ok()
-    {
-        flow = GridAutoFlow::Dense;
+    let mut flow = GridAutoFlow::default();
+    for _ in 0..2 {
+        let Ok(ident) = input.try_parse(|i| i.expect_ident().map(|name| name.to_string())) else {
+            break;
+        };
+        if ident.eq_ignore_ascii_case("row") {
+            flow.column = false;
+        } else if ident.eq_ignore_ascii_case("column") {
+            flow.column = true;
+        } else if ident.eq_ignore_ascii_case("dense") {
+            flow.dense = true;
+        } else {
+            return invalid();
+        }
     }
     Ok(flow)
 }
 
-/// `grid-template-areas`: quoted strings where each token is an area name
-/// or `.` for empty (spec 0010, AC-2).
+/// `grid-template-areas`: one quoted string per row, each token an area
+/// name or a run of dots for an empty cell (spec 0010, AC-2). Every name
+/// must form a rectangle.
 fn parse_grid_template_areas(input: &mut Parser<'_>) -> ParseResult<Vec<GridArea>> {
-    let mut areas = Vec::new();
-    let mut row = 0usize;
-    loop {
-        match input.next() {
-            Ok(Token::Ident(ident)) => {
-                let name = ident.as_ref();
-                if name == "." {
-                    continue;
+    let mut rows: Vec<Vec<Atom>> = Vec::new();
+    while !input.is_exhausted() {
+        match input.next()? {
+            Token::QuotedString(row) => {
+                let cells: Vec<Atom> = row.split_whitespace().map(Atom::from).collect();
+                if cells.is_empty() {
+                    return invalid();
                 }
-                areas.push(GridArea {
-                    name: Atom::from(name),
-                    row_start: row,
-                    row_end: row + 1,
-                    col_start: 0,
-                    col_end: 1,
-                });
-                row += 1;
-            }
-            Ok(Token::QuotedString(s)) => {
-                let name = s.as_ref();
-                if name == "." {
-                    continue;
+                if let Some(first) = rows.first()
+                    && first.len() != cells.len()
+                {
+                    return invalid();
                 }
-                areas.push(GridArea {
-                    name: Atom::from(name),
-                    row_start: row,
-                    row_end: row + 1,
-                    col_start: 0,
-                    col_end: 1,
-                });
-                row += 1;
+                rows.push(cells);
             }
-            _ => break,
-        }
-        if input.try_parse(Parser::expect_whitespace).is_err() {
-            break;
+            _ => return invalid(),
         }
     }
-    if areas.is_empty() {
+    if rows.is_empty() {
         return invalid();
+    }
+    let mut areas: Vec<GridArea> = Vec::new();
+    for (row, cells) in rows.iter().enumerate() {
+        for (column, cell) in cells.iter().enumerate() {
+            if cell.chars().all(|c| c == '.') {
+                continue;
+            }
+            if let Some(area) = areas.iter_mut().find(|area| area.name == *cell) {
+                area.row_start = area.row_start.min(row);
+                area.row_end = area.row_end.max(row + 1);
+                area.col_start = area.col_start.min(column);
+                area.col_end = area.col_end.max(column + 1);
+            } else {
+                areas.push(GridArea {
+                    name: cell.clone(),
+                    row_start: row,
+                    row_end: row + 1,
+                    col_start: column,
+                    col_end: column + 1,
+                });
+            }
+        }
+    }
+    // Named areas must be rectangles: every cell inside one carries the
+    // same name.
+    for area in &areas {
+        for row in rows
+            .iter()
+            .skip(area.row_start)
+            .take(area.row_end.saturating_sub(area.row_start))
+        {
+            for cell in row
+                .iter()
+                .skip(area.col_start)
+                .take(area.col_end.saturating_sub(area.col_start))
+            {
+                if *cell != area.name {
+                    return invalid();
+                }
+            }
+        }
     }
     Ok(areas)
 }
 
 /// `grid-column-start` / `grid-column-end` / `grid-row-start` /
-/// `grid-row-end`: `auto`, an integer line, or `span <n>`.
-fn parse_grid_line(input: &mut Parser<'_>) -> ParseResult<Option<GridLine>> {
+/// `grid-row-end`: `auto`, a named line, a line number, or `span`.
+fn parse_grid_line(input: &mut Parser<'_>) -> ParseResult<GridLine> {
     if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
-        return Ok(None);
+        return Ok(GridLine::Auto);
     }
     if input.try_parse(|i| i.expect_ident_matching("span")).is_ok() {
-        let count = input.expect_integer()? as usize;
-        return Ok(Some(GridLine::Span(count)));
+        let count = input
+            .try_parse(|i| i.expect_integer())
+            .ok()
+            .map_or(1, |count| count.clamp(1, 1000) as u16);
+        let name = input
+            .try_parse(|i| i.expect_ident().map(|name| name.to_string()))
+            .ok()
+            .map(|name| Atom::from(name.as_str()));
+        return Ok(GridLine::Span { count, name });
     }
-    let value = input.expect_integer()?;
-    if value > 0 {
-        Ok(Some(GridLine::Line(value as usize)))
-    } else if value < 0 {
-        Ok(Some(GridLine::FromEnd((-value) as usize)))
-    } else {
-        invalid()
+    if let Ok(ident) = input.try_parse(|i| i.expect_ident().map(|name| name.to_string())) {
+        let index = input.try_parse(|i| i.expect_integer()).unwrap_or(1);
+        if index == 0 {
+            return invalid();
+        }
+        return Ok(GridLine::Line {
+            index,
+            name: Some(Atom::from(ident.as_str())),
+        });
     }
+    let index = input.expect_integer()?;
+    if index == 0 {
+        return invalid();
+    }
+    let name = input
+        .try_parse(|i| i.expect_ident().map(|name| name.to_string()))
+        .ok()
+        .map(|name| Atom::from(name.as_str()));
+    Ok(GridLine::Line { index, name })
 }
 
 fn parse_border_style(input: &mut Parser<'_>) -> ParseResult<BorderStyle> {
@@ -2064,7 +2242,238 @@ fn parse_shorthand(
             ]
         }
         Shorthand::Outline => parse_outline(input, context)?,
+        Shorthand::PlaceContent => parse_place_content(input, context)?,
+        Shorthand::PlaceItems => parse_place_items(input, context)?,
+        Shorthand::PlaceSelf => parse_place_self(input, context)?,
+        Shorthand::GridRow => parse_grid_axis(input, Longhand::GridRowStart, Longhand::GridRowEnd)?,
+        Shorthand::GridColumn => {
+            parse_grid_axis(input, Longhand::GridColumnStart, Longhand::GridColumnEnd)?
+        }
+        Shorthand::GridArea => parse_grid_area(input)?,
+        Shorthand::GridTemplate => parse_grid_template(input)?,
+        Shorthand::Grid => parse_grid(input)?,
     })
+}
+
+/// The alignment keywords shared by `place-*`: the second value defaults to
+/// the first.
+fn parse_place_content(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+) -> ParseResult<Vec<(Longhand, Value)>> {
+    let align = parse_content_alignment(input, context, Longhand::AlignContent)?;
+    let justify = input
+        .try_parse(|i| parse_content_alignment(i, context, Longhand::JustifyContent))
+        .unwrap_or(align);
+    Ok(vec![
+        (Longhand::AlignContent, Value::JustifyContent(align)),
+        (Longhand::JustifyContent, Value::JustifyContent(justify)),
+    ])
+}
+
+fn parse_place_items(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+) -> ParseResult<Vec<(Longhand, Value)>> {
+    let align = parse_item_alignment(input, context, Longhand::AlignItems)?;
+    let justify = input
+        .try_parse(|i| parse_item_alignment(i, context, Longhand::JustifyItems))
+        .unwrap_or(align);
+    Ok(vec![
+        (Longhand::AlignItems, Value::AlignItems(align)),
+        (Longhand::JustifyItems, Value::AlignItems(justify)),
+    ])
+}
+
+fn parse_place_self(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+) -> ParseResult<Vec<(Longhand, Value)>> {
+    let align = parse_self_alignment(input, context, Longhand::AlignSelf)?;
+    let justify = input
+        .try_parse(|i| parse_self_alignment(i, context, Longhand::JustifySelf))
+        .unwrap_or(align);
+    Ok(vec![
+        (Longhand::AlignSelf, Value::AlignSelf(align)),
+        (Longhand::JustifySelf, Value::AlignSelf(justify)),
+    ])
+}
+
+/// One `align-self` or `justify-self` value, `auto` included.
+fn parse_self_alignment(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+    longhand: Longhand,
+) -> ParseResult<Option<AlignItems>> {
+    if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+        return Ok(None);
+    }
+    parse_item_alignment(input, context, longhand).map(Some)
+}
+
+/// `grid-row` / `grid-column`: `<start> / <end>?`, the end defaulting to
+/// `auto`.
+fn parse_grid_axis(
+    input: &mut Parser<'_>,
+    start: Longhand,
+    end: Longhand,
+) -> ParseResult<Vec<(Longhand, Value)>> {
+    let start_value = input.try_parse(parse_grid_line).unwrap_or(GridLine::Auto);
+    let end_value = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
+        parse_grid_line(input)?
+    } else {
+        GridLine::Auto
+    };
+    Ok(vec![
+        (start, Value::GridLine(start_value)),
+        (end, Value::GridLine(end_value)),
+    ])
+}
+
+/// `grid-area: <row-start> / <column-start> / <row-end> / <column-end>`,
+/// missing parts being `auto`. When an omitted part matches a custom-ident
+/// already given, it takes that ident (CSS Grid Level 1 section 8.4).
+fn parse_grid_area(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Value)>> {
+    let optional =
+        |input: &mut Parser<'_>| input.try_parse(parse_grid_line).unwrap_or(GridLine::Auto);
+    let row_start = optional(input);
+    let mut column_start = GridLine::Auto;
+    let mut row_end = GridLine::Auto;
+    let mut column_end = GridLine::Auto;
+    for slot in [&mut column_start, &mut row_end, &mut column_end] {
+        if input.try_parse(|i| i.expect_delim('/')).is_err() {
+            break;
+        }
+        *slot = parse_grid_line(input)?;
+    }
+    // CSS Grid: an omitted column start copies row start when both would be
+    // a custom ident; likewise the ends.
+    if let GridLine::Line { name: Some(_), .. } = &row_start
+        && column_start == GridLine::Auto
+    {
+        column_start = row_start.clone();
+    }
+    if let GridLine::Line { name: Some(_), .. } = &row_start
+        && row_end == GridLine::Auto
+    {
+        row_end = row_start.clone();
+    }
+    if let GridLine::Line { name: Some(_), .. } = &column_start
+        && column_end == GridLine::Auto
+    {
+        column_end = column_start.clone();
+    }
+    Ok(vec![
+        (Longhand::GridRowStart, Value::GridLine(row_start)),
+        (Longhand::GridColumnStart, Value::GridLine(column_start)),
+        (Longhand::GridRowEnd, Value::GridLine(row_end)),
+        (Longhand::GridColumnEnd, Value::GridLine(column_end)),
+    ])
+}
+
+/// `grid-template`: `none`, or `<rows> / <columns>?`. Named areas in the
+/// shorthand's string form are not supported yet.
+fn parse_grid_template(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Value)>> {
+    if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+        return Ok(vec![
+            (
+                Longhand::GridTemplateRows,
+                Value::GridTracks(Default::default()),
+            ),
+            (
+                Longhand::GridTemplateColumns,
+                Value::GridTracks(Default::default()),
+            ),
+            (Longhand::GridTemplateAreas, Value::GridAreas(Vec::new())),
+        ]);
+    }
+    let rows = parse_track_list(input)?;
+    let columns = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
+        parse_track_list(input)?
+    } else {
+        Default::default()
+    };
+    Ok(vec![
+        (Longhand::GridTemplateRows, Value::GridTracks(rows)),
+        (Longhand::GridTemplateColumns, Value::GridTracks(columns)),
+        (Longhand::GridTemplateAreas, Value::GridAreas(Vec::new())),
+    ])
+}
+
+/// `grid`: `none`, `<rows> / <columns>`, or an `auto-flow` form. Auto-flow
+/// fills the axis it names from the tracks on the other side.
+fn parse_grid(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Value)>> {
+    let initial = |flow: GridAutoFlow,
+                   rows: SpecifiedTrackList,
+                   columns: SpecifiedTrackList,
+                   auto_rows: Vec<SpecifiedTrackSize>,
+                   auto_columns: Vec<SpecifiedTrackSize>| {
+        vec![
+            (Longhand::GridTemplateRows, Value::GridTracks(rows)),
+            (Longhand::GridTemplateColumns, Value::GridTracks(columns)),
+            (Longhand::GridTemplateAreas, Value::GridAreas(Vec::new())),
+            (Longhand::GridAutoRows, Value::GridAutoTracks(auto_rows)),
+            (
+                Longhand::GridAutoColumns,
+                Value::GridAutoTracks(auto_columns),
+            ),
+            (Longhand::GridAutoFlow, Value::GridAutoFlow(flow)),
+        ]
+    };
+    if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+        return Ok(initial(
+            GridAutoFlow::default(),
+            Default::default(),
+            Default::default(),
+            Vec::new(),
+            Vec::new(),
+        ));
+    }
+    let auto_flow = |input: &mut Parser<'_>| -> ParseResult<GridAutoFlow> {
+        input.expect_ident_matching("auto-flow")?;
+        Ok(GridAutoFlow {
+            column: false,
+            dense: input
+                .try_parse(|i| i.expect_ident_matching("dense"))
+                .is_ok(),
+        })
+    };
+    // `auto-flow` first: rows are implicit, columns are a template.
+    if let Ok(mut flow) = input.try_parse(auto_flow) {
+        flow.column = true;
+        let auto_rows = input.try_parse(parse_track_size_list).unwrap_or_default();
+        input.expect_delim('/')?;
+        let columns = parse_track_list(input)?;
+        return Ok(initial(
+            flow,
+            Default::default(),
+            columns,
+            auto_rows,
+            Vec::new(),
+        ));
+    }
+    let rows = parse_track_list(input)?;
+    input.expect_delim('/')?;
+    // `auto-flow` second: rows are a template, columns are implicit.
+    if let Ok(mut flow) = input.try_parse(auto_flow) {
+        flow.column = false;
+        let auto_columns = input.try_parse(parse_track_size_list).unwrap_or_default();
+        return Ok(initial(
+            flow,
+            rows,
+            Default::default(),
+            Vec::new(),
+            auto_columns,
+        ));
+    }
+    let columns = parse_track_list(input)?;
+    Ok(initial(
+        GridAutoFlow::default(),
+        rows,
+        columns,
+        Vec::new(),
+        Vec::new(),
+    ))
 }
 
 /// `flex`: `none`, or `<grow> <shrink>? || <basis>`. A missing shrink is 1
@@ -2493,11 +2902,11 @@ mod tests {
         assert_eq!(value("order: -2"), Value::Integer(-2));
         assert!(parse("order: 1.5").is_empty());
         for (text, expected) in [
-            ("normal", JustifyContent::FlexStart),
+            ("normal", JustifyContent::Normal),
             ("space-evenly", JustifyContent::SpaceEvenly),
-            ("end", JustifyContent::FlexEnd),
+            ("end", JustifyContent::End),
             ("safe center", JustifyContent::Center),
-            ("stretch", JustifyContent::FlexStart),
+            ("stretch", JustifyContent::Stretch),
         ] {
             assert_eq!(
                 value(&format!("justify-content: {text}")),
@@ -2506,11 +2915,11 @@ mod tests {
             );
         }
         for (text, expected) in [
-            ("normal", AlignItems::Stretch),
+            ("normal", AlignItems::Normal),
             ("center", AlignItems::Center),
-            ("baseline", AlignItems::FlexStart),
-            ("last baseline", AlignItems::FlexStart),
-            ("self-end", AlignItems::FlexEnd),
+            ("baseline", AlignItems::Baseline),
+            ("last baseline", AlignItems::Baseline),
+            ("self-end", AlignItems::End),
         ] {
             assert_eq!(
                 value(&format!("align-items: {text}")),
@@ -2710,6 +3119,12 @@ mod tests {
             [(_, DeclaredValue::Wide(CssWide::Inherit), _), ..]
         ));
         assert_eq!(value("display: flex"), Value::Display(Display::Flex));
+        assert_eq!(value("display: grid"), Value::Display(Display::Grid));
+        assert_eq!(
+            value("display: inline-grid"),
+            Value::Display(Display::InlineGrid),
+            "an inline grid lays out as an inline level grid (spec 0010, AC-1)"
+        );
         assert_eq!(
             value("display: inline-flex"),
             Value::Display(Display::InlineBlock),
@@ -2780,18 +3195,28 @@ mod tests {
 
     #[test]
     fn grid_template_areas_parses_named_areas() {
-        let areas = parse_template_areas("header");
-        eprintln!("DEBUG: areas = {:?}", areas);
+        let areas = parse_template_areas("\"header header\" \". main\"");
         assert_eq!(
             areas,
-            vec![GridArea {
-                name: Atom::from("header"),
-                row_start: 0,
-                row_end: 1,
-                col_start: 0,
-                col_end: 1,
-            }]
+            vec![
+                GridArea {
+                    name: Atom::from("header"),
+                    row_start: 0,
+                    row_end: 1,
+                    col_start: 0,
+                    col_end: 2,
+                },
+                GridArea {
+                    name: Atom::from("main"),
+                    row_start: 1,
+                    row_end: 2,
+                    col_start: 1,
+                    col_end: 2,
+                },
+            ]
         );
+        // A name that is not a rectangle is invalid.
+        assert!(parse_template_areas("\"a b\" \"b a\"").is_empty());
     }
 
     fn parse_template_areas(text: &str) -> Vec<GridArea> {

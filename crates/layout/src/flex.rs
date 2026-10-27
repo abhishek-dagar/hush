@@ -273,6 +273,7 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
             box_id,
             static_position: Point::default(),
             fixed: false,
+            containing_block: None,
         }));
     let height = if row { container_cross } else { inner_main };
     container.set_flex_items(FlexItems { height, ..placed }, child_ids.len());
@@ -645,8 +646,12 @@ fn cross_offset(item: &Item, line_cross: Au) -> Au {
     }
     margin_start
         + match item.align {
-            AlignItems::Stretch | AlignItems::FlexStart => Au::ZERO,
-            AlignItems::FlexEnd => free,
+            AlignItems::Stretch
+            | AlignItems::FlexStart
+            | AlignItems::Normal
+            | AlignItems::Start
+            | AlignItems::Baseline => Au::ZERO,
+            AlignItems::FlexEnd | AlignItems::End => free,
             AlignItems::Center => Au(free.0 / 2),
         }
 }
@@ -659,8 +664,8 @@ fn justify(justify: css::JustifyContent, free: Au, count: i32) -> (Au, Au) {
     use css::JustifyContent as J;
     let half = Au(free.0 / 2);
     match justify {
-        J::FlexStart => (Au::ZERO, Au::ZERO),
-        J::FlexEnd => (free, Au::ZERO),
+        J::FlexStart | J::Normal | J::Start | J::Stretch => (Au::ZERO, Au::ZERO),
+        J::FlexEnd | J::End => (free, Au::ZERO),
         J::Center => (half, Au::ZERO),
         J::SpaceBetween if free > Au::ZERO && count > 1 => (Au::ZERO, Au(free.0 / (count - 1))),
         J::SpaceBetween => (Au::ZERO, Au::ZERO),

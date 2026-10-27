@@ -17,6 +17,7 @@ use crate::properties::{
     Declaration, ParseContext, PropertySyntax, parse_declaration, parse_property_syntax,
 };
 use crate::selector::{Selector, parse_selector_list};
+use crate::values::ParseResult;
 
 /// Where a sheet comes from, which decides its place in the cascade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +38,9 @@ pub struct Rule {
     pub(crate) layer: Option<Atom>,
     /// The `@media` lists around it, outermost first; all must match.
     pub(crate) media: Rc<[Rc<MediaList>]>,
+    /// Whether every enclosing `@supports` condition held when this rule was
+    /// parsed (spec 0010, AC-11). A rule inside a false block never applies.
+    pub(crate) supports: bool,
 }
 
 /// A registered custom property from `@property` (spec 0010, AC-10).
@@ -115,6 +119,7 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         context: &context,
         media: Vec::new(),
         layer: Vec::new(),
+        supports: Vec::new(),
         rules: Vec::new(),
         font_faces: Vec::new(),
         properties: Vec::new(),
@@ -183,6 +188,10 @@ struct TopLevel<'a> {
     /// The `@layer` names the parser is inside, outermost first. The last
     /// entry is the layer rules are filed into.
     layer: Vec<Option<Atom>>,
+    /// The results of the `@supports` conditions the parser is inside,
+    /// outermost first. A rule applies only when every entry is true
+    /// (spec 0010, AC-11).
+    supports: Vec<bool>,
     rules: Vec<Rule>,
     font_faces: Vec<FontFaceRule>,
     /// The registered custom properties from `@property`.
@@ -197,6 +206,9 @@ enum AtPrelude {
     Layer(Option<Atom>),
     /// The `@property` name, without the leading `--`.
     Property(Atom),
+    /// The result of an `@supports` condition, evaluated at parse time
+    /// (spec 0010, AC-11).
+    Supports(bool),
 }
 
 impl<'i> QualifiedRuleParser<'i> for TopLevel<'_> {
@@ -224,6 +236,7 @@ impl<'i> QualifiedRuleParser<'i> for TopLevel<'_> {
             declarations: Rc::from(declarations),
             layer: self.layer.last().cloned().flatten(),
             media: Rc::from(self.media.clone()),
+            supports: self.supports.iter().all(|&b| b),
         });
         Ok(())
     }
@@ -266,6 +279,18 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
             };
             return Ok(AtPrelude::Property(Atom::from(name)));
         }
+        if name.eq_ignore_ascii_case("supports") {
+            // `@supports [not] ( ... ) { ... }`. Leading `not`(s) invert the
+            // condition; it is evaluated once, at parse time (AC-11).
+            let mut negated = false;
+            while input.try_parse(|i| i.expect_ident_matching("not")).is_ok() {
+                negated = !negated;
+            }
+            input.expect_parenthesis_block()?;
+            let condition =
+                input.parse_nested_block(|input| parse_supports_condition(input, self.context))?;
+            return Ok(AtPrelude::Supports(condition != negated));
+        }
         // `@import`, `@supports`, `@keyframes`, `@layer` and the rest
         // arrive with later features (spec 0004, Follow-up).
         debug!(at_rule = &*name, "css at rule skipped");
@@ -307,6 +332,16 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
                 self.properties.push(rule);
                 return Ok(());
             }
+            AtPrelude::Supports(condition) => {
+                self.supports.push(condition);
+                for result in StyleSheetParser::new(input, self) {
+                    if let Err((_, source, _)) = result {
+                        debug!(rule = source, "css rule dropped");
+                    }
+                }
+                self.supports.pop();
+                return Ok(());
+            }
         };
         self.media.push(media);
         for result in StyleSheetParser::new(input, self) {
@@ -317,6 +352,42 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
         self.media.pop();
         Ok(())
     }
+}
+
+/// Parses an `@supports (...)` condition to a boolean, at parse time
+/// (spec 0010, AC-11). A declaration test is true exactly when the property
+/// parser accepts the value; `selector()` is true when the selector parser
+/// accepts it. `not`/`and`/`or` and nested parenthesized conditions arrive
+/// with a follow-up pass.
+fn parse_supports_condition(input: &mut Parser<'_>, context: &ParseContext) -> ParseResult<bool> {
+    parse_supports_primary(input, context)
+}
+
+/// One `@supports` primary: a parenthesized condition, `selector(...)`, or a
+/// declaration test `property: value`.
+fn parse_supports_primary(input: &mut Parser<'_>, context: &ParseContext) -> ParseResult<bool> {
+    input.skip_whitespace();
+    if input.try_parse(|i| i.expect_parenthesis_block()).is_ok() {
+        let result = input.parse_nested_block(|input| parse_supports_condition(input, context))?;
+        return Ok(result);
+    }
+    if input
+        .try_parse(|i| i.expect_ident_matching("selector"))
+        .is_ok()
+    {
+        input.expect_parenthesis_block()?;
+        let _list = input.parse_nested_block(|input| parse_selector_list(input))?;
+        return Ok(true);
+    }
+    let declaration_matches = input
+        .try_parse(|input| {
+            let name = input.expect_ident_cloned()?;
+            input.expect_colon()?;
+            let _ = parse_declaration(name.as_ref(), input, context)?;
+            Ok::<(), ParseError<()>>(())
+        })
+        .is_ok();
+    Ok(declaration_matches)
 }
 
 /// Parses the block of an `@property --name { }` rule: `syntax`, `inherits`
@@ -537,6 +608,63 @@ mod tests {
         assert!(color.inherits);
         assert_eq!(color.initial.as_ref(), "red");
         assert_eq!(sheet.len(), 1);
+    }
+
+    #[test]
+    fn at_supports_evaluates_at_parse_time() {
+        // A declaration test the parser accepts keeps the rule.
+        let sheet = parse_stylesheet(
+            "@supports (display: flex) { a { color: red; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
+        // A declaration test the parser rejects drops the rule.
+        let sheet = parse_stylesheet(
+            "@supports (color: not-a-real-color-value) { b { color: blue; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 0);
+
+        // `not` inverts, and `and`/`or` combine, each in its own sheet.
+        let sheet = parse_stylesheet(
+            "@supports not (display: definitely-not-a-display-value) { d { color: yellow; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
+        let sheet = parse_stylesheet(
+            "@supports (display: flex) and (color: red) { e { color: purple; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
+        let sheet = parse_stylesheet(
+            "@supports (display: grid) or (color: bogus-not-a-color) { f { color: pink; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
+
+        // `selector()` is true when the selector parser accepts it.
+        let sheet = parse_stylesheet(
+            "@supports selector(.foo) { f { color: pink; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
+        let sheet = parse_stylesheet(
+            "@supports selector(>) { g { color: brown; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 0);
     }
 
     #[test]

@@ -16,10 +16,14 @@ use crate::box_tree::{BoxKind, BoxTree, InlineItem, LayoutBox};
 
 /// Runs the table anonymous-box fixup on `tree`.
 pub(crate) fn fix_tables(tree: &mut BoxTree) {
-    let root = match tree.root() {
-        Some(root) => root,
-        None => return,
-    };
+    if let Some(root) = tree.root() {
+        fix_tables_below(tree, root);
+    }
+}
+
+/// Runs the fixup on `root` and the boxes below it only, as after
+/// [`BoxTree::rebuild`] refills a block container.
+pub(crate) fn fix_tables_below(tree: &mut BoxTree, root: BoxId) {
     // Table parts in the wrong parent first, so the anonymous tables they
     // make are fixed up like written ones (CSS Tables 3 section 3).
     generate_anonymous_tables(tree, root);
@@ -586,6 +590,15 @@ fn restructure_row_children(tree: &mut BoxTree, row: BoxId, parent_style: &Compu
         BoxKind::TableCell,
         Display::TableCell,
     );
+    // `margin` does not apply to table cells (CSS 2.2 section 17.5), so a
+    // cell's margins neither widen its column nor move it.
+    for &cell in &children {
+        if let Some(cell_box) = tree.boxes.get_mut(cell)
+            && *cell_box.style.margin != css::Margin::default()
+        {
+            Rc::make_mut(&mut cell_box.style).margin = Rc::default();
+        }
+    }
     if let Some(row_box) = tree.boxes.get_mut(row) {
         row_box.children = children;
     }

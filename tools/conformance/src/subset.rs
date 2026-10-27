@@ -105,11 +105,6 @@ impl Subset {
         Ok(subset)
     }
 
-    /// The area named `name`, if listed.
-    pub fn area(&self, name: &str) -> Option<&Area> {
-        self.areas.iter().find(|area| area.name == name)
-    }
-
     /// The folders to check out: every area's paths, then the shared ones.
     pub fn sparse_paths(&self) -> Vec<String> {
         let mut paths: Vec<String> = Vec::new();

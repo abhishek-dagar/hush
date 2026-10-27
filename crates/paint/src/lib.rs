@@ -988,14 +988,9 @@ fn transform_matrix(transform: &css::Transform) -> Option<[f32; 16]> {
     // The separate `scale` property wins over `transform: scale()` when
     // both are set (spec 0010, AC-19).
     let scale = transform.scale.unwrap_or_else(|| {
-        transform
-            .transform
-            .iter()
-            .find_map(|f| match f {
-                css::TransformFn::Scale(s) => Some(*s),
-                _ => None,
-            })
-            .unwrap_or(1.0)
+        transform.transform.first().map_or(1.0, |f| match f {
+            css::TransformFn::Scale(s) => *s,
+        })
     });
     let has_transform = !transform.transform.is_empty() || transform.scale.is_some();
     if !has_transform && (scale - 1.0).abs() < f32::EPSILON {
@@ -1772,6 +1767,37 @@ mod tests {
             widths.iter().all(|w| !w.contains(&1.0)),
             "the table's own border does not paint: {widths:?}"
         );
+    }
+
+    #[test]
+    fn collapsed_table_border_paints_without_cell_borders() {
+        // Spec 0009, child 0004, AC-17: a collapsed table whose only border is
+        // its own still paints its edges, as a floated Wikipedia thumbnail
+        // `figure` does.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
+        let mut table = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut table.display_box).display = Display::Table;
+        Rc::make_mut(&mut table.display_box).float = Float::Right;
+        Rc::make_mut(&mut table.inherited_table).border_collapse = BorderCollapse::Collapse;
+        Rc::make_mut(&mut table.size).width = Some(Length::px(100.0));
+        bordered(&mut table, 1.0);
+        let table = add(&mut doc, html, table);
+        let mut row = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut row.display_box).display = Display::TableRow;
+        let row = add(&mut doc, table, row);
+        let mut cell = style(Color::TRANSPARENT, 0.0, Some(10.0));
+        Rc::make_mut(&mut cell.display_box).display = Display::TableCell;
+        add(&mut doc, row, cell);
+        let list = paint_doc(&mut doc, &HashMap::new());
+
+        let edges = list
+            .items
+            .iter()
+            .filter(|item| matches!(item.kind, ItemKind::Border { .. }))
+            .count();
+        assert_eq!(edges, 4, "the table's four collapsed edges paint");
     }
 
     #[test]

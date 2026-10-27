@@ -30,7 +30,6 @@ pub struct RunResult {
     pub message: String,
     pub retried: bool,
     pub duration_ms: u64,
-    pub images: Option<ImagePaths>,
 }
 
 #[derive(Deserialize)]
@@ -38,6 +37,7 @@ struct WorkerResponse {
     status: String,
     message: String,
     duration_ms: u64,
+    #[allow(dead_code, reason = "deserialized but not currently used")]
     images: Option<ImagePaths>,
     #[allow(dead_code, reason = "deserialized but not currently used")]
     parsed_as: String,
@@ -116,7 +116,6 @@ fn run_one(
                 message: resp.message,
                 retried: false,
                 duration_ms: resp.duration_ms,
-                images: resp.images,
             })
         }
         Ok(None) => Err("crash".to_owned()),
@@ -146,7 +145,10 @@ pub fn run_pool(
             let mut child: Option<ChildHandles> = None;
             loop {
                 let test = {
-                    let mut q = queue.lock().expect("lock poisoned");
+                    // A poisoned queue still holds the tests left to run.
+                    let mut q = queue
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     q.pop_front()
                 };
                 let Some(test) = test else {
@@ -167,13 +169,14 @@ pub fn run_pool(
                                 message: "could not spawn worker".to_owned(),
                                 retried: false,
                                 duration_ms: 0,
-                                images: None,
                             });
                             continue;
                         }
                     }
                 }
-                let handles = child.as_mut().expect("child should exist after spawn");
+                let Some(handles) = child.as_mut() else {
+                    continue;
+                };
                 match run_one(handles, &test, timeout) {
                     Ok(res) => {
                         let _ = tx.send(res);
@@ -195,7 +198,6 @@ pub fn run_pool(
                             message: kind,
                             retried: false,
                             duration_ms: 0,
-                            images: None,
                         });
                     }
                 }

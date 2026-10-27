@@ -2,7 +2,12 @@
 //! written one per line, styled through the UA sheet and the cascade, and
 //! the border boxes layout gives each labeled one.
 
-#![allow(dead_code, reason = "each test file uses its own share of the helpers")]
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test helpers: a panic is a failed test, as allow-unwrap-in-tests intends"
+)]
 
 use std::collections::HashMap;
 use std::rc::Rc;

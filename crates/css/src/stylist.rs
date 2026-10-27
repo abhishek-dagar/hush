@@ -47,10 +47,12 @@ struct StylistRule {
 
 impl StylistRule {
     fn applies(&self, device: &Device) -> bool {
-        self.sheet_media
-            .iter()
-            .chain(self.rule.media.iter())
-            .all(|media| media.evaluate(device))
+        self.rule.supports
+            && self
+                .sheet_media
+                .iter()
+                .chain(self.rule.media.iter())
+                .all(|media| media.evaluate(device))
     }
 }
 

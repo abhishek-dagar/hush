@@ -12,6 +12,6 @@ mod height;
 mod layout;
 mod width;
 
-pub(crate) use fixup::fix_tables;
+pub(crate) use fixup::{fix_tables, fix_tables_below};
 pub(crate) use layout::lay_out_table;
 pub(crate) use width::{intrinsic_sizes, size_columns};

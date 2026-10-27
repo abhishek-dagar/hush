@@ -468,10 +468,10 @@ fn parse_args() -> Result<Args> {
 
     // `sites --capture` and `--capture sites` mean the same thing: apply a
     // `--capture` that came after the `sites` positional.
-    if let Some(Command::Sites { capture: false }) = command {
-        if capture {
-            command = Some(Command::Sites { capture: true });
-        }
+    if let Some(Command::Sites { capture: false }) = command
+        && capture
+    {
+        command = Some(Command::Sites { capture: true });
     }
 
     Ok(Args {

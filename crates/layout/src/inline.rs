@@ -494,6 +494,7 @@ pub(crate) fn lay_out_lines(
                         box_id,
                         static_position: Point::new(Au::ZERO, lines.height),
                         fixed: false,
+                        containing_block: None,
                     }),
                     _ => {}
                 }
@@ -859,6 +860,7 @@ fn build_line(
                 box_id: *box_id,
                 static_position: Point::new(x, Au::ZERO),
                 fixed: false,
+                containing_block: None,
             }),
             PieceKind::Float(_) => {}
             PieceKind::Break => {}

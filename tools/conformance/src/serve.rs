@@ -168,9 +168,11 @@ mod tests {
             path("http://web-platform.test:8000/a/../b.css").as_deref(),
             Some("b.css")
         );
+        // URL parsing treats `%2e%2e` as `..` and never climbs above `/`,
+        // so this names `etc` inside the root, not outside it.
         assert_eq!(
-            path("http://web-platform.test:8000/a/%2e%2e/%2e%2e/etc"),
-            None
+            path("http://web-platform.test:8000/a/%2e%2e/%2e%2e/etc").as_deref(),
+            Some("etc")
         );
         assert_eq!(path("http://web-platform.test:8000/a/..%2f..%2fetc"), None);
         assert_eq!(path("http://www.w3.org/css.html"), None);

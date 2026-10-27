@@ -10,14 +10,14 @@ use std::rc::Rc;
 
 use crate::box_tree::{BoxKind, BoxTree};
 use crate::fragment::{BackgroundLayer, BlockMargins, BoxFragment, Fragment};
-use crate::intrinsic::content_sizes;
+use crate::intrinsic::{content_sizes, contribution};
 use crate::table::borders::collapsed_edges;
 use crate::table::grid::{Slot, TableGrid, build_grid};
 use crate::table::height::{cell_vertical_offset, row_heights, span_cols, span_rows};
 use crate::table::size_columns;
 use crate::{AvailableSize, ConstraintSpace, LayoutContext, border_widths, lay_out_box};
 use base::{Au, BoxId, Point, Rect, SideOffsets, Size};
-use css::{BorderCollapse, TableLayout, VerticalAlign, WritingMode};
+use css::{BorderCollapse, BoxSizing, TableLayout, VerticalAlign, WritingMode};
 
 /// Lays out `table` in `space`, producing its fragment: cells sized into
 /// columns by [`size_columns`], placed side by side in rows, rows stacked
@@ -30,13 +30,36 @@ pub(crate) fn lay_out_table(
 ) -> Option<Rc<BoxFragment>> {
     let layout_box = tree.get(id)?;
     let node = layout_box.node;
-    let padding = border_widths(&layout_box.style);
+    let style = &layout_box.style;
+    let basis = space.percentage_basis.width;
+    let padding = SideOffsets {
+        top: style.padding.top.resolve(basis),
+        right: style.padding.right.resolve(basis),
+        bottom: style.padding.bottom.resolve(basis),
+        left: style.padding.left.resolve(basis),
+    };
     // `border-spacing` around and between cells, except when borders collapse
     // (spec 0009, child 0004, AC-17).
     let border_collapse = layout_box.style.inherited_table.border_collapse;
     let (spacing_x, spacing_y) = match border_collapse {
         BorderCollapse::Collapse => (Au::ZERO, Au::ZERO),
         BorderCollapse::Separate => layout_box.style.inherited_table.border_spacing,
+    };
+    // With separate borders the grid sits inside the table's border and
+    // padding. Collapsed borders resolve with the cells' and the table has
+    // no padding (CSS 2.2 section 17.6.2).
+    let (padding, inset) = match border_collapse {
+        BorderCollapse::Collapse => (SideOffsets::default(), SideOffsets::default()),
+        BorderCollapse::Separate => {
+            let border = border_widths(style);
+            let inset = SideOffsets {
+                top: border.top + padding.top,
+                right: border.right + padding.right,
+                bottom: border.bottom + padding.bottom,
+                left: border.left + padding.left,
+            };
+            (padding, inset)
+        }
     };
     let grid = build_grid(tree, id);
     let ncols = grid.columns.len();
@@ -45,7 +68,8 @@ pub(crate) fn lay_out_table(
         return Some(Rc::new(empty_fragment(id, node, padding)));
     }
 
-    // Cell min and max content widths, per grid slot.
+    // Cell min and max widths per grid slot, border box: a cell's padding
+    // and borders widen its column too.
     let mut cell_min = vec![None; grid.slots.len()];
     let mut cell_max = vec![None; grid.slots.len()];
     let cells: Vec<Option<BoxId>> = (0..grid.slots.len())
@@ -54,6 +78,7 @@ pub(crate) fn lay_out_table(
     for slot in 0..grid.slots.len() {
         if let Some(cell_id) = cells[slot] {
             let (min, max) = content_sizes(tree, cell_id, cx);
+            let (min, max) = contribution(tree, cell_id, cx).unwrap_or((min, max));
             cell_min[slot] = Some(min);
             cell_max[slot] = Some(max);
         }
@@ -74,12 +99,19 @@ pub(crate) fn lay_out_table(
     // block: its used width is its max content width, narrowed to what is
     // available but never below its min content width (CSS 2.2 section
     // 17.5.2.2).
+    // `table_width` is the border box; the wrapper's width already holds the
+    // table's border and padding.
     let table_width = match specified_width {
         _ if in_wrapper => available,
-        Some(width) => width,
+        Some(width) => match layout_box.style.size.box_sizing {
+            BoxSizing::BorderBox => width,
+            BoxSizing::ContentBox => width + inset.horizontal(),
+        },
         None => {
             let (min, max) = content_sizes(tree, id, cx);
-            max.min(available).max(min)
+            (max + inset.horizontal())
+                .min(available)
+                .max(min + inset.horizontal())
         }
     };
     // `table-layout: fixed` only applies when the table has a definite width
@@ -89,7 +121,7 @@ pub(crate) fn lay_out_table(
     // The grid sits inside `border-spacing`, so the columns share what is
     // left after the spacing around and between them.
     let spacing_total = spacing_x * (ncols + 1) as i32;
-    let grid_width = (table_width - spacing_total).max(Au::ZERO);
+    let grid_width = (table_width - inset.horizontal() - spacing_total).max(Au::ZERO);
     let mut widths = size_columns(tree, &grid, grid_width, &cells, &cell_min, &cell_max, fixed);
     // Widths are computed before collapsing, so the other columns keep their
     // sizes and a collapsed column gives up its width (spec 0009, child 0004,
@@ -287,13 +319,19 @@ pub(crate) fn lay_out_table(
             }
         }
     }
-    let full_height = table_height + overflow_height;
+    let full_height = table_height + overflow_height + inset.vertical();
 
-    let size = Size::new(x, full_height);
+    // The grid was placed from the border box corner; move it inside the
+    // table's border and padding.
+    let shift = Point::new(inset.left, inset.top);
+    for (point, _) in &mut children {
+        *point = point.offset_by(shift);
+    }
+    let size = Size::new(x + inset.horizontal(), full_height);
     // The six background layers paint table, column groups, columns, row
     // groups, rows, cells; the cells paint themselves, so layout hands paint
     // the four middle layers (spec 0009, child 0004, AC-17).
-    let background_layers = Some(Rc::from(table_background_layers(
+    let mut layers = table_background_layers(
         tree,
         &grid,
         x,
@@ -302,7 +340,11 @@ pub(crate) fn lay_out_table(
         &widths,
         &row_top,
         &heights,
-    )));
+    );
+    for layer in &mut layers {
+        layer.rect.origin = layer.rect.origin.offset_by(shift);
+    }
+    let background_layers = Some(Rc::from(layers));
     // `border-collapse: collapse` resolves every shared edge once, for paint
     // to draw in one pass after the cell backgrounds (spec 0009, child 0004,
     // AC-17).
@@ -550,14 +592,16 @@ fn align_cell(
 
 /// The constraint space for a cell: a definite inline size equal to its
 /// column span width, and indefinite block size so the cell sizes to its
-/// content height (the row then takes the tallest cell).
+/// content height (the row then takes the tallest cell). The cell's border
+/// box always fills its columns; its own `width` only sized them (CSS
+/// Tables 3, cell widths).
 fn cell_space(column_width: Au) -> ConstraintSpace {
     ConstraintSpace {
         available_inline: AvailableSize::Definite(column_width),
         available_block: AvailableSize::MaxContent,
         percentage_basis: Size::new(Some(column_width), None),
         writing_mode: WritingMode::default(),
-        stretch_inline: None,
+        stretch_inline: Some(column_width),
         stretch_block: None,
         bfc_offset: None,
         exclusions: None,

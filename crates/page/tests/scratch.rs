@@ -1,9 +1,15 @@
 //! Scratch: dump the fragment tree for one WPT page, scripts and all.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test helpers: a panic is a failed test, as allow-unwrap-in-tests intends"
+)]
+
 use std::path::{Path, PathBuf};
 
 use display_list::{PageId, SizeF};
-use ipc::{Destination, DocumentKind, FetchId, NavigationId, ToBrowser};
+use ipc::{DocumentKind, FetchId, NavigationId, ToBrowser};
 use page::{FontContext, Page};
 
 const NAV: NavigationId = NavigationId(1);

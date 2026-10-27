@@ -242,6 +242,24 @@ pub fn inner_radii(outer: [f32; 8], border: SideOffsets) -> [f32; 8] {
     inner
 }
 
+/// Marks a laid out table clean, with the row groups, rows and columns
+/// `lay_out_table` sizes itself; its cells went through `lay_out_box` and
+/// are clean already. A stale flag here would stop `mark_needs_layout`
+/// short of the root, so a later change inside the table never relays out.
+fn clear_table_flags(tree: &mut BoxTree, table: BoxId) {
+    let mut stack = vec![table];
+    while let Some(id) = stack.pop() {
+        let Some(layout_box) = tree.boxes.get_mut(id) else {
+            continue;
+        };
+        if layout_box.kind == BoxKind::TableCell {
+            continue;
+        }
+        layout_box.flags = BoxFlags::empty();
+        stack.extend(layout_box.children.iter().copied());
+    }
+}
+
 /// The cached fragment for `layout_box`, if it is clean and was laid out in
 /// an equal `space`.
 fn cached(layout_box: &LayoutBox, space: &ConstraintSpace) -> Option<Rc<Fragment>> {
@@ -282,7 +300,7 @@ fn step(
         || layout_box.kind == BoxKind::TableWrapper)
         && matches!(
             layout_box.kind,
-            BoxKind::BlockContainer | BoxKind::TableWrapper
+            BoxKind::BlockContainer | BoxKind::TableWrapper | BoxKind::GridContainer
         )
         && layout_box.style.size.width.as_ref().is_none_or(|width| {
             matches!(width, css::Length::Percent(_)) && space.percentage_basis.width.is_none()
@@ -302,17 +320,19 @@ fn step(
                 intrinsic: None,
             });
         }
+        clear_table_flags(tree, id);
         return Some(Step::Reuse(Rc::new(Fragment::Box((*fragment).clone()))));
     }
     let layout_box = tree.get(id)?;
-    let is_flex_item = layout_box
+    let is_item = layout_box
         .parent
         .and_then(|parent| tree.get(parent))
-        .is_some_and(|parent| parent.kind == BoxKind::FlexContainer);
+        .is_some_and(|parent| {
+            matches!(parent.kind, BoxKind::FlexContainer | BoxKind::GridContainer)
+        });
     let is_flex = layout_box.kind == BoxKind::FlexContainer;
     let is_grid = layout_box.kind == BoxKind::GridContainer;
-    let mut in_progress =
-        InProgress::start(id, layout_box, space, is_root, is_flex_item, intrinsic);
+    let mut in_progress = InProgress::start(id, layout_box, space, is_root, is_item, intrinsic);
     if !layout_box.inline.is_empty() {
         let atomics: Vec<BoxId> = layout_box
             .inline
@@ -425,7 +445,15 @@ fn lay_out_box(
             // leaves its static position too, then hoists to the viewport's
             // containing block (spec 0009, child 0003, AC-10).
             if tree.get(child_id).is_some_and(LayoutBox::is_absolute) {
-                top.place_absolute(child_id, false);
+                // Grid containers lay out their abspos children themselves
+                // (grid.rs), giving a placed one its grid area as the
+                // containing block (spec 0010, AC-5).
+                let is_grid = tree
+                    .get(top.id)
+                    .is_some_and(|b| b.kind == BoxKind::GridContainer);
+                if !is_grid {
+                    top.place_absolute(child_id, false);
+                }
                 continue;
             }
             if tree.get(child_id).is_some_and(LayoutBox::is_fixed) {
@@ -554,6 +582,64 @@ mod tests {
         assert_eq!(b_fragment.node, Some(b));
         assert_eq!(b_fragment.size, Size::new(px(762.0), px(30.0)));
         let _ = a;
+    }
+
+    #[test]
+    fn a_change_inside_a_rebuilt_table_reaches_the_root() {
+        // A rebuild refills its container with raw table boxes, so the table
+        // fixup runs again. Table layout must leave no flag behind, or a
+        // later change inside the table stops `mark_needs_layout` short of
+        // the root and the stale fragment is reused.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+        let section = add(&mut doc, html, block(0.0, 0.0, None));
+        let table = add(&mut doc, section, {
+            let mut style = (*block(0.0, 0.0, None)).clone();
+            Rc::make_mut(&mut style.display_box).display = Display::Table;
+            Rc::new(style)
+        });
+        let inner = add(&mut doc, table, block(0.0, 0.0, Some(10.0)));
+        let mut boxes = BoxTree::build(&mut doc);
+        let _ = doc.take_box_rebuild_roots();
+        let lay = |boxes: &mut BoxTree| {
+            layout(
+                boxes,
+                Size::new(px(800.0), px(600.0)),
+                &mut FontContext::new(),
+                &text::WebFontLayer::default(),
+            );
+        };
+        let box_of = |doc: &Document, node: NodeId| doc.node(node).unwrap().layout_box().unwrap();
+        let wrapped = |boxes: &BoxTree, doc: &Document| {
+            let table_box = boxes.get(box_of(doc, table)).unwrap();
+            boxes.get(table_box.parent.unwrap()).unwrap().kind == BoxKind::TableWrapper
+        };
+
+        // The section gains a child, so it is refilled from scratch.
+        lay(&mut boxes);
+        let _ = add(&mut doc, section, block(0.0, 0.0, Some(5.0)));
+        let roots = doc.take_box_rebuild_roots();
+        assert_eq!(roots, [section], "only the section is refilled");
+        boxes.rebuild(&mut doc, &roots);
+        assert!(wrapped(&boxes, &doc), "the rebuilt table has its wrapper");
+
+        // A change inside the table, laid out, then a second one: the
+        // second must still reach the root.
+        lay(&mut boxes);
+        for _ in 0..2 {
+            boxes.mark_needs_layout(box_of(&doc, inner));
+            let html_box = boxes.get(box_of(&doc, html)).unwrap();
+            assert!(html_box.flags.contains(BoxFlags::CHILD_NEEDS_LAYOUT));
+            lay(&mut boxes);
+            assert!(
+                boxes
+                    .boxes
+                    .iter()
+                    .all(|(_, b)| b.flags == BoxFlags::empty()),
+                "layout leaves every box clean, table parts included"
+            );
+        }
     }
 
     #[test]

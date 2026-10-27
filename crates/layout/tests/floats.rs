@@ -286,3 +286,43 @@ fn text_in_a_padded_block_starts_at_the_float_edge() {
         assert_eq!(left, 100.0, "text should start at the float's right edge");
     }
 }
+
+#[test]
+fn a_float_sits_inside_its_margins() {
+    // CSS 2.2 section 9.5.1: the margin box is placed, so the border box sits
+    // inset by the left and top margins on either side.
+    check(
+        "
+        c width:400px
+          l float:left; width:100px; height:50px; margin:10px 0 0 20px
+          r float:right; width:100px; height:50px; margin:10px 30px 0 0
+        ",
+        &[
+            ("c", 0.0, 0.0, 400.0, 0.0),
+            ("l", 20.0, 10.0, 100.0, 50.0),
+            ("r", 270.0, 10.0, 100.0, 50.0),
+        ],
+    );
+}
+
+#[test]
+fn a_new_formatting_context_sits_beside_the_floats() {
+    // CSS 2.2 section 9.5: a box that starts its own block formatting
+    // context (`flow-root`, `overflow: hidden`) must not overlap a float, so
+    // it narrows into the band beside it. A plain block still runs under it.
+    check(
+        "
+        c width:400px
+          f float:left; width:100px; height:100px
+          r display:flow-root; height:20px
+          o overflow:hidden; height:20px
+          p height:20px
+        ",
+        &[
+            ("f", 0.0, 0.0, 100.0, 100.0),
+            ("r", 100.0, 0.0, 300.0, 20.0),
+            ("o", 100.0, 20.0, 300.0, 20.0),
+            ("p", 0.0, 40.0, 400.0, 20.0),
+        ],
+    );
+}

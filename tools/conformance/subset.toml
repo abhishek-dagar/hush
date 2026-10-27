@@ -41,6 +41,20 @@ name = "overflow"
 paths = ["css/CSS2/visufx"]
 
 [[area]]
+name = "css-grid"
+paths = ["css/css-grid"]
+# Bar: 85% per spec 0010 AC-33. min_pass_rate floor is set on the first full
+# conformance run after this task lands and only raised after that; deferred
+# until then because WPT cannot be run in this environment (no snapshot/GPU).
+
+[[area]]
+name = "css-flexbox"
+paths = ["css/css-flexbox"]
+# Bar: 85% per spec 0010 AC-33. min_pass_rate floor is set on the first full
+# conformance run after this task lands and only raised after that; deferred
+# until then because WPT cannot be run in this environment (no snapshot/GPU).
+
+[[area]]
 name = "tables"
 paths = ["css/CSS2/tables"]
 # Measured on the first full run of the area, after the tables slice:

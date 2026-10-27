@@ -305,6 +305,9 @@ pub enum Display {
     Flex,
     /// `display: grid`: a block level grid container (spec 0010, AC-1).
     Grid,
+    /// `display: inline-grid`: an inline level grid container (spec 0010,
+    /// AC-1, AC-3).
+    InlineGrid,
     /// `display: flow-root`: a block that always establishes a block
     /// formatting context, so its `height: auto` holds its floats
     /// (spec 0009, child 0001).
@@ -708,13 +711,22 @@ pub enum FlexWrap {
 /// `justify-content` on a flex container.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum JustifyContent {
-    /// `flex-start`, the initial value (`normal` behaves as it).
+    /// `flex-start`, the initial value (`normal` behaves as it in flex
+    /// layout and as `stretch` in grid layout).
     #[default]
     FlexStart,
     /// `flex-end`.
     FlexEnd,
+    /// `normal`.
+    Normal,
+    /// `start`.
+    Start,
+    /// `end`.
+    End,
     /// `center`.
     Center,
+    /// `stretch`.
+    Stretch,
     /// `space-between`.
     SpaceBetween,
     /// `space-around`.
@@ -723,7 +735,8 @@ pub enum JustifyContent {
     SpaceEvenly,
 }
 
-/// `align-items`, and `align-self` other than `auto`.
+/// `align-items`, `justify-items`, `align-self` and `justify-self`
+/// (spec 0010, AC-4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AlignItems {
     /// `stretch`, which `normal` (the initial value) behaves as.
@@ -733,8 +746,16 @@ pub enum AlignItems {
     FlexStart,
     /// `flex-end`.
     FlexEnd,
+    /// `normal`.
+    Normal,
+    /// `start`.
+    Start,
+    /// `end`.
+    End,
     /// `center`.
     Center,
+    /// `baseline`, which behaves as `start` in this feature.
+    Baseline,
 }
 
 /// `flex-basis`.
@@ -791,8 +812,8 @@ pub struct Alignment {
     pub column_gap: Length,
     /// `justify-content`.
     pub justify_content: JustifyContent,
-    /// `align-content`. `baseline` behaves as `start` in this feature.
-    pub align_content: AlignItems,
+    /// `align-content`.
+    pub align_content: JustifyContent,
     /// `justify-items`.
     pub justify_items: AlignItems,
     /// `align-items`.
@@ -811,7 +832,9 @@ impl Default for Alignment {
             row_gap: Length::ZERO,
             column_gap: Length::ZERO,
             justify_content: JustifyContent::default(),
-            align_content: AlignItems::default(),
+            // `align-content` initial is `normal`, which stretches `auto`
+            // tracks in grid layout (columns use `justify-content` instead).
+            align_content: JustifyContent::Normal,
             justify_items: AlignItems::default(),
             align_items: AlignItems::default(),
             justify_self: None,
@@ -820,80 +843,107 @@ impl Default for Alignment {
     }
 }
 
-/// One track size in a grid template: a fixed length, or a fraction of
-/// the free space (spec 0010, AC-1).
+/// One grid template's entries (spec 0010, AC-1): track sizes, groups of
+/// line names, and `repeat()`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TrackList {
+    /// The entries in source order.
+    pub entries: Vec<TrackEntry>,
+}
+
+/// One entry of a [`TrackList`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum TrackEntry {
+    /// A single track size.
+    Size(TrackSize),
+    /// Names for the line at this position (`[name]`).
+    LineNames(Vec<Atom>),
+    /// `repeat(count, tracks)`.
+    Repeat {
+        /// How many times to repeat.
+        count: RepeatCount,
+        /// The tracks to repeat.
+        tracks: Vec<TrackEntry>,
+    },
+}
+
+/// How many times a `repeat()` repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatCount {
+    /// An integer count.
+    Int(u16),
+    /// `auto-fill`: as many as fit.
+    AutoFill,
+    /// `auto-fit`: as many as fit, empty ones collapsed.
+    AutoFit,
+}
+
+/// One track's size (spec 0010, AC-1).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrackSize {
-    /// A fixed length or percentage.
-    Length(Length),
-    /// A fraction of the free space.
-    Fr(f32),
-    /// `minmax(min, max)`: at least `min`, at most `max`.
-    Minmax {
-        /// The minimum track size.
-        min: Box<TrackSize>,
-        /// The maximum track size.
-        max: Box<TrackSize>,
-    },
-    /// `repeat(count, track)` or `repeat(auto-fill|auto-fit, track)`.
-    Repeat {
-        /// `None` for `auto-fill`/`auto-fit`, else the repetition count.
-        count: Option<usize>,
-        /// The track to repeat.
-        track: Box<TrackSize>,
-    },
-    /// `min-content`: the track's minimum content size.
-    MinContent,
-    /// `max-content`: the track's maximum content size.
-    MaxContent,
-    /// `fit-content(<length>)`: clamp the content size to the given limit.
+    /// A single breadth.
+    Breadth(Breadth),
+    /// `minmax(min, max)`.
+    MinMax(Breadth, Breadth),
+    /// `fit-content(<length>)`.
     FitContent(Length),
 }
 
 impl Default for TrackSize {
     fn default() -> Self {
-        Self::Length(Length::ZERO)
+        Self::Breadth(Breadth::Length(Length::ZERO))
     }
 }
 
-/// The direction auto-placed items flow in (spec 0010, AC-2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GridAutoFlow {
-    /// Place items row by row.
-    #[default]
-    Row,
-    /// Place items column by column.
-    Column,
-    /// Place items to fill the earliest empty cell (dense packing).
-    Dense,
+/// A track breadth (spec 0010, AC-1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Breadth {
+    /// A fixed length or percentage.
+    Length(Length),
+    /// A fraction of the free space.
+    Fr(f32),
+    /// `auto`: the content's size, stretched by `justify-content` /
+    /// `align-content`.
+    Auto,
+    /// `min-content`.
+    MinContent,
+    /// `max-content`.
+    MaxContent,
 }
 
-/// Grid container properties (spec 0010, AC-1 to AC-3). A grid container
-/// lays its items out into explicit and implicit tracks.
+/// The direction auto-placed items flow in and whether packing is dense
+/// (spec 0010, AC-2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GridAutoFlow {
+    /// Place items column by column instead of row by row.
+    pub column: bool,
+    /// Fill the earliest empty cell instead of keeping source order.
+    pub dense: bool,
+}
+
+/// Grid container and grid item properties (spec 0010, AC-1 to AC-5).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Grid {
-    /// `grid-template-columns`: one track size per column track.
-    pub template_columns: Vec<TrackSize>,
-    /// `grid-template-rows`: one track size per row track.
-    pub template_rows: Vec<TrackSize>,
+    /// `grid-template-columns`.
+    pub template_columns: TrackList,
+    /// `grid-template-rows`.
+    pub template_rows: TrackList,
     /// `grid-auto-columns`: sizes for implicitly created columns.
     pub auto_columns: Vec<TrackSize>,
     /// `grid-auto-rows`: sizes for implicitly created rows.
     pub auto_rows: Vec<TrackSize>,
-    /// `grid-auto-flow`: the direction auto-placed items flow in.
+    /// `grid-auto-flow`.
     pub auto_flow: GridAutoFlow,
-    /// `grid-column-start` / `grid-row-start`: where the item begins,
-    /// `None` means auto placement.
-    pub column_start: Option<GridLine>,
-    /// `grid-column-end` / `grid-row-end`: where the item ends.
-    pub column_end: Option<GridLine>,
-    /// `grid-row-start`: where the item begins in the row axis.
-    pub row_start: Option<GridLine>,
-    /// `grid-row-end`: where the item ends in the row axis.
-    pub row_end: Option<GridLine>,
-    /// Named areas from `grid-template-areas`, mapping area names to cell
-    /// ranges (spec 0010, AC-2).
-    pub grid_template_areas: Vec<GridArea>,
+    /// `grid-column-start`.
+    pub column_start: GridLine,
+    /// `grid-column-end`.
+    pub column_end: GridLine,
+    /// `grid-row-start`.
+    pub row_start: GridLine,
+    /// `grid-row-end`.
+    pub row_end: GridLine,
+    /// Named areas from `grid-template-areas` (spec 0010, AC-2).
+    pub template_areas: Vec<GridArea>,
 }
 
 /// One named grid area from `grid-template-areas`: its name and the cell
@@ -913,19 +963,27 @@ pub struct GridArea {
     pub col_end: usize,
 }
 
-/// One side of grid item placement: a line number, a span, a named line, or
-/// auto (spec 0010, AC-2).
+/// One side of grid item placement (spec 0010, AC-2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum GridLine {
-    /// A positive line number, counting from the start (1-indexed).
-    Line(usize),
-    /// Count `count` lines from the end (Grid §8 counts from `-1`).
-    FromEnd(usize),
-    /// Span `count` tracks.
-    Span(usize),
     /// Auto-placed: let the grid algorithm decide.
     #[default]
     Auto,
+    /// A line: `index` counts from the start when positive and from the end
+    /// when negative (Grid §8), optionally naming a line.
+    Line {
+        /// The line number, never zero.
+        index: i32,
+        /// The line name to select among equal indices, if given.
+        name: Option<Atom>,
+    },
+    /// `span <count>` tracks, optionally up to a named line.
+    Span {
+        /// How many tracks to span.
+        count: u16,
+        /// The named line to span to, if given.
+        name: Option<Atom>,
+    },
 }
 
 /// `table-layout`: `auto` sizes columns from cell content; `fixed` sizes

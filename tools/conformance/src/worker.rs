@@ -75,11 +75,7 @@ pub fn run(wpt_dir: &Path, no_render: bool, subset_path: &Path) -> Result<()> {
                     images: None,
                     parsed_as: "html".to_owned(),
                 };
-                writeln!(
-                    out,
-                    "{}",
-                    serde_json::to_string(&resp).expect("serialization should not fail")
-                )?;
+                writeln!(out, "{}", serde_json::to_string(&resp)?)?;
                 out.flush()?;
                 continue;
             }
@@ -93,11 +89,7 @@ pub fn run(wpt_dir: &Path, no_render: bool, subset_path: &Path) -> Result<()> {
             images,
             parsed_as,
         };
-        writeln!(
-            out,
-            "{}",
-            serde_json::to_string(&resp).expect("serialization should not fail")
-        )?;
+        writeln!(out, "{}", serde_json::to_string(&resp)?)?;
         out.flush()?;
     }
     Ok(())

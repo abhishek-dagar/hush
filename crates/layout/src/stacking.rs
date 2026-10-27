@@ -364,9 +364,12 @@ fn gather<'a, W: Walker<'a>>(
                 group.blocks.push(Item::Step(own));
             }
         }
-        let outlined = boxes
-            .get(fragment_box.box_id)
-            .is_some_and(|b| b.style.outline.width > Au::ZERO);
+        // A table's collapsed borders paint in the outline pass too, after
+        // its cells (spec 0009, child 0004, AC-17).
+        let outlined = fragment_box.collapsed_borders.is_some()
+            || boxes
+                .get(fragment_box.box_id)
+                .is_some_and(|b| b.style.outline.width > Au::ZERO);
         if outlined {
             groups[context].outlines.push(Item::Step(Step::Outline {
                 fragment: fragment_box,

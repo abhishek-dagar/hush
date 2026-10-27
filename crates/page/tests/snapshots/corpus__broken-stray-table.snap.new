@@ -48,12 +48,12 @@ fragments viewport=800x600
         line at=0,0 size=784x21.52 baseline=16.93
           text html>body>p>#text at=0,0 size=87.23x21.52 baseline=16.93 "para in table"
       box (anonymous) at=0,75.03 size=43.67x49.03
-        box html>body>table at=0,0 size=41.67x49.03 overflow=(0,0 0x0)
-          box html>body>table>tbody>tr>td at=2,2 size=37.67x45.03 overflow=(0,0 38.67x45.03)
-            box (anonymous) at=1,1 size=35.67x21.52
-              line at=0,0 size=35.67x21.52 baseline=16.93
+        box html>body>table at=0,0 size=43.67x49.03 overflow=(0,0 0x0)
+          box html>body>table>tbody>tr>td at=2,2 size=39.67x45.03
+            box (anonymous) at=1,1 size=37.67x21.52
+              line at=0,0 size=37.67x21.52 baseline=16.93
                 text html>body>table>tbody>tr>td>#text at=0,0 size=24.23x21.52 baseline=16.93 "cell"
-            box html>body>table>tbody>tr>td>div at=1,22.52 size=35.67x21.52 overflow=(0,0 37.67x21.52)
+            box html>body>table>tbody>tr>td>div at=1,22.52 size=37.67x21.52
               line at=0,0 size=37.67x21.52 baseline=16.93
                 text html>body>table>tbody>tr>td>div>#text at=0,0 size=37.67x21.52 baseline=16.93 "block"
       box (anonymous) at=0,124.07 size=784x21.52

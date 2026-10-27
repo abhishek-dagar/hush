@@ -42,14 +42,6 @@ pub enum SkipReason {
 }
 
 impl SkipReason {
-    /// Every reason, in report order.
-    pub const ALL: [Self; 4] = [
-        Self::Server,
-        Self::Manual,
-        Self::Testharness,
-        Self::OtherKind,
-    ];
-
     /// The name the reports use.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -81,8 +73,6 @@ pub struct Test {
     pub kind: Kind,
     /// Its timeout.
     pub timeout: Timeout,
-    /// An `.xht` or `.xhtml` file, parsed as HTML (AC-18).
-    pub xhtml: bool,
 }
 
 /// How a reference relates to the page that links it.
@@ -208,7 +198,6 @@ pub fn discover(root: &Path, subset: &Subset) -> Result<Vec<Test>> {
         let Some(kind) = classify(root, path, meta, &referenced) else {
             continue;
         };
-        let name = path.rsplit('/').next().unwrap_or(path);
         // A path can belong to multiple areas when their paths overlap
         // (e.g. `css/CSS2/normal-flow` is covered by both `normal-flow`
         // and `floats`), so one Test per area.
@@ -222,7 +211,6 @@ pub fn discover(root: &Path, subset: &Subset) -> Result<Vec<Test>> {
                 } else {
                     Timeout::Normal
                 },
-                xhtml: name.ends_with(".xht") || name.ends_with(".xhtml"),
             });
         }
     }

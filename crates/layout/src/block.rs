@@ -335,8 +335,10 @@ impl InProgress {
         let starts_context = is_root
             || inline_level
             || is_scroll_container
+            || style.display_box.display == css::Display::FlowRoot
             || replaced
             || is_flex
+            || layout_box.kind == BoxKind::GridContainer
             || is_flex_item
             || is_absolute;
         let top_adjoining = !starts_context && border.top == Au::ZERO && padding.top == Au::ZERO;
@@ -467,7 +469,31 @@ impl InProgress {
         space.exclusions = Some(Rc::new(
             self.exclusions.translated(Point::new(Au::ZERO, -y)),
         ));
+        if let Some((_, width)) = self.float_band(child, y) {
+            space.available_inline = AvailableSize::Definite(width);
+        }
         space
+    }
+
+    /// The free band beside the floats at block offset `y`, as its left edge
+    /// and width, for a block child that starts its own formatting context:
+    /// its border box must not overlap the floats (CSS 2.2 section 9.5).
+    /// `None` for any other child, or with no float beside it.
+    fn float_band(&self, child: &LayoutBox, y: Au) -> Option<(Au, Au)> {
+        let starts_context = child.style.display_box.display == css::Display::FlowRoot
+            || child.style.display_box.is_scroll_container()
+            || matches!(
+                child.kind,
+                BoxKind::FlexContainer | BoxKind::GridContainer | BoxKind::TableWrapper
+            );
+        if !starts_context || child.float.is_some() || child.is_absolute() {
+            return None;
+        }
+        let band = self
+            .exclusions
+            .opportunity(y, self.content_width, Au::ZERO)
+            .rect;
+        (band.size.width < self.content_width).then_some((band.origin.x, band.size.width))
     }
 
     /// The sizes a flex container lays its items out in.
@@ -566,6 +592,7 @@ impl InProgress {
             box_id: id,
             static_position: Point::new(origin.x, origin.y + y),
             fixed,
+            containing_block: None,
         });
     }
 
@@ -637,6 +664,12 @@ impl InProgress {
         if let Some(last) = child.last_baseline {
             self.last_baseline = Some(origin.y + y + last);
         }
+        // A child that starts its own formatting context sits in the band
+        // beside the floats it was sized for.
+        let x = tree
+            .get(child.box_id)
+            .and_then(|b| self.float_band(b, y))
+            .map_or(x, |(left, _)| x + left);
         self.cursor = y + child.size.height;
         self.pending = margins.bottom;
         self.take_floats(child, Point::new(margins.left, y));
@@ -704,7 +737,12 @@ impl InProgress {
                 (opp.rect.origin.x + opp.rect.size.width - margin_box_width).max(Au::ZERO)
             }
         };
-        let at = origin.offset_by(Point::new(float_x, opp.rect.origin.y));
+        // The exclusion is the margin box; the fragment sits at its border
+        // box, inset by the left and top margins.
+        let at = origin.offset_by(Point::new(
+            float_x + box_fragment.margins.left,
+            opp.rect.origin.y + box_fragment.margins.top.resolve(),
+        ));
         self.floats.push((at, Rc::clone(&fragment)));
         self.push_child(at, fragment);
         self.exclusions = self.exclusions.add(Exclusion {

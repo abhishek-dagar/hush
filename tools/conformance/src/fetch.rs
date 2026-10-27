@@ -27,15 +27,15 @@ pub fn ensure(dir: &Path, commit: &str, paths: &[String], remote: &str) -> Resul
     }
     std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     eprintln!("fetching WPT {commit} into {}", dir.display());
-    let dir = Some(dir);
-    git(dir, &["init", "-q"])?;
-    git(dir, &["remote", "add", "origin", remote])?;
+    let at = Some(dir);
+    git(at, &["init", "-q"])?;
+    git(at, &["remote", "add", "origin", remote])?;
     let patterns: Vec<String> = paths.iter().map(|p| format!("/{p}/")).collect();
     let mut sparse = vec!["sparse-checkout", "set", "--no-cone"];
     sparse.extend(patterns.iter().map(String::as_str));
-    git(dir, &sparse)?;
+    git(at, &sparse)?;
     git(
-        dir,
+        at,
         &[
             "fetch",
             "-q",
@@ -46,8 +46,7 @@ pub fn ensure(dir: &Path, commit: &str, paths: &[String], remote: &str) -> Resul
             commit,
         ],
     )?;
-    git(dir, &["checkout", "-q", "FETCH_HEAD"])?;
-    let dir = dir.unwrap_or(Path::new("."));
+    git(at, &["checkout", "-q", "FETCH_HEAD"])?;
     std::fs::write(dir.join(MARKER), commit)
         .with_context(|| format!("could not mark {} complete", dir.display()))
 }

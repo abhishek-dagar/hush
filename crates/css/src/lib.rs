@@ -42,12 +42,13 @@ pub use sheet::{
 };
 pub use style::{
     AlignItems, AspectRatio, Background, Border, BorderCollapse, BorderRadius, BorderSide,
-    BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect, ComputedStyle, Cursor, CustomProperties,
-    Direction, Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis, FlexDirection, FlexWrap,
-    Float, Font, FontStyle, Grid, GridArea, GridAutoFlow, GridLine, InheritedBox, InheritedTable,
-    InheritedText, JustifyContent, LineHeight, List, ListStylePosition, ListStyleType, Margin,
-    Motion, Outline, OutlineStyle, Overflow, Padding, Position, PositionOffsets, Sizes, Table,
-    TableLayout, TextAlign, TextDecorationLine, TextOverflow, TimingFunction, TrackSize, Transform,
+    BorderStyle, BoxSizing, Breadth, CaptionSide, Clear, ClipRect, ComputedStyle, Cursor,
+    CustomProperties, Direction, Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis,
+    FlexDirection, FlexWrap, Float, Font, FontStyle, Grid, GridArea, GridAutoFlow, GridLine,
+    InheritedBox, InheritedTable, InheritedText, JustifyContent, LineHeight, List,
+    ListStylePosition, ListStyleType, Margin, Motion, Outline, OutlineStyle, Overflow, Padding,
+    Position, PositionOffsets, RepeatCount, Sizes, Table, TableLayout, TextAlign,
+    TextDecorationLine, TextOverflow, TimingFunction, TrackEntry, TrackList, TrackSize, Transform,
     TransformFn, UserSelect, VerticalAlign, Visibility, WhiteSpace, WritingMode,
 };
 pub use stylist::Stylist;

@@ -113,11 +113,29 @@ fn compute(
     if layout_box.kind == BoxKind::Table {
         return crate::table::intrinsic_sizes(tree, id, layout_box, cx);
     }
+    if layout_box.kind == BoxKind::GridContainer {
+        return crate::grid::intrinsic_sizes(tree, id, layout_box, cx);
+    }
     if !layout_box.inline.is_empty() {
         let atomics: HashMap<BoxId, (Au, Au)> = dependencies(tree, layout_box)
             .filter_map(|id| Some((id, contribution(tree, id, cx)?)))
             .collect();
         return inline::intrinsic_sizes(tree, &layout_box.inline, &atomics, &mut cx.fonts);
+    }
+    if layout_box.kind == BoxKind::TableWrapper {
+        // A caption widens the wrapper only to its min content width and
+        // wraps to the table's width (CSS Tables 3, computing the table width).
+        return in_flow_children(tree, layout_box)
+            .filter_map(|child| {
+                let (min, max) = contribution(tree, child, cx)?;
+                let caption = tree
+                    .get(child)
+                    .is_some_and(|b| b.kind == BoxKind::TableCaption);
+                Some(if caption { (min, min) } else { (min, max) })
+            })
+            .fold((Au::ZERO, Au::ZERO), |(min, max), (a, b)| {
+                (min.max(a), max.max(b))
+            });
     }
     let contributions =
         in_flow_children(tree, layout_box).filter_map(|child| contribution(tree, child, cx));

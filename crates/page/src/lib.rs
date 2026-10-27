@@ -122,6 +122,10 @@ pub struct AnimationSet {
 impl AnimationSet {
     /// Start a transition on `node` for `property`, from `from` to `to`,
     /// beginning at `start`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one transition's timing and endpoints, set together"
+    )]
     pub fn start_transition(
         &mut self,
         node: NodeId,
@@ -164,7 +168,7 @@ impl AnimationSet {
             } else {
                 ease(running.timing, (elapsed / running.duration) as f32)
             };
-            let value = running.from + (running.to - running.from) * progress as f32;
+            let value = running.from + (running.to - running.from) * progress;
             if *property == css_property_scale() {
                 transforms.insert(*node, (value, running.binding_id));
             }
@@ -210,8 +214,7 @@ fn ease(timing: TimingFunction, progress: f32) -> f32 {
         TimingFunction::Ease => {
             // cubic-bezier(0.25, 0.1, 0.25, 1)
             let p = progress.clamp(0.0, 1.0);
-            let t = p / (p + (1.0 - p) * 0.25 / 0.75);
-            t
+            p / (p + (1.0 - p) * 0.25 / 0.75)
         }
         TimingFunction::EaseIn => progress * progress,
         TimingFunction::EaseOut => 1.0 - (1.0 - progress) * (1.0 - progress),

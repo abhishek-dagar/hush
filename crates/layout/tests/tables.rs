@@ -426,3 +426,86 @@ fn table_width_is_the_sum_of_its_columns() {
     assert!((t.2 - (a.2 + b.2)).abs() <= 1.0, "columns fill the table");
     assert!((t.2 - 100.0).abs() <= 1.0, "the table takes its width");
 }
+
+#[test]
+fn caption_wraps_to_the_table_instead_of_widening_it() {
+    // A caption widens the wrapper only to its min content width (CSS
+    // Tables 3, computing the table width): its two 60px pieces wrap onto
+    // two lines inside the 80px table.
+    let found = lay_out(
+        "
+        t:table border-spacing:0
+          c:caption
+            x:span display:inline-block; width:60px; height:10px
+            y:span display:inline-block; width:60px; height:10px
+          r:tr
+            a:td width:80px; height:10px; padding:0
+        ",
+    );
+    assert_eq!(found["t"].2, 80.0, "the table keeps its own width");
+    assert_eq!(found["c"].2, 80.0, "the caption takes the table's width");
+    assert!(found["y"].1 > found["x"].1, "the caption wraps");
+}
+
+#[test]
+fn percent_cells_size_columns_and_a_colspan_only_adds_what_is_short() {
+    // AC-16: the Wikipedia navbox shape. A `width:1%` label cell shrinks to
+    // its min content with padding, the `width:100%` cell takes the rest,
+    // the spanning title adds nothing to the label column, and each cell
+    // fills its column whatever its own `width` says.
+    check(
+        "
+        t:table width:400px; border-spacing:0
+          r:tr
+            h:td[colspan=2] padding:0
+              hi:div width:200px; height:10px
+          r2:tr
+            g:td width:1%; padding:0 10px; height:20px
+              gi:div width:50px; height:10px
+            l:td width:100%; padding:0; height:20px
+              li:div width:150px; height:10px
+        ",
+        &[
+            ("t", 0.0, 0.0, 400.0, 30.0),
+            ("h", 0.0, 0.0, 400.0, 10.0),
+            ("g", 0.0, 10.0, 70.0, 20.0),
+            ("l", 70.0, 10.0, 330.0, 20.0),
+        ],
+    );
+}
+
+#[test]
+fn cell_margins_are_ignored() {
+    // AC-16: `margin` does not apply to table cells (CSS 2.2 section 17.5),
+    // so it neither widens the column nor moves the cell.
+    check(
+        "
+        t:table border-spacing:0
+          r:tr
+            a:td margin:0 30px; padding:0
+              ai:div width:50px; height:10px
+            b:td padding:0
+              bi:div width:50px; height:10px
+        ",
+        &[
+            ("t", 0.0, 0.0, 100.0, 10.0),
+            ("a", 0.0, 0.0, 50.0, 10.0),
+            ("b", 50.0, 0.0, 50.0, 10.0),
+        ],
+    );
+}
+
+#[test]
+fn table_border_and_padding_hold_the_grid() {
+    // AC-17: with separate borders the grid sits inside the table's border
+    // and padding, then `border-spacing`, so a 50 by 20 cell starts at
+    // 10 + 5 + 3 = 18 px and the table grows by the same on each side.
+    check(
+        "
+        t:table border:10px solid; padding:5px; border-spacing:3px
+          r:tr
+            a:td padding:0; width:50px; height:20px
+        ",
+        &[("t", 0.0, 0.0, 86.0, 56.0), ("a", 18.0, 18.0, 50.0, 20.0)],
+    );
+}

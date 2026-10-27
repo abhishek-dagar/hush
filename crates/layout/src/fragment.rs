@@ -92,6 +92,12 @@ pub struct PendingAbsolute {
     /// viewport's containing block instead of the nearest positioned
     /// ancestor (spec 0009, child 0003, AC-10).
     pub fixed: bool,
+    /// A containing block the layout stage gives this box directly, from
+    /// this fragment's border box corner: a grid item's area, which holds
+    /// an absolutely positioned child even when the container is not
+    /// positioned (spec 0010, child 0002, AC-5). `None` uses the nearest
+    /// positioned ancestor or the viewport.
+    pub containing_block: Option<Rect>,
 }
 
 impl PendingAbsolute {
@@ -99,6 +105,9 @@ impl PendingAbsolute {
     pub(crate) fn offset_by(self, at: Point) -> Self {
         Self {
             static_position: at.offset_by(self.static_position),
+            containing_block: self
+                .containing_block
+                .map(|cb| Rect::new(at.offset_by(cb.origin), cb.size)),
             ..self
         }
     }

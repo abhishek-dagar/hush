@@ -30,7 +30,7 @@ use css::{ComputedStyle, Display, Float, ListStyleType, Position, StyleDamage, W
 use dom::{Document, ImageState, NodeData, NodeId};
 
 use crate::LayoutCache;
-use crate::table::fix_tables;
+use crate::table::{fix_tables, fix_tables_below};
 
 /// What kind of box this is. More kinds (grid, tables) arrive with their
 /// slices.
@@ -340,6 +340,8 @@ impl BoxTree {
             }
             self.free_subtrees(old);
             built += self.fill(doc, container, node);
+            // The refilled tables need their anonymous boxes, as in `build`.
+            fix_tables_below(self, container);
             self.mark_needs_layout(container);
         }
         built
@@ -469,11 +471,15 @@ impl BoxTree {
             built += atomics.len();
             let mut pending: Vec<(BoxId, NodeId)> = atomics;
 
-            // A flex container's text is wrapped in anonymous flex items, so
-            // it always takes the block path.
-            let is_flex = container_style.display_box.display == Display::Flex;
+            // A flex or grid container's text is wrapped in anonymous items,
+            // so it always takes the block path (spec 0006, AC-3; spec 0010,
+            // AC-1).
+            let wraps_text = matches!(
+                container_style.display_box.display,
+                Display::Flex | Display::Grid | Display::InlineGrid
+            );
             let only_inline = segments.iter().all(|s| matches!(s, Segment::Inline(_)));
-            if only_inline && !is_flex {
+            if only_inline && !wraps_text {
                 let items: Vec<InlineItem> = segments
                     .into_iter()
                     .flat_map(|segment| match segment {
@@ -744,7 +750,11 @@ impl BoxTree {
                 continue;
             }
             if !block_level
-                && (replaced || matches!(display, Display::InlineBlock | Display::InlineTable))
+                && (replaced
+                    || matches!(
+                        display,
+                        Display::InlineBlock | Display::InlineTable | Display::InlineGrid
+                    ))
             {
                 // A floated inline level box becomes a BFC root box and leaves
                 // a marker in the inline content where it appeared
@@ -762,7 +772,7 @@ impl BoxTree {
                     // (spec 0009, child 0004, AC-14).
                     BoxKind::Table
                 } else {
-                    BoxKind::BlockContainer
+                    container_kind(&child_style)
                 };
                 let mut layout_box =
                     LayoutBox::new(Some(child), kind, child_style, Some(container));
@@ -1034,7 +1044,7 @@ fn clear_children(doc: &mut Document, node: NodeId) {
 fn container_kind(style: &ComputedStyle) -> BoxKind {
     match style.display_box.display {
         Display::Flex => BoxKind::FlexContainer,
-        Display::Grid => BoxKind::GridContainer,
+        Display::Grid | Display::InlineGrid => BoxKind::GridContainer,
         Display::Table | Display::InlineTable => BoxKind::Table,
         Display::TableRowGroup => BoxKind::TableRowGroup,
         Display::TableHeaderGroup => BoxKind::TableHeaderGroup,

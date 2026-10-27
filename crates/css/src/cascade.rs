@@ -16,13 +16,15 @@ use crate::CalcExpr;
 use crate::media::Device;
 use crate::properties::{
     CssWide, Declaration, DeclaredValue, FlexBasis as SpecifiedFlexBasis, FontSize, FontWeight,
-    LineHeight as SpecifiedLineHeight, Longhand, ParseContext, PropertyKey, Unparsed, Value,
-    parse_values, syntax_matches,
+    LineHeight as SpecifiedLineHeight, Longhand, ParseContext, PropertyKey, SpecifiedBreadth,
+    SpecifiedTrackEntry, SpecifiedTrackList, SpecifiedTrackSize, Unparsed, Value, parse_values,
+    syntax_matches,
 };
 use crate::values::{SpecifiedCalcExpr, SpecifiedLength};
 use crate::{
-    BorderStyle, Color, ComputedStyle, CustomProperties, Display, FlexBasis, Float, Font, Length,
-    LineHeight, OutlineStyle, Overflow, Position, PropertyRule,
+    BorderStyle, Breadth, Color, ComputedStyle, CustomProperties, Display, FlexBasis, Float, Font,
+    Length, LineHeight, OutlineStyle, Overflow, Position, PropertyRule, TrackEntry, TrackList,
+    TrackSize,
 };
 
 /// The longest text a `var()` substitution may produce. Past it the
@@ -577,6 +579,52 @@ impl Computer<'_> {
         }
     }
 
+    /// Resolves a specified track list into computed tracks (spec 0010,
+    /// AC-1).
+    fn track_list(&self, list: &SpecifiedTrackList) -> TrackList {
+        TrackList {
+            entries: list
+                .entries
+                .iter()
+                .map(|entry| self.track_entry(entry))
+                .collect(),
+        }
+    }
+
+    /// Resolves one track entry, keeping `repeat()` and line names.
+    fn track_entry(&self, entry: &SpecifiedTrackEntry) -> TrackEntry {
+        match entry {
+            SpecifiedTrackEntry::Size(size) => TrackEntry::Size(self.track_size(size)),
+            SpecifiedTrackEntry::LineNames(names) => TrackEntry::LineNames(names.clone()),
+            SpecifiedTrackEntry::Repeat { count, tracks } => TrackEntry::Repeat {
+                count: *count,
+                tracks: tracks.iter().map(|entry| self.track_entry(entry)).collect(),
+            },
+        }
+    }
+
+    /// Resolves one track size.
+    fn track_size(&self, size: &SpecifiedTrackSize) -> TrackSize {
+        match size {
+            SpecifiedTrackSize::Breadth(breadth) => TrackSize::Breadth(self.breadth(breadth)),
+            SpecifiedTrackSize::MinMax(min, max) => {
+                TrackSize::MinMax(self.breadth(min), self.breadth(max))
+            }
+            SpecifiedTrackSize::FitContent(length) => TrackSize::FitContent(self.length(length)),
+        }
+    }
+
+    /// Resolves one track breadth.
+    fn breadth(&self, breadth: &SpecifiedBreadth) -> Breadth {
+        match breadth {
+            SpecifiedBreadth::Length(length) => Breadth::Length(self.length(length)),
+            SpecifiedBreadth::Fr(fr) => Breadth::Fr(*fr),
+            SpecifiedBreadth::Auto => Breadth::Auto,
+            SpecifiedBreadth::MinContent => Breadth::MinContent,
+            SpecifiedBreadth::MaxContent => Breadth::MaxContent,
+        }
+    }
+
     /// Turns a parse-time calc expression into a computed one: `em`, `rem`
     /// and viewport units resolve against this element's font, the root's,
     /// and the viewport; percentages stay for layout until used value time
@@ -831,8 +879,17 @@ impl Computer<'_> {
             (L::JustifyContent, Value::JustifyContent(justify)) => {
                 Rc::make_mut(&mut self.style.alignment).justify_content = *justify;
             }
+            (L::AlignContent, Value::JustifyContent(align)) => {
+                Rc::make_mut(&mut self.style.alignment).align_content = *align;
+            }
+            (L::JustifyItems, Value::AlignItems(align)) => {
+                Rc::make_mut(&mut self.style.alignment).justify_items = *align;
+            }
             (L::AlignItems, Value::AlignItems(align)) => {
                 Rc::make_mut(&mut self.style.alignment).align_items = *align;
+            }
+            (L::JustifySelf, Value::AlignSelf(align)) => {
+                Rc::make_mut(&mut self.style.alignment).justify_self = *align;
             }
             (L::AlignSelf, Value::AlignSelf(align)) => {
                 Rc::make_mut(&mut self.style.alignment).align_self = *align;
@@ -848,19 +905,26 @@ impl Computer<'_> {
                 t.binding_id = None;
             }
             (L::GridTemplateColumns, Value::GridTracks(tracks)) => {
-                Rc::make_mut(&mut self.style.grid).template_columns = tracks.clone();
+                let tracks = self.track_list(tracks);
+                Rc::make_mut(&mut self.style.grid).template_columns = tracks;
             }
             (L::GridTemplateRows, Value::GridTracks(tracks)) => {
-                Rc::make_mut(&mut self.style.grid).template_rows = tracks.clone();
+                let tracks = self.track_list(tracks);
+                Rc::make_mut(&mut self.style.grid).template_rows = tracks;
             }
             (L::GridAutoColumns, Value::GridAutoTracks(tracks)) => {
-                Rc::make_mut(&mut self.style.grid).auto_columns = tracks.clone();
+                let tracks = tracks.iter().map(|size| self.track_size(size)).collect();
+                Rc::make_mut(&mut self.style.grid).auto_columns = tracks;
             }
             (L::GridAutoRows, Value::GridAutoTracks(tracks)) => {
-                Rc::make_mut(&mut self.style.grid).auto_rows = tracks.clone();
+                let tracks = tracks.iter().map(|size| self.track_size(size)).collect();
+                Rc::make_mut(&mut self.style.grid).auto_rows = tracks;
             }
             (L::GridAutoFlow, Value::GridAutoFlow(flow)) => {
                 Rc::make_mut(&mut self.style.grid).auto_flow = *flow;
+            }
+            (L::GridTemplateAreas, Value::GridAreas(areas)) => {
+                Rc::make_mut(&mut self.style.grid).template_areas = areas.clone();
             }
             (L::GridColumnStart, Value::GridLine(line)) => {
                 Rc::make_mut(&mut self.style.grid).column_start = line.clone();
@@ -1003,21 +1067,24 @@ impl Computer<'_> {
             Position::Absolute | Position::Fixed | Position::Sticky
         );
         let blockify = self.is_root
-            || self.parent.display_box.display == Display::Flex
+            || matches!(
+                self.parent.display_box.display,
+                Display::Flex | Display::Grid | Display::InlineGrid
+            )
             || positioned
             || floated;
         if blockify
             && matches!(
                 self.style.display_box.display,
-                Display::Inline | Display::InlineBlock | Display::InlineTable
+                Display::Inline | Display::InlineBlock | Display::InlineTable | Display::InlineGrid
             )
         {
             // `inline-table` blockifies to `table` (spec 0009, child 0004,
-            // AC-14).
-            let blockified = if self.style.display_box.display == Display::InlineTable {
-                Display::Table
-            } else {
-                Display::Block
+            // AC-14) and `inline-grid` to `grid` (spec 0010, AC-1).
+            let blockified = match self.style.display_box.display {
+                Display::InlineTable => Display::Table,
+                Display::InlineGrid => Display::Grid,
+                _ => Display::Block,
             };
             Rc::make_mut(&mut self.style.display_box).display = blockified;
         }
@@ -1105,7 +1172,10 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::FlexShrink => copy!(flex.shrink),
         L::FlexBasis => copy!(flex.basis),
         L::JustifyContent => copy!(alignment.justify_content),
+        L::AlignContent => copy!(alignment.align_content),
+        L::JustifyItems => copy!(alignment.justify_items),
         L::AlignItems => copy!(alignment.align_items),
+        L::JustifySelf => copy!(alignment.justify_self),
         L::AlignSelf => copy!(alignment.align_self),
         L::Order => copy!(flex.order),
         L::Transform => {
@@ -1117,7 +1187,7 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::GridAutoColumns => copy!(grid.auto_columns),
         L::GridAutoRows => copy!(grid.auto_rows),
         L::GridAutoFlow => copy!(grid.auto_flow),
-        L::GridTemplateAreas => copy!(grid.grid_template_areas),
+        L::GridTemplateAreas => copy!(grid.template_areas),
         L::GridColumnStart => copy!(grid.column_start),
         L::GridColumnEnd => copy!(grid.column_end),
         L::GridRowStart => copy!(grid.row_start),

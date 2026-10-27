@@ -65,7 +65,13 @@ pub(crate) fn containing_block(
     space: ConstraintSpace,
 ) -> Option<Rect> {
     let style = &tree.get(id)?.style;
-    if style.display_box.is_positioned() {
+    // A grid container establishes a containing block for its abspos
+    // children even when it is not positioned (Grid §9; spec 0010, AC-5).
+    let is_grid = matches!(
+        style.display_box.display,
+        css::Display::Grid | css::Display::InlineGrid
+    );
+    if style.display_box.is_positioned() || is_grid {
         let border = border_widths(style);
         return Some(Rect::new(
             Point::new(border.left, border.top),
@@ -122,6 +128,9 @@ pub(crate) fn lay_out_absolutes(
             fragment.absolutes.push(absolute);
             continue;
         }
+        // A grid item's area overrides the container's padding box for an
+        // absolutely positioned child with a definite area (AC-5).
+        let cb = absolute.containing_block.unwrap_or(cb);
         if let Some(placed) = lay_out_absolute(tree, absolute, cb, cx) {
             let (at, child) = &placed;
             let area = overflow_of(child);

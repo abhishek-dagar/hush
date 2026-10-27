@@ -70,18 +70,6 @@ pub struct Expectations {
 }
 
 impl Expectations {
-    /// Loads `expectations/<area>.txt` from `dir`. A missing file means
-    /// every test expects PASS.
-    pub fn load(dir: &Path, area: &str) -> Result<Self> {
-        let path = dir.join(format!("{area}.txt"));
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(e).context(format!("could not read {}", path.display())),
-        };
-        Self::parse(area, &text)
-    }
-
     /// Parses text.
     pub fn parse(area: &str, text: &str) -> Result<Self> {
         let mut map = BTreeMap::new();
