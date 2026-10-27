@@ -54,6 +54,7 @@ impl StyleDamage {
         let repaint = !same(&old.inherited_text, &new.inherited_text)
             || !same(&old.border, &new.border)
             || !same(&old.inherited_box, &new.inherited_box)
+            || old.vertical_align != new.vertical_align
             || !same(&old.background, &new.background)
             || !same(&old.effects, &new.effects)
             || !same(&old.outline, &new.outline);

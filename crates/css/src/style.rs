@@ -247,9 +247,6 @@ pub struct InheritedBox {
     pub cursor: Cursor,
     /// `user-select`.
     pub user_select: UserSelect,
-    /// `vertical-align` on table cells. Does not inherit, but stored here
-    /// for compactness (spec 0009, child 0004, AC-16).
-    pub vertical_align: VerticalAlign,
 }
 
 /// `list-style-type`.
@@ -1284,6 +1281,9 @@ pub struct ComputedStyle {
     pub transform: Rc<Transform>,
     /// Reset: `transition-*` and `animation-*` (spec 0010, AC-23, AC-24).
     pub motion: Rc<Motion>,
+    /// Reset: `vertical-align`. It does not inherit (spec 0009, child 0004),
+    /// so every element starts from its own value, defaulting to `baseline`.
+    pub vertical_align: VerticalAlign,
     /// Inherited: custom properties, for `var()`.
     pub custom: Rc<CustomProperties>,
     /// Inherited: `border-collapse`, `border-spacing`, `caption-side`,
@@ -1316,6 +1316,7 @@ thread_local! {
         outline: Rc::default(),
         transform: Rc::default(),
         motion: Rc::default(),
+        vertical_align: VerticalAlign::default(),
         custom: Rc::default(),
         inherited_table: Rc::default(),
     });
