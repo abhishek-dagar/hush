@@ -435,11 +435,11 @@ fn flatten<'a, S>(mut groups: Vec<Layers<'a, S>>) -> Vec<Step<'a, S>> {
         sequence.extend(group.own.into_iter().map(item));
         sequence.extend(by_z(group.negative));
         sequence.extend(group.blocks.into_iter().map(item));
+        sequence.extend(group.outlines.into_iter().map(item));
         sequence.extend(group.floats.into_iter().map(item));
         sequence.extend(group.inline.into_iter().map(item));
         sequence.extend(group.positioned.into_iter().map(item));
         sequence.extend(by_z(group.positive));
-        sequence.extend(group.outlines.into_iter().map(item));
         if is_context {
             sequence.push(Emit::Step(Step::Leave));
         }

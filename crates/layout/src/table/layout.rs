@@ -49,7 +49,23 @@ pub(crate) fn lay_out_table(
     // padding. Collapsed borders resolve with the cells' and the table has
     // no padding (CSS 2.2 section 17.6.2).
     let (padding, inset) = match border_collapse {
-        BorderCollapse::Collapse => (SideOffsets::default(), SideOffsets::default()),
+        BorderCollapse::Collapse => {
+            // With collapsed borders the table's border box includes half of
+            // each outer collapsed border, so the grid sits inset by those
+            // halves and the whole border paints inside the box
+            // (CSS 2.2 section 17.6.2).
+            let border = border_widths(style);
+            let half = |side: Au| Au(side.0 / 2);
+            (
+                SideOffsets::default(),
+                SideOffsets {
+                    top: half(border.top),
+                    right: half(border.right),
+                    bottom: half(border.bottom),
+                    left: half(border.left),
+                },
+            )
+        }
         BorderCollapse::Separate => {
             let border = border_widths(style);
             let inset = SideOffsets {
@@ -278,7 +294,7 @@ pub(crate) fn lay_out_table(
             }
             let align = tree
                 .get(cell_id)
-                .map(|b| b.style.inherited_box.vertical_align)
+                .map(|b| b.style.vertical_align)
                 .unwrap_or_default();
             let offset = if rows_spanned == 1 && align == VerticalAlign::Baseline {
                 match (row_baseline, &*fragment) {
@@ -356,6 +372,7 @@ pub(crate) fn lay_out_table(
             id,
             x,
             table_height,
+            inset,
             &column_left,
             &widths,
             &row_top,
@@ -527,7 +544,7 @@ fn baseline_of_row(
         };
         if tree
             .get(cell_id)
-            .map(|b| b.style.inherited_box.vertical_align)
+            .map(|b| b.style.vertical_align)
             .unwrap_or_default()
             != VerticalAlign::Baseline
         {

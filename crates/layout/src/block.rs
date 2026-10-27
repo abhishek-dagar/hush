@@ -339,8 +339,11 @@ impl InProgress {
             || replaced
             || is_flex
             || layout_box.kind == BoxKind::GridContainer
+            || layout_box.kind == BoxKind::TableCell
+            || layout_box.kind == BoxKind::TableCaption
             || is_flex_item
-            || is_absolute;
+            || is_absolute
+            || layout_box.float.is_some();
         let top_adjoining = !starts_context && border.top == Au::ZERO && padding.top == Au::ZERO;
         let bottom_open =
             !starts_context && border.bottom == Au::ZERO && padding.bottom == Au::ZERO;

@@ -171,7 +171,16 @@ pub(crate) fn contribution(tree: &BoxTree, id: BoxId, cx: &LayoutContext<'_>) ->
     let border = border_widths(style);
     let padding = absolute(Some(style.padding.left.clone())).unwrap_or(Au::ZERO)
         + absolute(Some(style.padding.right.clone())).unwrap_or(Au::ZERO);
-    let edges = border.horizontal() + padding;
+    // With collapsed borders the table's padding is ignored and the width
+    // counts half of each outer border (CSS 2.2 section 17.6.2), so only the
+    // half outer borders count toward the content width.
+    let edges = if layout_box.kind == BoxKind::Table
+        && style.inherited_table.border_collapse == css::BorderCollapse::Collapse
+    {
+        Au(border.horizontal().0 / 2)
+    } else {
+        border.horizontal() + padding
+    };
     let content = |width: Au| match style.size.box_sizing {
         BoxSizing::BorderBox => (width - edges).max(Au::ZERO),
         BoxSizing::ContentBox => width,

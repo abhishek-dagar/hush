@@ -326,3 +326,20 @@ fn a_new_formatting_context_sits_beside_the_floats() {
         ],
     );
 }
+
+#[test]
+fn a_float_starts_a_formatting_context_and_holds_its_child_margins() {
+    // Chrome parity: a float always starts a new block formatting context
+    // (CSS 2.2 section 9.4.1), so a child's margins stay inside the float.
+    // A `div height:10px; margin:5px 0` makes the float 20 px tall with the
+    // div at y = 5. Without the fix the margins collapse through, the float
+    // stays 10 px tall and starts at y = 5.
+    check(
+        "
+        c width:400px
+          f float:left; width:50px
+            d height:10px; margin:5px 0
+        ",
+        &[("f", 0.0, 0.0, 50.0, 20.0), ("d", 0.0, 5.0, 50.0, 10.0)],
+    );
+}
