@@ -1741,10 +1741,12 @@ mod tests {
         let table = add(&mut doc, html, table);
         let mut row = style(Color::TRANSPARENT, 0.0, None);
         Rc::make_mut(&mut row.display_box).display = Display::TableRow;
+        Rc::make_mut(&mut row.inherited_table).border_collapse = BorderCollapse::Collapse;
         let row = add(&mut doc, table, row);
         for _ in 0..2 {
             let mut cell = style(Color::TRANSPARENT, 0.0, Some(10.0));
             Rc::make_mut(&mut cell.display_box).display = Display::TableCell;
+            Rc::make_mut(&mut cell.inherited_table).border_collapse = BorderCollapse::Collapse;
             bordered(&mut cell, 3.0);
             add(&mut doc, row, cell);
         }
@@ -1798,6 +1800,66 @@ mod tests {
             .filter(|item| matches!(item.kind, ItemKind::Border { .. }))
             .count();
         assert_eq!(edges, 4, "the table's four collapsed edges paint");
+    }
+
+    #[test]
+    fn collapsed_edges_paint_after_cell_backgrounds_and_before_cell_content() {
+        // Chrome parity: collapsed borders paint after the cell backgrounds
+        // but before the cell's content (CSS 2.2 section 17.6.2). The display
+        // list should list the cell `Rect`, then the collapsed edge `Border`s,
+        // then the cell's `Text`. Before the fix the edges paint last, after
+        // the text.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
+        let mut table = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut table.display_box).display = Display::Table;
+        Rc::make_mut(&mut table.inherited_table).border_collapse = BorderCollapse::Collapse;
+        Rc::make_mut(&mut table.size).width = Some(Length::px(100.0));
+        bordered(&mut table, 2.0);
+        let table = add(&mut doc, html, table);
+        let mut row = style(Color::TRANSPARENT, 0.0, None);
+        Rc::make_mut(&mut row.display_box).display = Display::TableRow;
+        let row = add(&mut doc, table, row);
+        let mut cell = style(Color::rgb8(255, 0, 0), 0.0, Some(10.0));
+        Rc::make_mut(&mut cell.display_box).display = Display::TableCell;
+        let cell = add(&mut doc, row, cell);
+        let text = doc.create_text("Hi");
+        doc.append_child(cell, text).unwrap();
+        let list = paint_doc(&mut doc, &HashMap::new());
+
+        let rect_indices: Vec<usize> = list
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| matches!(item.kind, ItemKind::Rect { .. }).then_some(i))
+            .collect();
+        let border_indices: Vec<usize> = list
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| matches!(item.kind, ItemKind::Border { .. }).then_some(i))
+            .collect();
+        let text_indices: Vec<usize> = list
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| matches!(item.kind, ItemKind::Text { .. }).then_some(i))
+            .collect();
+        assert!(
+            !rect_indices.is_empty(),
+            "the cell paints a background rect"
+        );
+        assert!(!border_indices.is_empty(), "the collapsed edges paint");
+        assert!(!text_indices.is_empty(), "the cell's text paints");
+        assert!(
+            rect_indices.iter().max().copied() < border_indices.iter().min().copied(),
+            "cell backgrounds before collapsed edges: {rect_indices:?} {border_indices:?}"
+        );
+        assert!(
+            border_indices.iter().max().copied() < text_indices.iter().min().copied(),
+            "collapsed edges before cell content: {border_indices:?} {text_indices:?}"
+        );
     }
 
     #[test]
