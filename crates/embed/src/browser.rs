@@ -943,7 +943,11 @@ impl App {
         };
         let kind = match kind {
             DocumentKind::Error { reason, .. } => EntryKind::Error(reason.clone()),
-            DocumentKind::Document | DocumentKind::PlainText => EntryKind::Document,
+            DocumentKind::Document
+            | DocumentKind::PlainText
+            | DocumentKind::Json
+            | DocumentKind::Image { .. }
+            | DocumentKind::Unviewable { .. } => EntryKind::Document,
         };
         if self.history.commit(navigation, url.clone(), kind).is_some() {
             self.document_url = Some(url);

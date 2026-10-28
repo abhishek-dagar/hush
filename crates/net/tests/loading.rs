@@ -278,7 +278,7 @@ fn a_silent_server_times_out() {
 
 #[test]
 fn content_types_pick_the_kind_or_the_error_page() {
-    // AC-7
+    // AC-7; an unknown type shows the "can't show" page (spec 0035, AC-8).
     let server = serve(Tls::Plain, |seen| match seen.path.as_str() {
         "/plain" => Reply::ok("text/plain; charset=utf-8", "just text"),
         "/xhtml" => Reply::ok("application/xhtml+xml", TEXT),
@@ -295,8 +295,13 @@ fn content_types_pick_the_kind_or_the_error_page() {
     assert_eq!(kind(&net, &rx, &at("/plain")), DocumentKind::PlainText);
     assert_eq!(kind(&net, &rx, &at("/xhtml")), DocumentKind::Document);
     assert_eq!(
-        error(kind(&net, &rx, &at("/pdf"))),
-        FetchError::UnsupportedContentType("application/pdf".into())
+        kind(&net, &rx, &at("/pdf")),
+        DocumentKind::Unviewable {
+            file_name: "pdf".into(),
+            mime: "application/pdf".into(),
+            // The test server sends no `Content-Length`.
+            size: None,
+        }
     );
     let sniffed = load(&net, &rx, &at("/untyped-html"));
     assert_eq!(commit(&sniffed).1, "text/html");

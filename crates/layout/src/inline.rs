@@ -14,7 +14,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use base::{Au, BoxId, Point, Rect, SideOffsets, Size};
-use css::{ComputedStyle, FontStyle, LineHeight, TextAlign, TextOverflow, WhiteSpace};
+use css::{
+    ComputedStyle, FontStyle, LineHeight, OverflowWrap, TextAlign, TextOverflow, WhiteSpace,
+};
 use dom::NodeId;
 use text::{FontDescriptor, LineMetrics, ShapedRun, Slant};
 
@@ -246,7 +248,7 @@ fn build_pieces(
         match item {
             InlineItem::Text { .. } => {
                 if let Some(Some(text)) = shaped.get(index) {
-                    text_pieces(index, text, &mut pieces);
+                    text_pieces(index, text, basis, &mut pieces);
                 }
             }
             InlineItem::Start(id) => {
@@ -309,11 +311,15 @@ fn build_pieces(
 
 /// Splits a text item's runs after each break opportunity: after a space
 /// where the text may wrap (in `pre-wrap`, after the last of a run of
-/// spaces), and after a zero width space.
-fn text_pieces(item: usize, text: &ShapedText<'_>, pieces: &mut Vec<Piece>) {
+/// spaces), and after a zero width space. With `overflow-wrap:
+/// break-word`, a word wider than `available` is cut to fit too.
+fn text_pieces(item: usize, text: &ShapedText<'_>, available: Option<Au>, pieces: &mut Vec<Piece>) {
     let white_space = text.style.inherited_text.white_space;
     let wrap = wraps(white_space);
     let hang = spaces_hang(white_space);
+    let break_word = (wrap && text.style.inherited_text.overflow_wrap == OverflowWrap::BreakWord)
+        .then_some(available)
+        .flatten();
     for (run_index, run) in text.runs.iter().enumerate() {
         let mut start = 0;
         let mut width = Au::ZERO;
@@ -338,7 +344,7 @@ fn text_pieces(item: usize, text: &ShapedText<'_>, pieces: &mut Vec<Piece>) {
                 is_space && (white_space != WhiteSpace::PreWrap || rest.next() != Some(' '));
             let breaks = wrap && cluster_ends && (space_breaks || c == Some('\u{200B}'));
             if breaks || i + 1 == run.glyphs.len() {
-                pieces.push(Piece {
+                let piece = Piece {
                     kind: PieceKind::Text {
                         item,
                         run: run_index,
@@ -348,13 +354,76 @@ fn text_pieces(item: usize, text: &ShapedText<'_>, pieces: &mut Vec<Piece>) {
                     trailing,
                     breaks_before: false,
                     breaks_after: breaks,
-                });
+                };
+                match break_word {
+                    Some(limit) if width - trailing > limit => {
+                        break_word_piece(piece, run, limit, pieces);
+                    }
+                    _ => pieces.push(piece),
+                }
                 start = i + 1;
                 width = Au::ZERO;
                 trailing = Au::ZERO;
             }
         }
     }
+}
+
+/// Cuts `word`, a text piece wider than `limit`, into pieces that each
+/// fit, breaking only after the last glyph of a cluster (spec 0035, AC-1).
+/// The word starts a line once it overflows, so each cut fills one. The
+/// last piece keeps the word's trailing spaces and its break.
+fn break_word_piece(word: Piece, run: &ShapedRun, limit: Au, pieces: &mut Vec<Piece>) {
+    let PieceKind::Text {
+        item,
+        run: run_index,
+        glyphs,
+    } = word.kind
+    else {
+        pieces.push(word);
+        return;
+    };
+    let text_piece = |glyphs: Range<usize>, width| Piece {
+        kind: PieceKind::Text {
+            item,
+            run: run_index,
+            glyphs,
+        },
+        width,
+        trailing: Au::ZERO,
+        breaks_before: false,
+        breaks_after: true,
+    };
+    let mut start = glyphs.start;
+    let mut width = Au::ZERO;
+    // The last cluster end in this piece, and the width before it.
+    let mut cut: Option<(usize, Au)> = None;
+    for i in glyphs.clone() {
+        let Some(glyph) = run.glyphs.get(i) else {
+            break;
+        };
+        width += glyph.advance;
+        if width > limit
+            && let Some((at, before)) = cut.take()
+        {
+            pieces.push(text_piece(start..at, before));
+            start = at;
+            width -= before;
+        }
+        let cluster_ends = i + 1 == glyphs.end
+            || run
+                .glyphs
+                .get(i + 1)
+                .is_none_or(|next| next.cluster != glyph.cluster);
+        if cluster_ends {
+            cut = Some((i + 1, width));
+        }
+    }
+    pieces.push(Piece {
+        trailing: word.trailing,
+        breaks_after: word.breaks_after,
+        ..text_piece(start..glyphs.end, width)
+    });
 }
 
 /// A block's lines, laid out.

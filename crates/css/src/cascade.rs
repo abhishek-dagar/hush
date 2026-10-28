@@ -859,6 +859,9 @@ impl Computer<'_> {
             (L::WhiteSpace, Value::WhiteSpace(white_space)) => {
                 Rc::make_mut(&mut style.inherited_text).white_space = *white_space;
             }
+            (L::OverflowWrap, Value::OverflowWrap(wrap)) => {
+                Rc::make_mut(&mut style.inherited_text).overflow_wrap = *wrap;
+            }
             (L::TextDecorationLine, Value::TextDecorationLine(line)) => {
                 Rc::make_mut(&mut style.inherited_text).text_decoration_line = *line;
             }
@@ -1190,6 +1193,7 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::LineHeight => copy!(inherited_text.line_height),
         L::TextAlign => copy!(inherited_text.text_align),
         L::WhiteSpace => copy!(inherited_text.white_space),
+        L::OverflowWrap => copy!(inherited_text.overflow_wrap),
         L::TextDecorationLine => copy!(inherited_text.text_decoration_line),
         L::Visibility => copy!(inherited_box.visibility),
         L::ListStyleType => copy!(list.style_type),

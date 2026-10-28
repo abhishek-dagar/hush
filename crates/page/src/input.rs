@@ -458,7 +458,14 @@ impl Page {
             InputEvent::PointerUp { x, y, button } => {
                 let hit = self.flush_move(PointF { x, y });
                 match button {
-                    PointerButton::Primary => outcome.activated = self.release(hit),
+                    PointerButton::Primary => {
+                        outcome.activated = self.release(hit);
+                        let clicked = outcome.activated.map(|node| node.node);
+                        if let Some(node) = clicked {
+                            self.toggle_checkbox(node);
+                        }
+                        self.image_click(clicked, x, y);
+                    }
                     // A middle click on a link follows it, for now in the
                     // same page; tabs make it open one (spec 0008, AC-17).
                     PointerButton::Middle => {
@@ -518,6 +525,7 @@ impl Page {
                 self.edit(EditOp::Paste(&text));
             }
         }
+        self.json_sync_toggle();
         self.update_cursor();
         outcome.cursor = self.input.take_cursor_change();
         outcome
@@ -640,6 +648,48 @@ impl Page {
         self.input.activate_chain(doc, None);
         let common = common_ancestor(doc, pressed.node, hit?.node)?;
         self.activation(common)
+    }
+
+    /// A click's default action on a checkbox, or on a label holding one:
+    /// its checkedness flips (spec 0035, AC-2).
+    fn toggle_checkbox(&mut self, node: NodeId) {
+        use base::local_name;
+        let doc = &mut self.main_frame.document;
+        let is_checkbox = |doc: &Document, id| {
+            doc.is_html(id, local_name!("input"))
+                && attribute(doc, id, local_name!("type"))
+                    .is_some_and(|t| t.eq_ignore_ascii_case("checkbox"))
+        };
+        let label = base::atoms::LocalName::from("label");
+        let target = inclusive_ancestors(doc, node).find_map(|id| {
+            if is_checkbox(doc, id) {
+                return Some(id);
+            }
+            if !doc.is_html(id, label.clone()) {
+                return None;
+            }
+            let mut stack: Vec<NodeId> = doc.children(id).collect();
+            stack.reverse();
+            while let Some(child) = stack.pop() {
+                if is_checkbox(doc, child) {
+                    return Some(child);
+                }
+                stack.extend(doc.children(child).collect::<Vec<_>>().into_iter().rev());
+            }
+            None
+        });
+        let Some(target) = target else {
+            return;
+        };
+        if is_disabled(doc, target) {
+            return;
+        }
+        if state(doc, target).contains(ElementState::CHECKED) {
+            doc.set_state(target, ElementState::empty(), ElementState::CHECKED);
+        } else {
+            doc.set_state(target, ElementState::CHECKED, ElementState::empty());
+        }
+        self.needs_update = true;
     }
 
     /// `node` as an activation, unless it or an ancestor is disabled.
@@ -902,6 +952,8 @@ impl Page {
         let cursor = match style.map(|s| s.inherited_box.cursor) {
             Some(css::Cursor::Pointer) => CursorKind::Pointer,
             Some(css::Cursor::Text) => CursorKind::Text,
+            Some(css::Cursor::ZoomIn) => CursorKind::ZoomIn,
+            Some(css::Cursor::ZoomOut) => CursorKind::ZoomOut,
             Some(css::Cursor::Auto) if self.input.over_text => CursorKind::Text,
             _ => CursorKind::Default,
         };

@@ -22,8 +22,9 @@ use crate::{
     AlignItems, AspectRatio, BorderCollapse, BorderStyle, BoxSizing, CalcExpr, CaptionSide, Clear,
     ClipRect, Cursor, Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, GridArea,
     GridAutoFlow, GridLine, JustifyContent, Length, ListStylePosition, ListStyleType, OutlineStyle,
-    Overflow, Position, RepeatCount, TableLayout, TextAlign, TextDecorationLine, TextOverflow,
-    Transform, TransformFn, TransformStyle, UserSelect, VerticalAlign, Visibility, WhiteSpace,
+    Overflow, OverflowWrap, Position, RepeatCount, TableLayout, TextAlign, TextDecorationLine,
+    TextOverflow, Transform, TransformFn, TransformStyle, UserSelect, VerticalAlign, Visibility,
+    WhiteSpace,
 };
 
 use crate::style::Angle;
@@ -101,6 +102,7 @@ longhands! {
     LineHeight = "line-height", true;
     TextAlign = "text-align", true;
     WhiteSpace = "white-space", true;
+    OverflowWrap = "overflow-wrap", true;
     TextDecorationLine = "text-decoration-line", true;
     Visibility = "visibility", true;
     ListStyleType = "list-style-type", true;
@@ -475,6 +477,7 @@ pub(crate) enum Value {
     LineHeight(LineHeight),
     TextAlign(TextAlign),
     WhiteSpace(WhiteSpace),
+    OverflowWrap(OverflowWrap),
     TextDecorationLine(TextDecorationLine),
     Visibility(Visibility),
     ListStyleType(ListStyleType),
@@ -1033,6 +1036,14 @@ fn parse_longhand(
                 ("break-spaces", WhiteSpace::PreWrap),
             ],
         )?),
+        L::OverflowWrap => Value::OverflowWrap(parse_keyword(
+            input,
+            &[
+                ("normal", OverflowWrap::Normal),
+                ("break-word", OverflowWrap::BreakWord),
+                ("anywhere", OverflowWrap::BreakWord),
+            ],
+        )?),
         L::TextDecorationLine => Value::TextDecorationLine(parse_decoration_line(input)?),
         L::Visibility => Value::Visibility(parse_keyword(
             input,
@@ -1229,8 +1240,6 @@ const OTHER_CURSORS: &[&str] = &[
     "ns-resize",
     "nesw-resize",
     "nwse-resize",
-    "zoom-in",
-    "zoom-out",
 ];
 
 /// `cursor`: `[<url> [<x> <y>]?,]* <keyword>`. Images are skipped, so the
@@ -1261,6 +1270,8 @@ fn parse_cursor(input: &mut Parser<'_>, context: &ParseContext) -> ParseResult<C
             ("default", Cursor::Default),
             ("pointer", Cursor::Pointer),
             ("text", Cursor::Text),
+            ("zoom-in", Cursor::ZoomIn),
+            ("zoom-out", Cursor::ZoomOut),
         ],
         &mapped,
     )
@@ -3349,11 +3360,32 @@ mod tests {
     }
 
     #[test]
+    fn overflow_wrap_takes_break_word_and_anywhere() {
+        // Spec 0035, AC-1.
+        assert_eq!(
+            value("overflow-wrap: break-word"),
+            Value::OverflowWrap(OverflowWrap::BreakWord)
+        );
+        assert_eq!(
+            value("overflow-wrap: anywhere"),
+            Value::OverflowWrap(OverflowWrap::BreakWord)
+        );
+        assert_eq!(
+            value("overflow-wrap: normal"),
+            Value::OverflowWrap(OverflowWrap::Normal)
+        );
+        assert!(parse("overflow-wrap: wrap").is_empty());
+    }
+
+    #[test]
     fn cursor_and_user_select_keep_the_profile_and_map_the_rest() {
         // Spec 0006, AC-1 and Unsupported keywords
         assert_eq!(value("cursor: pointer"), Value::Cursor(Cursor::Pointer));
         assert_eq!(value("cursor: TEXT"), Value::Cursor(Cursor::Text));
         assert_eq!(value("cursor: grab"), Value::Cursor(Cursor::Auto));
+        // Spec 0035, AC-5.
+        assert_eq!(value("cursor: zoom-in"), Value::Cursor(Cursor::ZoomIn));
+        assert_eq!(value("cursor: zoom-out"), Value::Cursor(Cursor::ZoomOut));
         assert_eq!(
             value("cursor: url(hand.png) 4 4, url(b.cur), pointer"),
             Value::Cursor(Cursor::Pointer),

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod anchors;
+mod builtin;
 mod dom_sink;
 mod editor;
 mod fonts;
@@ -47,6 +48,7 @@ use script::ScriptHost;
 pub use text::FontContext;
 use tracing::{debug, debug_span, info, warn};
 
+use crate::builtin::Builtin;
 use crate::head::Head;
 pub use crate::input::InputOutcome;
 use crate::input::InputState;
@@ -365,6 +367,12 @@ pub struct Page {
     pending_scroll: Option<anchors::PendingScroll>,
     /// The session history as scripts see it (spec 0008, AC-27).
     history: ipc::HistoryInfo,
+    /// The built in document on show, for a response that is not HTML
+    /// (spec 0035); `None` for HTML and the error page.
+    builtin: Option<Builtin>,
+    /// The OS color scheme and reduced motion setting from the last
+    /// `Preferences`, which every committed document starts with.
+    preferences: (ColorScheme, bool),
 }
 
 impl Page {
@@ -418,6 +426,8 @@ impl Page {
             overlay: None,
             pending_scroll: None,
             history: ipc::HistoryInfo::default(),
+            builtin: None,
+            preferences: (ColorScheme::Light, false),
         }
     }
 
@@ -524,11 +534,18 @@ impl Page {
         match kind {
             DocumentKind::Document => info!(url, "document committed"),
             DocumentKind::PlainText => info!(url, "plain text committed"),
+            DocumentKind::Json => info!(url, "JSON committed"),
+            DocumentKind::Image { .. } => info!(url, "image page committed"),
+            DocumentKind::Unviewable { mime, .. } => info!(url, mime, "can't show page committed"),
             DocumentKind::Error { reason, input } => {
                 info!(%reason, input, "error page committed");
             }
         }
         self.committed = navigation;
+        let builtin = Builtin::for_kind(kind);
+        let text = builtin.as_ref().is_some_and(Builtin::is_text);
+        // Built in documents never run script (spec 0035, AC-12).
+        let scripting = self.scripting && builtin.is_none();
         let frame = &mut self.main_frame;
         frame.document = Document::new(url);
         frame.boxes = BoxTree::default();
@@ -537,10 +554,15 @@ impl Page {
         let device = Device {
             width: frame.viewport.width.to_f32_px(),
             height: frame.viewport.height.to_f32_px(),
-            color_scheme: ColorScheme::Light,
-            reduced_motion: false,
+            color_scheme: self.preferences.0,
+            reduced_motion: self.preferences.1,
         };
-        self.styles = Some(Styles::new(Rc::clone(&self.ua), device, Instant::now()));
+        let styles = Styles::new(Rc::clone(&self.ua), device, Instant::now());
+        self.styles = Some(if text {
+            styles.with_builtin(builtin::text_sheet())
+        } else {
+            styles
+        });
         if let Some(old) = self.images.replace(Images::new()) {
             old.release_all(&mut self.resources);
         }
@@ -552,7 +574,7 @@ impl Page {
         self.scripts = Scripts::default();
         self.lifecycle = Lifecycle::default();
         self.head = Head::default();
-        self.script = if self.scripting {
+        self.script = if scripting {
             new_script(self.script_wrap.as_ref())
         } else {
             None
@@ -569,10 +591,24 @@ impl Page {
             .and_then(|url| url.fragment().map(|_| anchors::PendingScroll::Fragment));
         self.needs_first_build = true;
         self.needs_update = true;
+        self.builtin = builtin;
+        if matches!(
+            kind,
+            DocumentKind::Image { .. } | DocumentKind::Unviewable { .. }
+        ) {
+            self.parser = None;
+            self.build_builtin(url, kind);
+            return true;
+        }
+        // JSON without a charset is UTF-8 (spec 0035, AC-1).
+        let charset = match kind {
+            DocumentKind::Json => charset.or_else(|| Some("utf-8".into())),
+            _ => charset,
+        };
         self.parser = Some(Parser::new(ParserOptions {
             encoding_hint: charset,
-            scripting: self.scripting,
-            plain_text: *kind == DocumentKind::PlainText,
+            scripting,
+            plain_text: text,
         }));
         true
     }
@@ -581,6 +617,13 @@ impl Page {
     /// the page can show what it has before the rest arrives (AC-5).
     pub fn fetch_chunk(&mut self, navigation: NavigationId, fetch: FetchId, data: &[u8]) {
         if !self.is_current(navigation) {
+            return;
+        }
+        // The image page's body is its picture (spec 0035, AC-6).
+        if fetch == FetchId::DOCUMENT && self.image_body_pending() {
+            if let Some(images) = &mut self.images {
+                images.fetch_chunk(fetch, data);
+            }
             return;
         }
         if fetch != FetchId::DOCUMENT {
@@ -637,6 +680,10 @@ impl Page {
         if !self.is_current(navigation) {
             return;
         }
+        if fetch == FetchId::DOCUMENT && self.image_body_pending() {
+            self.image_body_done();
+            return;
+        }
         if self.head.owns(fetch) {
             self.head.fetch_done(self.id);
             return;
@@ -671,6 +718,7 @@ impl Page {
             let step = parser.end(&mut DomSink::new(&mut self.main_frame.document));
             self.pump(step);
         }
+        self.json_body_done();
     }
 
     /// A fetch failed. A document cut short keeps what arrived; a style
@@ -681,6 +729,11 @@ impl Page {
             return;
         }
         warn!(%reason, fetch = fetch.0, "fetch failed");
+        // An image page cut short decodes what arrived (spec 0035, AC-7).
+        if fetch == FetchId::DOCUMENT && self.image_body_pending() {
+            self.image_body_done();
+            return;
+        }
         if self.head.owns(fetch) {
             self.head.fetch_failed();
             return;
@@ -770,9 +823,8 @@ impl Page {
                 FontRequest::Fetch { fetch: id, url } => fetch(id, url, Destination::Font),
                 FontRequest::Cancel { fetch: id } => cancel(id),
             });
-        let favicon = self
-            .lifecycle
-            .parsed
+        // Built in documents fetch nothing (spec 0035, AC-6, AC-12).
+        let favicon = (self.lifecycle.parsed && self.builtin.is_none())
             .then(|| {
                 self.head
                     .request_favicon(&self.main_frame.document, &mut self.fetch_ids)
@@ -1113,12 +1165,15 @@ impl Page {
                     viewport.height,
                 );
             }
+            self.image_viewport_changed();
         }
     }
 
     /// The OS color scheme or reduced motion setting changed. Restyles the
     /// document when a media query result flipped (spec 0010, AC-13).
+    /// Documents committed later start with them.
     pub fn set_preferences(&mut self, color_scheme: ColorScheme, reduced_motion: bool) {
+        self.preferences = (color_scheme, reduced_motion);
         if let Some(styles) = &mut self.styles {
             styles.set_preferences(&mut self.main_frame.document, color_scheme, reduced_motion);
         }

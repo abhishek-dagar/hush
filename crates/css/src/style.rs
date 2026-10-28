@@ -105,6 +105,18 @@ pub enum WhiteSpace {
     PreLine,
 }
 
+/// `overflow-wrap` (spec 0035, AC-1): whether a word wider than its line
+/// may break anywhere.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OverflowWrap {
+    /// `normal`, the initial value: words break only at opportunities.
+    #[default]
+    Normal,
+    /// `break-word`, and `anywhere` for now: a word too wide for its line
+    /// breaks between any two clusters.
+    BreakWord,
+}
+
 /// `direction`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Direction {
@@ -148,6 +160,8 @@ pub struct InheritedText {
     pub text_align: TextAlign,
     /// `white-space`.
     pub white_space: WhiteSpace,
+    /// `overflow-wrap`.
+    pub overflow_wrap: OverflowWrap,
     /// `direction`.
     pub direction: Direction,
     /// `writing-mode`.
@@ -165,6 +179,7 @@ impl InheritedText {
         self.line_height == other.line_height
             && self.text_align == other.text_align
             && self.white_space == other.white_space
+            && self.overflow_wrap == other.overflow_wrap
             && self.direction == other.direction
             && self.writing_mode == other.writing_mode
     }
@@ -177,6 +192,7 @@ impl Default for InheritedText {
             line_height: LineHeight::default(),
             text_align: TextAlign::default(),
             white_space: WhiteSpace::default(),
+            overflow_wrap: OverflowWrap::default(),
             direction: Direction::default(),
             writing_mode: WritingMode::default(),
             text_decoration_line: TextDecorationLine::default(),
@@ -225,6 +241,10 @@ pub enum Cursor {
     Pointer,
     /// `text`.
     Text,
+    /// `zoom-in`: the image page's fit view (spec 0035, AC-5).
+    ZoomIn,
+    /// `zoom-out`: the image page's actual size view (spec 0035, AC-5).
+    ZoomOut,
 }
 
 /// `user-select`. It inherits here because the used value of `auto`

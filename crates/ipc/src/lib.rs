@@ -282,8 +282,28 @@ pub const MAX_PAGE_URL_BYTES: usize = 2 * 1024 * 1024;
 pub enum DocumentKind {
     /// HTML, parsed as such.
     Document,
-    /// Plain text, shown preformatted.
+    /// Plain text, shown preformatted and wrapped (spec 0035, AC-3).
     PlainText,
+    /// JSON, shown as text with a pretty print checkbox (spec 0035, AC-1,
+    /// AC-2).
+    Json,
+    /// An image, shown on its own image page from the navigation's body
+    /// (spec 0035, AC-4 to AC-7).
+    Image {
+        /// The file name the title shows.
+        file_name: String,
+        /// Its MIME type, shown if the bytes don't decode (AC-7).
+        mime: String,
+    },
+    /// A file the browser can't show (spec 0035, AC-8). No body follows.
+    Unviewable {
+        /// The file name the page and the title show.
+        file_name: String,
+        /// The MIME type the page shows.
+        mime: String,
+        /// The size in bytes, when known.
+        size: Option<u64>,
+    },
     /// The built in error page for a load that failed. The body that follows
     /// is the filled in error page, parsed as HTML.
     Error {
@@ -414,6 +434,10 @@ pub enum CursorKind {
     Pointer,
     /// The text beam.
     Text,
+    /// A magnifier with a plus (spec 0035, AC-5).
+    ZoomIn,
+    /// A magnifier with a minus (spec 0035, AC-5).
+    ZoomOut,
 }
 
 /// One input event for a page, already in page CSS px (spec 0006,

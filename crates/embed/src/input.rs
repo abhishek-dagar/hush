@@ -145,6 +145,8 @@ pub(crate) fn cursor_icon(cursor: CursorKind) -> CursorIcon {
         CursorKind::Default => CursorIcon::Default,
         CursorKind::Pointer => CursorIcon::Pointer,
         CursorKind::Text => CursorIcon::Text,
+        CursorKind::ZoomIn => CursorIcon::ZoomIn,
+        CursorKind::ZoomOut => CursorIcon::ZoomOut,
     }
 }
 
@@ -168,6 +170,7 @@ mod tests {
         assert!(held.shift && held.meta && !held.ctrl && !held.alt);
         assert_eq!(cursor_icon(CursorKind::Pointer), CursorIcon::Pointer);
         assert_eq!(cursor_icon(CursorKind::Text), CursorIcon::Text);
+        assert_eq!(cursor_icon(CursorKind::ZoomIn), CursorIcon::ZoomIn);
     }
 
     #[test]

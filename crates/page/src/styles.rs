@@ -110,6 +110,9 @@ pub type ContainerSizes = HashMap<NodeId, Size>;
 /// The main document's sheets, its `Stylist`, and the fetches for them.
 pub struct Styles {
     ua: Rc<Stylesheet>,
+    /// A built in document's own user agent rules, after the UA sheet
+    /// (spec 0035, `text.css`).
+    builtin: Option<Rc<Stylesheet>>,
     sources: Vec<Source>,
     stylist: Stylist,
     requests: Vec<StyleRequest>,
@@ -123,11 +126,20 @@ impl Styles {
         let stylist = Stylist::new(std::slice::from_ref(&ua), device);
         Self {
             ua,
+            builtin: None,
             sources: Vec::new(),
             stylist,
             requests: Vec::new(),
             committed_at,
         }
+    }
+
+    /// Adds a built in document's rules after the UA sheet (spec 0035,
+    /// `text.css`). Called once, before the document has any nodes.
+    pub fn with_builtin(mut self, sheet: Rc<Stylesheet>) -> Self {
+        self.builtin = Some(sheet);
+        self.stylist = Stylist::new(&self.sheets(), self.stylist.device());
+        self
     }
 
     /// The rules in use.
@@ -236,10 +248,11 @@ impl Styles {
         }
     }
 
-    /// Every sheet in cascade order: the UA sheet, then the document's in
-    /// tree order.
+    /// Every sheet in cascade order: the UA sheet, a built in document's
+    /// rules, then the document's in tree order.
     fn sheets(&self) -> Vec<Rc<Stylesheet>> {
         std::iter::once(Rc::clone(&self.ua))
+            .chain(self.builtin.clone())
             .chain(self.sources.iter().filter_map(Source::sheet))
             .collect()
     }

@@ -48,10 +48,11 @@ pub use style::{
     Cursor, CustomProperties, Direction, Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis,
     FlexDirection, FlexWrap, Float, Font, FontStyle, Grid, GridArea, GridAutoFlow, GridLine,
     InheritedBox, InheritedTable, InheritedText, JustifyContent, LineHeight, List,
-    ListStylePosition, ListStyleType, Margin, Motion, Outline, OutlineStyle, Overflow, Padding,
-    Position, PositionOffsets, RepeatCount, Sizes, Table, TableLayout, TextAlign,
-    TextDecorationLine, TextOverflow, TimingFunction, TrackEntry, TrackList, TrackSize, Transform,
-    TransformFn, TransformStyle, UserSelect, VerticalAlign, Visibility, WhiteSpace, WritingMode,
+    ListStylePosition, ListStyleType, Margin, Motion, Outline, OutlineStyle, Overflow,
+    OverflowWrap, Padding, Position, PositionOffsets, RepeatCount, Sizes, Table, TableLayout,
+    TextAlign, TextDecorationLine, TextOverflow, TimingFunction, TrackEntry, TrackList, TrackSize,
+    Transform, TransformFn, TransformStyle, UserSelect, VerticalAlign, Visibility, WhiteSpace,
+    WritingMode,
 };
 pub use stylist::{ContainerContext, Stylist};
 pub use ua::ua_stylesheet;
