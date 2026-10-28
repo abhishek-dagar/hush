@@ -371,6 +371,8 @@ mod tests {
             let device = crate::Device {
                 width,
                 height: 600.0,
+                color_scheme: crate::media::ColorScheme::Light,
+                reduced_motion: false,
             };
             crate::Stylist::new(&[Rc::clone(&sheet)], device)
                 .font_faces()

@@ -28,7 +28,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use base::{Au, Point, Size, atoms::Atom};
-use css::{Device, Stylesheet, TimingFunction};
+use css::{ColorScheme, Device, Stylesheet, TimingFunction};
 use display_list::{
     ColorF, DisplayList, Epoch, MAX_ENCODED_LEN, PageId, PointF, RectF, ScrollId, ScrollOffset,
     SizeF,
@@ -59,7 +59,7 @@ pub use editor::{EditState, MAX_PASTE_BYTES, PAGE_SELECTION};
 pub use fonts::{BLOCK_PERIOD, FontRequest, MAX_FONT_FACES, WebFonts};
 pub use images::{ImageRequest, Images};
 pub use resources::ResourceTable;
-pub use styles::{RENDER_BLOCKING_CAP, StyleRequest, StyleStats, Styles};
+pub use styles::{ContainerSizes, RENDER_BLOCKING_CAP, StyleRequest, StyleStats, Styles};
 
 /// Why a frame could not be sent. The page keeps its last good frame on
 /// screen and tries again on the next `BeginFrame`.
@@ -537,6 +537,8 @@ impl Page {
         let device = Device {
             width: frame.viewport.width.to_f32_px(),
             height: frame.viewport.height.to_f32_px(),
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
         };
         self.styles = Some(Styles::new(Rc::clone(&self.ua), device, Instant::now()));
         if let Some(old) = self.images.replace(Images::new()) {
@@ -1114,6 +1116,14 @@ impl Page {
         }
     }
 
+    /// The OS color scheme or reduced motion setting changed. Restyles the
+    /// document when a media query result flipped (spec 0010, AC-13).
+    pub fn set_preferences(&mut self, color_scheme: ColorScheme, reduced_motion: bool) {
+        if let Some(styles) = &mut self.styles {
+            styles.set_preferences(&mut self.main_frame.document, color_scheme, reduced_motion);
+        }
+    }
+
     /// Ends a task: creates and tears down iframe frames for the iframes that
     /// joined or left their documents, then lets each document clear its
     /// mutation queue and sweep (spec 0002, Pinning and sweep).
@@ -1449,7 +1459,7 @@ impl Page {
                 let mut new_style = (*current).clone();
                 let computed = Rc::make_mut(&mut new_style);
                 let t = Rc::make_mut(&mut computed.transform);
-                t.scale = Some(scale);
+                t.scale = Some((scale, None));
                 t.binding_id = Some(binding_id);
                 new_style
             };
@@ -1462,77 +1472,114 @@ impl Page {
         }
         self.needs_update = false;
 
-        // One span per stage, with an event inside giving its counts (spec
-        // 0002, Observability). Both compile out of release builds with the
-        // rest of the debug level.
-        {
-            let _span = debug_span!("style").entered();
-            let stats = match &self.styles {
-                Some(styles) if frame.computes_styles => styles.style_pass(&mut frame.document),
-                // Hand built documents keep the styles they were given.
-                _ => {
-                    frame.document.restyle_dirty(|_, _, _| false);
-                    StyleStats::default()
+        // Container query pass loop (spec 0010, AC-18): style and layout
+        // repeat until every query container's size settles, capped at
+        // nesting depth + 1 passes and never more than 8. On the first pass
+        // `cq*` units and `@container` conditions see no container size, so a
+        // container's size can only change after layout; the loop re-styles
+        // and re-lays out until the sizes stop changing.
+        let mut container_sizes: ContainerSizes = HashMap::new();
+        let mut passes = 0;
+        let mut laid_out: bool;
+        loop {
+            passes += 1;
+            {
+                let _span = debug_span!("style").entered();
+                let stats = match &self.styles {
+                    Some(styles) if frame.computes_styles => {
+                        styles.style_pass(&mut frame.document, &container_sizes)
+                    }
+                    // Hand built documents keep the styles they were given.
+                    _ => {
+                        frame.document.restyle_dirty(|_, _, _| false);
+                        StyleStats::default()
+                    }
+                };
+                debug!(
+                    nodes_styled = stats.styled,
+                    sharing_hits = stats.shared,
+                    "styled"
+                );
+                self.last_style = stats;
+            }
+            // The faces follow the sheets and the media queries (spec 0006,
+            // AC-10).
+            if let Some(styles) = &self.styles
+                && frame.computes_styles
+                && self.web_fonts.set_rules(&styles.stylist().font_faces())
+            {
+                self.relayout_text = true;
+            }
+            {
+                let _span = debug_span!("boxes").entered();
+                let rebuild_roots = frame.document.take_box_rebuild_roots();
+                let mut built = 0;
+                if self.needs_first_build {
+                    frame.boxes = BoxTree::build(&mut frame.document);
+                    self.needs_first_build = false;
+                    built = frame.boxes.len();
+                } else if !rebuild_roots.is_empty() {
+                    built = frame.boxes.rebuild(&mut frame.document, &rebuild_roots);
                 }
+                apply_style_damage(frame);
+                if std::mem::take(&mut self.relayout_text) {
+                    frame.boxes.mark_all_needs_layout();
+                }
+                debug!(boxes_built = built, "boxes built");
+            }
+            // Backgrounds start loading once a style asks for them.
+            if let Some(images) = &mut self.images {
+                let urls = frame
+                    .boxes
+                    .iter()
+                    .filter_map(|b| b.style.background.image.as_deref())
+                    .map(str::to_owned)
+                    .collect();
+                images.set_backgrounds(urls, &mut self.fetch_ids, &mut self.resources);
+            }
+            let new_fragments = {
+                let _span = debug_span!("layout").entered();
+                let (fragments, stats) = layout::layout(
+                    &mut frame.boxes,
+                    frame.viewport,
+                    &mut self.fonts,
+                    self.web_fonts.layer(),
+                );
+                debug!(
+                    laid_out = stats.laid_out,
+                    cache_hits = stats.cache_hits,
+                    "laid out"
+                );
+                laid_out = stats.laid_out > 0;
+                fragments
             };
-            debug!(
-                nodes_styled = stats.styled,
-                sharing_hits = stats.shared,
-                "styled"
-            );
-            self.last_style = stats;
-        }
-        // The faces follow the sheets and the media queries (spec 0006,
-        // AC-10).
-        if let Some(styles) = &self.styles
-            && frame.computes_styles
-            && self.web_fonts.set_rules(&styles.stylist().font_faces())
-        {
-            self.relayout_text = true;
-        }
-        {
-            let _span = debug_span!("boxes").entered();
-            let rebuild_roots = frame.document.take_box_rebuild_roots();
-            let mut built = 0;
-            if self.needs_first_build {
-                frame.boxes = BoxTree::build(&mut frame.document);
-                self.needs_first_build = false;
-                built = frame.boxes.len();
-            } else if !rebuild_roots.is_empty() {
-                built = frame.boxes.rebuild(&mut frame.document, &rebuild_roots);
+            let new_sizes = layout::container_sizes(&frame.boxes, &new_fragments);
+            // Settled when no container's size changed since the last pass.
+            if new_sizes == container_sizes {
+                frame.fragments = Some(new_fragments);
+                break;
             }
-            apply_style_damage(frame);
-            if std::mem::take(&mut self.relayout_text) {
-                frame.boxes.mark_all_needs_layout();
+            // Restyle every container whose size changed, or that appeared
+            // or disappeared, so its subtree re-resolves `cq*` and
+            // `@container` on the next pass.
+            for node in container_sizes.keys() {
+                if !new_sizes.contains_key(node) {
+                    frame.document.mark_subtree_dirty(*node);
+                }
             }
-            debug!(boxes_built = built, "boxes built");
+            for (node, &new_size) in &new_sizes {
+                let changed = container_sizes.get(node).is_none_or(|&old| old != new_size);
+                if changed {
+                    frame.document.mark_subtree_dirty(*node);
+                }
+            }
+            container_sizes = new_sizes;
+            frame.fragments = Some(new_fragments);
+            if passes >= 8 {
+                warn!("container query pass cap reached; keeping the last layout");
+                break;
+            }
         }
-        // Backgrounds start loading once a style asks for them.
-        if let Some(images) = &mut self.images {
-            let urls = frame
-                .boxes
-                .iter()
-                .filter_map(|b| b.style.background.image.as_deref())
-                .map(str::to_owned)
-                .collect();
-            images.set_backgrounds(urls, &mut self.fetch_ids, &mut self.resources);
-        }
-        let laid_out = {
-            let _span = debug_span!("layout").entered();
-            let (fragments, stats) = layout::layout(
-                &mut frame.boxes,
-                frame.viewport,
-                &mut self.fonts,
-                self.web_fonts.layer(),
-            );
-            debug!(
-                laid_out = stats.laid_out,
-                cache_hits = stats.cache_hits,
-                "laid out"
-            );
-            frame.fragments = Some(fragments);
-            stats.laid_out > 0
-        };
         // Faces the text met while still unloaded start loading now (spec
         // 0006, Font trigger).
         let needed = self.fonts.take_needed_faces();
@@ -1799,8 +1846,9 @@ pub(crate) fn strip_cdata(text: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use base::atoms::QualName;
+    use base::atoms::{LocalName, QualName};
     use base::local_name;
+    use css::MatchElement;
     use dom::ElementKind;
 
     use super::*;
@@ -2150,6 +2198,131 @@ mod tests {
             None,
             "outside the page"
         );
+    }
+
+    /// Finds the first child element of `parent` whose local name matches
+    /// `wanted` (the HTML parser inserts implicit `head`/`body` elements, so
+    /// we cannot rely on child order).
+    fn child_named(doc: &Document, parent: NodeId, wanted: LocalName) -> Option<NodeId> {
+        doc.children(parent).find(|&id| {
+            doc.element_ref(id)
+                .is_some_and(|element| element.name().local == wanted)
+        })
+    }
+
+    #[test]
+    fn cqw_resolves_against_the_container_after_the_pass_loop() {
+        // AC-17, AC-18: a `cqw` child sizes to its query container over the
+        // container pass loop.
+        let mut page = loaded(
+            &[
+                "<!doctype html>",
+                "<body>",
+                "<div id=c style='container-type:inline-size;width:200px;'>",
+                "  <div id=i style='width:50cqw;height:20px;'></div>",
+                "</div>",
+                "</body>",
+            ],
+            true,
+        );
+        assert!(page.take_frame_request());
+        let _ = page.begin_frame(0.0);
+        let _ = page.begin_frame(16.0);
+        let _ = page.begin_frame(32.0);
+
+        let doc = &page.main_frame().document;
+        let html = doc.document_element().unwrap();
+        let body = child_named(doc, html, local_name!("body")).unwrap();
+        let container = child_named(doc, body, local_name!("div")).unwrap();
+        let child = child_named(doc, container, local_name!("div")).unwrap();
+
+        let child_style = doc
+            .node(child)
+            .unwrap()
+            .as_element()
+            .unwrap()
+            .style()
+            .unwrap();
+        // 50% of the 200px container's inline size.
+        assert_eq!(
+            child_style.size.width,
+            Some(css::Length::Au(Au::from_px(100.0)))
+        );
+        // The container kept its explicit width.
+        let container_style = doc
+            .node(container)
+            .unwrap()
+            .as_element()
+            .unwrap()
+            .style()
+            .unwrap();
+        assert_eq!(
+            container_style.size.width,
+            Some(css::Length::Au(Au::from_px(200.0)))
+        );
+    }
+
+    #[test]
+    fn has_subject_is_restyled_when_its_argument_changes() {
+        // AC-15: a change below a `:has()` subject restyles the subject.
+        let mut page = loaded(
+            &[
+                "<!doctype html>",
+                "<body>",
+                "<style>div:has(.foo) { background: blue; }</style>",
+                "<div id=d><span id=s class='foo'></span></div>",
+                "</body>",
+            ],
+            true,
+        );
+        assert!(page.take_frame_request());
+        let _ = page.begin_frame(0.0);
+
+        // Capture the node ids (they are `Copy`) while borrowing immutably.
+        let (div, span) = {
+            let doc = &page.main_frame().document;
+            let html = doc.document_element().unwrap();
+            let body = child_named(doc, html, local_name!("body")).unwrap();
+            let div = child_named(doc, body, local_name!("div")).unwrap();
+            let span = child_named(doc, div, local_name!("span")).unwrap();
+            (div, span)
+        };
+
+        // Initially the subject matches: the div's background is blue.
+        {
+            let doc = &page.main_frame().document;
+            let div_style = doc
+                .node(div)
+                .unwrap()
+                .as_element()
+                .unwrap()
+                .style()
+                .unwrap();
+            assert_eq!(div_style.background.color, css::Color::rgb8(0, 0, 255));
+        }
+
+        // Drop the class the `:has()` argument matches on: the subject must
+        // be restyled and loses the background.
+        {
+            let doc = &mut page.main_frame_mut().document;
+            let class = QualName::attribute(local_name!("class"));
+            doc.remove_attribute(span, &class).unwrap();
+        }
+        page.end_task();
+        assert!(page.take_frame_request());
+        let _ = page.begin_frame(16.0);
+
+        {
+            let doc = &page.main_frame().document;
+            let div_style = doc
+                .node(div)
+                .unwrap()
+                .as_element()
+                .unwrap()
+                .style()
+                .unwrap();
+            assert_eq!(div_style.background.color, css::Color::TRANSPARENT);
+        }
     }
 
     const NAV: NavigationId = NavigationId(1);

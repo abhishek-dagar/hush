@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use display_list::{PageId, PointF, SizeF};
 use ipc::{
-    BootstrapServer, ContentChannel, ContentReceiver, ContentSender, CursorKind, DocumentKind,
-    FetchError, HistoryInfo, InputEvent, NavigationId, PageNavigationAction, PageNavigationOrigin,
-    ScrollTarget, ToBrowser, ToContent,
+    BootstrapServer, ColorScheme, ContentChannel, ContentReceiver, ContentSender, CursorKind,
+    DocumentKind, FetchError, HistoryInfo, InputEvent, NavigationId, PageNavigationAction,
+    PageNavigationOrigin, ScrollTarget, ToBrowser, ToContent,
 };
 use navigation::{
     Action, Allow, Begin, EntryId, EntryKind, Origin, ScriptThrottle, SessionHistory, Stopped,
@@ -30,7 +30,7 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
-use winit::window::{Window, WindowId};
+use winit::window::{Theme, Window, WindowId};
 
 #[cfg(feature = "chrome")]
 use crate::chrome_host::{ChromeEvent, ChromeHost, Outcome};
@@ -648,6 +648,61 @@ impl App {
         (viewport, scale as f32)
     }
 
+    /// The OS "reduce motion" setting, read from the platform (spec 0010,
+    /// AC-13). macOS asks `NSWorkspace`, Windows asks
+    /// `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)` (inverted), and
+    /// other platforms default to `false` (`no-preference`, the value the
+    /// spec allows when the setting can't be read).
+    fn reduced_motion() -> bool {
+        Self::os_reduced_motion()
+    }
+
+    /// Whether to reduce motion given whether the OS animates client areas.
+    /// Windows reports "animations on"; the setting inverts it (spec 0010,
+    /// AC-13).
+    #[allow(
+        dead_code,
+        reason = "used by the OS reader on Windows and by its unit test"
+    )]
+    fn animations_on_to_reduce_motion(animations_on: bool) -> bool {
+        !animations_on
+    }
+
+    #[cfg(target_os = "macos")]
+    fn os_reduced_motion() -> bool {
+        use objc2_app_kit::NSWorkspace;
+        NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+    }
+
+    #[cfg(windows)]
+    fn os_reduced_motion() -> bool {
+        use windows_sys::Win32::System::SystemParametersInfo::{
+            SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+        };
+        let mut enabled = 1i32;
+        // SAFETY: `SPI_GETCLIENTAREAANIMATION` writes one `BOOL` into
+        // `enabled`.
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                (&raw mut enabled).cast::<c_void>(),
+                0,
+            )
+        };
+        if ok == 0 {
+            warn!("failed to read the OS reduce-motion setting; defaulting to no-preference");
+            return false;
+        }
+        // Animations on means reduce motion is off.
+        animations_on_to_reduce_motion(enabled != 0)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn os_reduced_motion() -> bool {
+        false
+    }
+
     /// Tells the page its viewport when it changed since the last time.
     fn send_viewport(&mut self) {
         let Some(app_window) = &self.window else {
@@ -670,8 +725,22 @@ impl App {
         let created = self.viewport_sent.is_none();
         self.viewport_sent = Some((viewport, scale));
         self.send(message);
-        if created && let Some(load) = self.pending.take() {
-            self.begin_load(load);
+        if created {
+            // Tell the page the OS color scheme and reduced motion setting
+            // right after the page exists, so `@media (prefers-color-scheme)`
+            // and `@media (prefers-reduced-motion)` evaluate from the first
+            // frame (spec 0010, AC-13).
+            let color_scheme = match app_window.window.theme() {
+                Some(Theme::Dark) => ColorScheme::Dark,
+                _ => ColorScheme::Light,
+            };
+            self.send(ToContent::Preferences {
+                color_scheme,
+                reduced_motion: Self::reduced_motion(),
+            });
+            if let Some(load) = self.pending.take() {
+                self.begin_load(load);
+            }
         }
     }
 
@@ -1703,6 +1772,19 @@ impl ApplicationHandler<UserEvent> for App {
                 self.pump_chrome();
                 self.send_viewport();
             }
+            WindowEvent::ThemeChanged(theme) => {
+                // The OS color scheme changed: tell the page so
+                // `@media (prefers-color-scheme)` restyles on the next frame
+                // (spec 0010, AC-13). Re-read reduced motion too.
+                let color_scheme = match theme {
+                    Theme::Dark => ColorScheme::Dark,
+                    Theme::Light => ColorScheme::Light,
+                };
+                self.send(ToContent::Preferences {
+                    color_scheme,
+                    reduced_motion: Self::reduced_motion(),
+                });
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 let shortcut = Origin::User(UserInput::Shortcut);
@@ -2039,5 +2121,16 @@ impl ContentProcess {
         warn!("content process did not exit in time, killing it");
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn animations_on_inverts_to_reduce_motion() {
+        assert!(!App::animations_on_to_reduce_motion(true));
+        assert!(App::animations_on_to_reduce_motion(false));
     }
 }

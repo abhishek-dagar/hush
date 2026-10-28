@@ -94,6 +94,10 @@ flag_set! {
         AFFECTED_BY_SIBLING_SELECTORS = 7;
         /// The element hosts a shadow root.
         HAS_SHADOW_ROOT = 8;
+        /// The element is the subject of a `:has()` rule whose argument may
+        /// change independently of it, so it must be restyled when a
+        /// descendant or following sibling changes (spec 0010, AC-15).
+        HAS_SUBJECT = 9;
     }
 }
 

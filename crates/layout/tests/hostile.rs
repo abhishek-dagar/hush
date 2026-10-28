@@ -12,7 +12,9 @@
 mod support;
 
 use base::Au;
-use css::{ComputedStyle, Declaration, Device, MatchContext, Stylist};
+use css::{
+    ColorScheme, ComputedStyle, ContainerContext, Declaration, Device, MatchContext, Stylist,
+};
 use dom::{Document, NodeId};
 use layout::{BoxTree, FragmentTree};
 use support::run;
@@ -33,11 +35,16 @@ fn cascade(
     declarations: &[Declaration],
 ) -> std::rc::Rc<ComputedStyle> {
     let element = doc.element_ref(id).unwrap();
-    let computed = stylist.cascade(
+    let container_context = ContainerContext {
+        size: None,
+        names: &[],
+    };
+    let (computed, _has_subject) = stylist.cascade(
         &element,
         parent_style,
         declarations,
         Au::from_px(16.0),
+        &container_context,
         &mut MatchContext::default(),
     );
     std::rc::Rc::new(computed)
@@ -49,7 +56,15 @@ fn cascade(
 #[test]
 fn huge_colspan_stays_under_slot_cap() {
     let (width, height) = support::VIEWPORT;
-    let stylist = Stylist::new(&[css::ua_stylesheet()], Device { width, height });
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width,
+            height,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
     let mut doc = Document::new("about:blank");
     let root = doc.root();
     let html = support::add(&mut doc, &stylist, root, "html", "margin:0");
@@ -86,7 +101,15 @@ fn huge_colspan_stays_under_slot_cap() {
 #[test]
 fn float_pile_does_not_panic() {
     let (width, height) = support::VIEWPORT;
-    let stylist = Stylist::new(&[css::ua_stylesheet()], Device { width, height });
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width,
+            height,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
     let mut doc = Document::new("about:blank");
     let root = doc.root();
     let html = support::add(&mut doc, &stylist, root, "html", "margin:0");
@@ -117,7 +140,15 @@ fn float_pile_does_not_panic() {
 #[test]
 fn deeply_nested_tables_do_not_overflow() {
     let (width, height) = support::VIEWPORT;
-    let stylist = Stylist::new(&[css::ua_stylesheet()], Device { width, height });
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width,
+            height,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
     let mut doc = Document::new("about:blank");
     let root = doc.root();
     let html = support::add(&mut doc, &stylist, root, "html", "margin:0");
@@ -147,7 +178,15 @@ fn deeply_nested_tables_do_not_overflow() {
 #[test]
 fn combined_hostile_input_lays_out() {
     let (width, height) = support::VIEWPORT;
-    let stylist = Stylist::new(&[css::ua_stylesheet()], Device { width, height });
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width,
+            height,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
     let mut doc = Document::new("about:blank");
     let root = doc.root();
     let html = support::add(&mut doc, &stylist, root, "html", "margin:0");

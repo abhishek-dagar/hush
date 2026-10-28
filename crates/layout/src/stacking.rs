@@ -141,7 +141,9 @@ fn stacking(boxes: &BoxTree, fragment: &BoxFragment, in_line: bool) -> Stacking 
             .is_some_and(|parent| parent.kind == BoxKind::FlexContainer);
     // `z-index` applies to positioned boxes and flex items only.
     let z_index = style.effects.z_index.filter(|_| positioned || flex_item);
-    if z_index.is_some() || style.effects.opacity < 1.0 {
+    // A transform other than `none` creates a stacking context (spec 0010,
+    // AC-20), as do `z-index` and opacity below 1.
+    if style.transform.has_transform() || z_index.is_some() || style.effects.opacity < 1.0 {
         Stacking::Context(z_index.unwrap_or(0))
     } else if positioned {
         Stacking::Positioned

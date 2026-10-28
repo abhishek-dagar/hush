@@ -76,6 +76,19 @@ impl Document {
         Ok(())
     }
 
+    /// Records whether `id` is the subject of a `:has()` rule, so changes
+    /// below or beside it restyle it (spec 0010, AC-15).
+    #[track_caller]
+    pub fn set_has_subject(&mut self, id: NodeId, value: bool) -> Result<(), DomError> {
+        let node = self.live_mut(id, Location::caller())?;
+        if value {
+            node.flags.insert(NodeFlags::HAS_SUBJECT);
+        } else {
+            node.flags.remove(NodeFlags::HAS_SUBJECT);
+        }
+        Ok(())
+    }
+
     /// Takes the elements whose style changed in a way that needs a repaint
     /// or relayout, oldest first. An element may have been removed or freed
     /// since, so check it before use.
@@ -200,6 +213,10 @@ impl css::MatchElement for ElementRef<'_> {
 
     fn parent_element(&self) -> Option<Self> {
         self.doc.element_ref(self.node.parent()?)
+    }
+
+    fn first_child_element(&self) -> Option<Self> {
+        self.doc.element_ref(self.node.first_child()?)
     }
 
     fn prev_sibling_element(&self) -> Option<Self> {

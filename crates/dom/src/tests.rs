@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use base::atoms::{Atom, LocalName, QualName};
 use base::local_name;
-use css::ComputedStyle;
+use css::{ColorScheme, ComputedStyle};
 
 use super::*;
 
@@ -903,6 +903,8 @@ fn map_of(css: &str) -> Rc<css::InvalidationMap> {
     let device = css::Device {
         width: 800.0,
         height: 600.0,
+        color_scheme: ColorScheme::Light,
+        reduced_motion: false,
     };
     css::Stylist::new(&[sheet], device).invalidation_map()
 }

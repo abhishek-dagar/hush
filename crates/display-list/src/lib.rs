@@ -252,9 +252,19 @@ impl SpatialKind {
                     Binding::Static(m) => *m,
                     Binding::Bound { value, .. } => *value,
                 };
+                // Full 4 by 4 with perspective divide; `w <= 0` means the
+                // point is behind the viewer and cannot map (spec 0010,
+                // AC-19, AC-21).
+                let w = m[3] * point.x + m[7] * point.y + m[15];
+                if w <= 0.0 {
+                    return PointF {
+                        x: f32::NAN,
+                        y: f32::NAN,
+                    };
+                }
                 PointF {
-                    x: m[0] * point.x + m[4] * point.y + m[12],
-                    y: m[1] * point.x + m[5] * point.y + m[13],
+                    x: (m[0] * point.x + m[4] * point.y + m[12]) / w,
+                    y: (m[1] * point.x + m[5] * point.y + m[13]) / w,
                 }
             }
             Self::Sticky { sticky_rect, .. } => PointF {

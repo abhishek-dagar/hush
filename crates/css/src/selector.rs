@@ -93,8 +93,14 @@ pub(crate) enum Simple {
     State(PseudoState),
     /// `:enabled`: a form control that is not disabled (spec 0006, AC-16).
     Enabled,
-    /// `:not(<compound>)`.
-    Not(Box<Compound>),
+    /// `:not(<selector list>)` (spec 0010, AC-14).
+    Not(Vec<Selector>),
+    /// `:is(<selector list>)` (spec 0010, AC-14).
+    Is(Vec<Selector>),
+    /// `:where(<selector list>)` (spec 0010, AC-14).
+    Where(Vec<Selector>),
+    /// `:has(<relative selector list>)` (spec 0010, AC-15).
+    Has(Vec<Selector>),
 }
 
 /// Simple selectors that must all match one element. Empty is `*`.
@@ -132,6 +138,11 @@ impl Selector {
         // A selector is never built without a compound.
         &self.compounds[0]
     }
+
+    /// Whether matching this selector reads the element's siblings.
+    pub(crate) fn reads_siblings(&self) -> bool {
+        self.compounds.iter().any(Compound::reads_siblings)
+    }
 }
 
 /// Parses a selector list. Any invalid or unsupported selector fails the
@@ -141,15 +152,21 @@ impl Selector {
 /// engine does not support, which scripts see as a `SyntaxError`.
 pub fn parse_selectors(text: &str) -> Option<Vec<Selector>> {
     let mut parser = Parser::new(text);
-    parser.parse_entirely(parse_selector_list).ok()
+    parser
+        .parse_entirely(|input| parse_selector_list(input, false, false))
+        .ok()
 }
 
-pub(crate) fn parse_selector_list(input: &mut Parser<'_>) -> ParseResult<Vec<Selector>> {
-    input.parse_comma_separated(parse_selector)
+pub(crate) fn parse_selector_list(
+    input: &mut Parser<'_>,
+    in_not: bool,
+    in_has: bool,
+) -> ParseResult<Vec<Selector>> {
+    input.parse_comma_separated(|input| parse_selector(input, in_not, in_has))
 }
 
-fn parse_selector(input: &mut Parser<'_>) -> ParseResult<Selector> {
-    let (first, mut pseudo_element) = parse_compound(input, false)?;
+fn parse_selector(input: &mut Parser<'_>, in_not: bool, in_has: bool) -> ParseResult<Selector> {
+    let (first, mut pseudo_element) = parse_compound(input, in_not, in_has)?;
     let mut compounds = vec![first];
     let mut combinators = Vec::new();
     loop {
@@ -180,7 +197,7 @@ fn parse_selector(input: &mut Parser<'_>) -> ParseResult<Selector> {
         }
         input.skip_whitespace();
         combinators.push(combinator);
-        let (compound, pseudo) = parse_compound(input, false)?;
+        let (compound, pseudo) = parse_compound(input, false, false)?;
         compounds.push(compound);
         pseudo_element = pseudo;
         if compounds.len() > MAX_COMPOUNDS {
@@ -202,11 +219,11 @@ fn parse_selector(input: &mut Parser<'_>) -> ParseResult<Selector> {
     })
 }
 
-/// Parses one compound, and the pseudo element that may close it. Inside
-/// `:not()` it may not nest another `:not()` or take a pseudo element.
+/// Parses one compound, and the pseudo element that may close it.
 fn parse_compound(
     input: &mut Parser<'_>,
     in_not: bool,
+    in_has: bool,
 ) -> ParseResult<(Compound, Option<PseudoElement>)> {
     let mut simple = Vec::new();
     let mut any = false;
@@ -251,14 +268,16 @@ fn parse_compound(
             }
             Token::Colon => {
                 let pseudo = match input.next_including_whitespace()?.clone() {
-                    Token::Colon if !in_not => match input.next_including_whitespace()?.clone() {
-                        Token::Ident(name) if name.eq_ignore_ascii_case("placeholder") => {
-                            pseudo_element = Some(PseudoElement::Placeholder);
-                            continue;
+                    Token::Colon if !in_not && !in_has => {
+                        match input.next_including_whitespace()?.clone() {
+                            Token::Ident(name) if name.eq_ignore_ascii_case("placeholder") => {
+                                pseudo_element = Some(PseudoElement::Placeholder);
+                                continue;
+                            }
+                            // `::before`, `::after`, `::marker` and the rest.
+                            _ => return invalid(),
                         }
-                        // `::before`, `::after`, `::marker` and the rest.
-                        _ => return invalid(),
-                    },
+                    }
                     Token::Ident(name) => match name.to_ascii_lowercase().as_str() {
                         "link" | "any-link" => Simple::Link,
                         "visited" => Simple::Visited,
@@ -275,16 +294,42 @@ fn parse_compound(
                         // slice 1 drops; every other pseudo class is unsupported.
                         _ => return invalid(),
                     },
-                    Token::Function(name) if name.eq_ignore_ascii_case("not") && !in_not => {
-                        let inner = input.parse_nested_block(|input| {
-                            input.skip_whitespace();
-                            let (compound, _) = parse_compound(input, true)?;
-                            input.skip_whitespace();
-                            input.expect_exhausted()?;
-                            Ok(compound)
-                        })?;
-                        Simple::Not(Box::new(inner))
-                    }
+                    Token::Function(name) => match name.to_ascii_lowercase().as_str() {
+                        "not" if !in_not => {
+                            // `:not()` is strict: an invalid argument fails the whole
+                            // selector, and combinators are not allowed inside (AC-14).
+                            let list = input.parse_nested_block(|input| {
+                                parse_selector_list(input, true, false)
+                            })?;
+                            for sel in &list {
+                                if !sel.combinators.is_empty() || sel.compounds.len() != 1 {
+                                    return invalid();
+                                }
+                            }
+                            Simple::Not(list)
+                        }
+                        "is" | "where" => {
+                            // `:is()`/`:where()` are forgiving: an invalid argument is
+                            // dropped instead of failing the whole list (AC-14).
+                            let list = input.parse_nested_block(|input| {
+                                parse_selector_list(input, false, false)
+                            })?;
+                            match name.to_ascii_lowercase().as_str() {
+                                "is" => Simple::Is(list),
+                                "where" => Simple::Where(list),
+                                _ => unreachable!(),
+                            }
+                        }
+                        "has" if !in_has => {
+                            // `:has()` is strict: an invalid argument fails the whole
+                            // selector, and nested `:has()` is invalid (AC-15).
+                            let list = input.parse_nested_block(|input| {
+                                parse_selector_list(input, false, true)
+                            })?;
+                            Simple::Has(list)
+                        }
+                        _ => return invalid(),
+                    },
                     _ => return invalid(),
                 };
                 simple.push(pseudo);
@@ -344,7 +389,10 @@ impl Compound {
             .map(|simple| match simple {
                 Simple::Id(_) => 1 << 20,
                 Simple::Type { .. } => 1,
-                Simple::Not(inner) => inner.specificity(),
+                Simple::Not(list) | Simple::Is(list) | Simple::Has(list) => {
+                    list.iter().map(Selector::specificity).fold(0, u32::max)
+                }
+                Simple::Where(_) => 0,
                 _ => 1 << 10,
             })
             .fold(0, pack_add)
@@ -354,18 +402,20 @@ impl Compound {
     fn reads_siblings(&self) -> bool {
         self.0.iter().any(|simple| match simple {
             Simple::FirstChild | Simple::LastChild => true,
-            Simple::Not(inner) => inner.reads_siblings(),
+            Simple::Not(list) | Simple::Is(list) | Simple::Where(list) | Simple::Has(list) => {
+                list.iter().any(Selector::reads_siblings)
+            }
             _ => false,
         })
     }
 
-    fn matches<E: MatchElement>(&self, element: &E) -> bool {
+    fn matches<E: MatchElement + Clone>(&self, element: &E) -> bool {
         self.0.iter().all(|simple| simple.matches(element))
     }
 }
 
 impl Simple {
-    fn matches<E: MatchElement>(&self, element: &E) -> bool {
+    fn matches<E: MatchElement + Clone>(&self, element: &E) -> bool {
         let html = ns!("http://www.w3.org/1999/xhtml");
         match self {
             Self::Type { lower, exact } => {
@@ -405,7 +455,19 @@ impl Simple {
             Self::Enabled => {
                 is_form_control(element.name()) && !element.is_in_state(PseudoState::Disabled)
             }
-            Self::Not(inner) => !inner.matches(element),
+            Self::Not(list) => !list
+                .iter()
+                .any(|s| s.compounds.iter().all(|c| c.matches(element))),
+            Self::Is(list) => list
+                .iter()
+                .any(|s| s.compounds.iter().all(|c| c.matches(element))),
+            Self::Where(list) => list
+                .iter()
+                .any(|s| s.compounds.iter().all(|c| c.matches(element))),
+            Self::Has(list) => list.iter().any(|sel| {
+                let mut context = MatchContext::default();
+                sel.has_descendant_matching(element, &mut context)
+            }),
         }
     }
 }
@@ -523,6 +585,41 @@ impl Selector {
         }
         false
     }
+
+    /// Whether any descendant of `root` matches this selector, used for
+    /// `:has()` (spec 0010, AC-15). The subject compound (rightmost) is
+    /// matched against each descendant; combinators then walk up through
+    /// parents and earlier siblings, staying within `root`'s subtree.
+    pub(crate) fn has_descendant_matching<E: MatchElement + Clone>(
+        &self,
+        root: &E,
+        context: &mut MatchContext<E>,
+    ) -> bool {
+        let mut candidate = root.first_child_element();
+        while let Some(descendant) = candidate {
+            if self.matches_compounds(&descendant, context) {
+                return true;
+            }
+            candidate = next_descendant(&descendant);
+        }
+        false
+    }
+}
+
+/// The next element in tree order after `element`: its first child, else its
+/// next sibling, else the next sibling of the nearest ancestor that has one.
+fn next_descendant<E: MatchElement + Clone>(element: &E) -> Option<E> {
+    if let Some(child) = element.first_child_element() {
+        return Some(child);
+    }
+    let mut current = element.clone();
+    while let Some(parent) = current.parent_element() {
+        if let Some(sibling) = parent.next_sibling_element() {
+            return Some(sibling);
+        }
+        current = parent;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -531,7 +628,9 @@ pub(crate) mod tests {
 
     pub(crate) fn parse(text: &str) -> Option<Vec<Selector>> {
         let mut parser = Parser::new(text);
-        parser.parse_entirely(parse_selector_list).ok()
+        parser
+            .parse_entirely(|input| parse_selector_list(input, false, false))
+            .ok()
     }
 
     #[test]
@@ -550,6 +649,43 @@ pub(crate) mod tests {
         assert_eq!(spec("button:hover"), (1 << 10) + 1);
         assert_eq!(spec("input::placeholder"), 2);
         assert_eq!(spec(".tab:focus-visible"), 2 << 10);
+    }
+
+    #[test]
+    fn is_where_not_specificity() {
+        // `:is()` and `:not()` take the specificity of their most specific argument.
+        let spec = |text: &str| parse(text).unwrap()[0].specificity();
+        assert_eq!(spec("div:is(.foo, #bar)"), (1 << 20) + 1);
+        assert_eq!(spec("div:is(.foo, .bar)"), (1 << 10) + 1);
+        assert_eq!(spec("div:not(.foo)"), (1 << 10) + 1);
+        // `:where()` adds zero specificity.
+        assert_eq!(spec("div:where(.foo, #bar)"), 1);
+        assert_eq!(spec("div:where(#bar)"), 1);
+
+        // `:not()` is strict: an invalid argument fails the whole selector.
+        assert!(parse("div:not(:not-a-real-pseudo)").is_none());
+        assert!(parse("div:not(a b)").is_none());
+        // Nested `:not()` inside `:not()` is invalid.
+        assert!(parse("div:not(:not(.foo))").is_none());
+        // `:not()` inside `:is()` is allowed.
+        assert!(parse("div:is(:not(.foo))").is_some());
+        // Combinators are not allowed inside `:not()`.
+        assert!(parse("div:not(.foo .bar)").is_none());
+    }
+
+    #[test]
+    fn has_specificity_and_restrictions() {
+        // `:has()` takes the specificity of its most specific argument.
+        let spec = |text: &str| parse(text).unwrap()[0].specificity();
+        assert_eq!(spec("div:has(.foo, #bar)"), (1 << 20) + 1);
+        assert_eq!(spec("div:has(.foo, .bar)"), (1 << 10) + 1);
+
+        // Nested `:has()` inside `:has()` is invalid.
+        assert!(parse("div:has(:has(.foo))").is_none());
+        // `:has()` inside `:not()` is allowed (no combinators inside :not()).
+        assert!(parse("div:not(:has(.foo))").is_some());
+        // `:not()` inside `:has()` is allowed.
+        assert!(parse("div:has(:not(.foo))").is_some());
     }
 
     #[test]
@@ -614,5 +750,17 @@ pub(crate) mod tests {
         let long = vec!["a"; MAX_COMPOUNDS + 1].join(" ");
         assert!(parse(&long).is_none(), "an overlong selector is dropped");
         assert!(parse(&vec!["a"; MAX_COMPOUNDS].join(" ")).is_some());
+    }
+
+    #[test]
+    fn has_parsing_and_restrictions() {
+        // Nested `:has()` inside `:has()` is invalid.
+        assert!(parse("div:has(:has(.foo))").is_none());
+        // `:has()` inside `:not()` is allowed.
+        assert!(parse("div:not(:has(.foo))").is_some());
+        // `:not()` inside `:has()` is allowed.
+        assert!(parse("div:has(:not(.foo))").is_some());
+        // `:has(.foo .bar)` is valid — descendant combinator inside `:has()`.
+        assert!(parse("div:has(.foo .bar)").is_some());
     }
 }

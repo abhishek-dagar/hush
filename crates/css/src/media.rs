@@ -1,7 +1,9 @@
 //! Media queries: `all`, `screen`, `print` and widths and heights against
-//! the viewport (spec 0004, child 0003, Media queries, AC-19).
+//! the viewport, plus OS preference features (spec 0004, child 0003,
+//! Media queries, AC-19; spec 0010, AC-12, AC-13).
 
 use cssparser::Parser;
+use serde::{Deserialize, Serialize};
 
 use crate::values::{LengthRules, ParseResult, SpecifiedLength, invalid, parse_length};
 
@@ -12,6 +14,20 @@ pub struct Device {
     pub width: f32,
     /// The viewport height in CSS px.
     pub height: f32,
+    /// The OS color scheme the page sees (spec 0010, AC-13).
+    pub color_scheme: ColorScheme,
+    /// Whether the user asked the OS to reduce motion (spec 0010, AC-13).
+    pub reduced_motion: bool,
+}
+
+/// The OS color scheme (spec 0010, AC-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ColorScheme {
+    /// The light color scheme.
+    #[default]
+    Light,
+    /// The dark color scheme.
+    Dark,
 }
 
 /// The font size `em` and `rem` mean inside a media query: the initial
@@ -36,14 +52,25 @@ enum Axis {
 enum Range {
     Min,
     Max,
-    Exact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Feature {
-    axis: Axis,
-    range: Range,
-    px: f32,
+enum Feature {
+    Width {
+        axis: Axis,
+        min: Option<f32>,
+        max: Option<f32>,
+    },
+    Orientation(Orientation),
+    AspectRatio(f32),
+    PrefersColorScheme(ColorScheme),
+    PrefersReducedMotion(bool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Orientation {
+    Portrait,
+    Landscape,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,27 +169,208 @@ fn parse_query(input: &mut Parser<'_>) -> ParseResult<MediaQuery> {
     })
 }
 
-/// The inside of `(min-width: 600px)`. The range syntax (`width >= 600px`)
-/// and every other feature fail, which makes the query `not all`.
+/// Parses a range operator: `>=`, `<=`, `>` or `<`.
+fn parse_range_op(input: &mut Parser<'_>) -> ParseResult<Range> {
+    if input.try_parse(|i| i.expect_delim('>')).is_ok() {
+        if input.try_parse(|i| i.expect_delim('=')).is_ok() {
+            return Ok(Range::Min);
+        }
+        return Ok(Range::Min); // `>` treated as `>=` for media queries
+    }
+    if input.try_parse(|i| i.expect_delim('<')).is_ok() {
+        if input.try_parse(|i| i.expect_delim('=')).is_ok() {
+            return Ok(Range::Max);
+        }
+        return Ok(Range::Max); // `<` treated as `<=` for media queries
+    }
+    invalid()
+}
+
+/// Parses one media feature, in either the `name: value` form or the Level 4
+/// range form (`width >= 600px`, `400px <= width < 900px`). Unknown features
+/// fail, which makes only their own query false (spec 0010, AC-12).
 fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
+    let state = input.state();
+    // Try the two-sided Level 4 range form: `value operator feature operator value`
+    // (e.g. `400px <= width < 900px`).
+    if let Ok(first_px) = parse_length_px(input)
+        && let Ok(range1) = parse_range_op(input)
+        && let Ok(name) = input.try_parse(|i| i.expect_ident_cloned())
+    {
+        let lower = name.to_ascii_lowercase();
+        if (lower == "width" || lower == "height")
+            && let Ok(range2) = parse_range_op(input)
+            && let Ok(second_px) = parse_length_px(input)
+        {
+            input.expect_exhausted()?;
+            let axis = if lower == "width" {
+                Axis::Width
+            } else {
+                Axis::Height
+            };
+            let (min, max) = match (range1, range2) {
+                (Range::Max, Range::Max) => {
+                    // `400px <= width <= 900px` (or `<` treated as `<=`)
+                    (Some(first_px), Some(second_px))
+                }
+                (Range::Min, Range::Min) => {
+                    // `400px >= width >= 900px` is meaningless
+                    return invalid();
+                }
+                _ => return invalid(),
+            };
+            return Ok(Feature::Width { axis, min, max });
+        }
+    }
+    input.reset(&state);
+    // Try the single-sided range form: `feature operator value`
+    // (e.g. `width >= 600px`).
+    if let Ok(name) = input.try_parse(|i| i.expect_ident_cloned()) {
+        let lower = name.to_ascii_lowercase();
+        if let Ok(range) = parse_range_op(input)
+            && let Ok(px) = parse_length_px(input)
+        {
+            input.expect_exhausted()?;
+            let axis = match lower.as_str() {
+                "width" => Axis::Width,
+                "height" => Axis::Height,
+                _ => return invalid(),
+            };
+            let (min, max) = match range {
+                Range::Min => (Some(px), None),
+                Range::Max => (None, Some(px)),
+            };
+            return Ok(Feature::Width { axis, min, max });
+        }
+    }
+    input.reset(&state);
+    // Fall back to the `name: value` form.
     let name = input.expect_ident()?.to_ascii_lowercase();
-    let (range, axis) = match name.as_str() {
-        "width" => (Range::Exact, Axis::Width),
-        "min-width" => (Range::Min, Axis::Width),
-        "max-width" => (Range::Max, Axis::Width),
-        "height" => (Range::Exact, Axis::Height),
-        "min-height" => (Range::Min, Axis::Height),
-        "max-height" => (Range::Max, Axis::Height),
-        _ => return invalid(),
-    };
-    input.expect_colon()?;
-    let px = match parse_length(input, LengthRules::ABSOLUTE)? {
-        SpecifiedLength::Px(px) => px,
-        SpecifiedLength::Em(em) | SpecifiedLength::Rem(em) => em * MEDIA_EM_PX,
-        _ => return invalid(),
-    };
+    match name.as_str() {
+        "width" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::Width {
+                axis: Axis::Width,
+                min: Some(px),
+                max: Some(px),
+            })
+        }
+        "min-width" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::Width {
+                axis: Axis::Width,
+                min: Some(px),
+                max: None,
+            })
+        }
+        "max-width" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::Width {
+                axis: Axis::Width,
+                min: None,
+                max: Some(px),
+            })
+        }
+        "height" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::Width {
+                axis: Axis::Height,
+                min: Some(px),
+                max: Some(px),
+            })
+        }
+        "min-height" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::Width {
+                axis: Axis::Height,
+                min: Some(px),
+                max: None,
+            })
+        }
+        "max-height" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::Width {
+                axis: Axis::Height,
+                min: None,
+                max: Some(px),
+            })
+        }
+        "orientation" => {
+            input.expect_colon()?;
+            let ident = input.expect_ident()?.to_ascii_lowercase();
+            let orientation = match ident.as_str() {
+                "portrait" => Orientation::Portrait,
+                "landscape" => Orientation::Landscape,
+                _ => return invalid(),
+            };
+            input.expect_exhausted()?;
+            Ok(Feature::Orientation(orientation))
+        }
+        "aspect-ratio" => {
+            input.expect_colon()?;
+            let ratio = parse_aspect_ratio(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::AspectRatio(ratio))
+        }
+        "prefers-color-scheme" => {
+            input.expect_colon()?;
+            let ident = input.expect_ident()?.to_ascii_lowercase();
+            let scheme = match ident.as_str() {
+                "light" => ColorScheme::Light,
+                "dark" => ColorScheme::Dark,
+                _ => return invalid(),
+            };
+            input.expect_exhausted()?;
+            Ok(Feature::PrefersColorScheme(scheme))
+        }
+        "prefers-reduced-motion" => {
+            input.expect_colon()?;
+            let ident = input.expect_ident()?.to_ascii_lowercase();
+            let reduce = match ident.as_str() {
+                "reduce" => true,
+                "no-preference" => false,
+                _ => return invalid(),
+            };
+            input.expect_exhausted()?;
+            Ok(Feature::PrefersReducedMotion(reduce))
+        }
+        _ => invalid(),
+    }
+}
+
+/// Parses a media-query length: px only (em/rem resolve against the initial
+/// 16 px font size, so they are already px here).
+fn parse_length_px(input: &mut Parser<'_>) -> ParseResult<f32> {
+    let length = parse_length(input, LengthRules::ABSOLUTE)?;
+    match length {
+        SpecifiedLength::Px(px) => Ok(px),
+        SpecifiedLength::Em(em) | SpecifiedLength::Rem(em) => Ok(em * MEDIA_EM_PX),
+        _ => invalid(),
+    }
+}
+
+/// Parses an aspect ratio: `width/height` as two positive integers.
+fn parse_aspect_ratio(input: &mut Parser<'_>) -> ParseResult<f32> {
+    let first = input.expect_integer()?;
+    input.expect_delim('/')?;
+    let second = input.expect_integer()?;
+    if second == 0 {
+        return invalid();
+    }
     input.expect_exhausted()?;
-    Ok(Feature { axis, range, px })
+    Ok(first as f32 / second as f32)
 }
 
 impl MediaQuery {
@@ -178,14 +386,28 @@ impl MediaQuery {
 
 impl Feature {
     fn evaluate(&self, device: &Device) -> bool {
-        let actual = match self.axis {
-            Axis::Width => device.width,
-            Axis::Height => device.height,
-        };
-        match self.range {
-            Range::Min => actual >= self.px,
-            Range::Max => actual <= self.px,
-            Range::Exact => actual == self.px,
+        match self {
+            Feature::Width { axis, min, max } => {
+                let actual = match axis {
+                    Axis::Width => device.width,
+                    Axis::Height => device.height,
+                };
+                min.is_none_or(|m| actual >= m) && max.is_none_or(|m| actual <= m)
+            }
+            Feature::Orientation(orientation) => {
+                let actual = if device.width >= device.height {
+                    Orientation::Landscape
+                } else {
+                    Orientation::Portrait
+                };
+                actual == *orientation
+            }
+            Feature::AspectRatio(ratio) => {
+                let actual = device.width / device.height;
+                (actual - ratio).abs() < f32::EPSILON
+            }
+            Feature::PrefersColorScheme(scheme) => device.color_scheme == *scheme,
+            Feature::PrefersReducedMotion(reduce) => device.reduced_motion == *reduce,
         }
     }
 }
@@ -197,10 +419,14 @@ mod tests {
     const WIDE: Device = Device {
         width: 1280.0,
         height: 800.0,
+        color_scheme: ColorScheme::Light,
+        reduced_motion: false,
     };
     const NARROW: Device = Device {
         width: 400.0,
         height: 800.0,
+        color_scheme: ColorScheme::Light,
+        reduced_motion: false,
     };
 
     fn on(text: &str, device: Device) -> bool {
@@ -230,9 +456,40 @@ mod tests {
 
     #[test]
     fn unsupported_queries_never_match_but_keep_their_neighbors() {
-        assert!(!on("(width >= 600px)", WIDE));
-        assert!(!on("(orientation: landscape)", WIDE));
         assert!(!on("screen and", WIDE));
         assert!(on("(hover: hover), screen", WIDE));
+    }
+
+    #[test]
+    fn new_features_evaluate() {
+        // AC-12: orientation, aspect-ratio, prefers-color-scheme,
+        // prefers-reduced-motion.
+        let light = WIDE;
+        let dark = Device {
+            color_scheme: ColorScheme::Dark,
+            ..light
+        };
+        let reduce = Device {
+            reduced_motion: true,
+            ..light
+        };
+
+        assert!(on("(orientation: landscape)", light));
+        assert!(!on("(orientation: portrait)", light));
+        assert!(on("(aspect-ratio: 8/5)", light));
+        assert!(!on("(aspect-ratio: 16/9)", light));
+        assert!(on("(prefers-color-scheme: light)", light));
+        assert!(!on("(prefers-color-scheme: dark)", light));
+        assert!(on("(prefers-color-scheme: dark)", dark));
+        assert!(!on("(prefers-reduced-motion: reduce)", light));
+        assert!(on("(prefers-reduced-motion: reduce)", reduce));
+        assert!(on("(prefers-reduced-motion: no-preference)", light));
+        // Unknown feature makes only its own query false.
+        assert!(on("(unknown-feature: x), screen", light));
+        assert!(!on("(unknown-feature: x)", light));
+        // Range syntax from spec 0004 still works.
+        assert!(on("(width >= 600px)", light));
+        assert!(!on("(width >= 600px)", NARROW));
+        assert!(on("(400px <= width < 900px)", NARROW));
     }
 }

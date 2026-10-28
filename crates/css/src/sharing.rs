@@ -188,6 +188,11 @@ pub(crate) mod tests {
         fn parent_element(&self) -> Option<Self> {
             None
         }
+
+        fn first_child_element(&self) -> Option<Self> {
+            None
+        }
+
         fn prev_sibling_element(&self) -> Option<Self> {
             None
         }

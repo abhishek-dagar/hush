@@ -46,7 +46,13 @@ impl InvalidationMap {
                 Simple::State(state) => merge(&mut self.states, *state, hint),
                 // `:enabled` flips exactly when `:disabled` does.
                 Simple::Enabled => merge(&mut self.states, PseudoState::Disabled, hint),
-                Simple::Not(inner) => self.add_compound(inner, hint),
+                Simple::Not(list) | Simple::Is(list) | Simple::Where(list) | Simple::Has(list) => {
+                    for selector in list {
+                        for compound in &selector.compounds {
+                            self.add_compound(compound, hint);
+                        }
+                    }
+                }
                 Simple::Type { .. } | Simple::FirstChild | Simple::LastChild | Simple::Root => {}
             }
         }

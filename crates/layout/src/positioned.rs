@@ -71,7 +71,9 @@ pub(crate) fn containing_block(
         style.display_box.display,
         css::Display::Grid | css::Display::InlineGrid
     );
-    if style.display_box.is_positioned() || is_grid {
+    if style.display_box.is_positioned() || is_grid || style.transform.has_transform() {
+        // A transformed box is the containing block for its absolute and
+        // fixed descendants (spec 0010, AC-20).
         let border = border_widths(style);
         return Some(Rect::new(
             Point::new(border.left, border.top),

@@ -15,6 +15,8 @@ use display_list::{Epoch, FontKey, ImageFormat, ImageKey, PageId, ScrollId, Size
 use ipc_channel::ipc::{self, IpcOneShotServer, IpcReceiver, IpcSender, IpcSharedMemory};
 use serde::{Deserialize, Serialize};
 
+pub use css::ColorScheme;
+
 /// Bytes in shared memory, sent without copying them through the channel
 /// (spec 0002, Transport).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -671,6 +673,15 @@ pub enum ToContent {
     /// Ask the content process for its memory report counters (spec 0032,
     /// AC-10). Only sent when the browser runs with `--memory-report`.
     ReportMemory,
+    /// The OS color scheme and reduced motion setting (spec 0010, AC-13).
+    /// Sent right after the content process starts, and again whenever the
+    /// OS setting changes.
+    Preferences {
+        /// The OS color scheme: `light` or `dark`.
+        color_scheme: ColorScheme,
+        /// Whether the user asked the OS to reduce motion.
+        reduced_motion: bool,
+    },
 }
 
 /// A message the content process sends to the browser process.

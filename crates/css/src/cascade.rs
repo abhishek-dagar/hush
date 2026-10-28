@@ -8,8 +8,8 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use base::Au;
 use base::atoms::Atom;
+use base::{Au, Size};
 use cssparser::{ParseError, Parser, Token};
 
 use crate::CalcExpr;
@@ -49,6 +49,10 @@ pub(crate) struct CascadeInputs<'a> {
     pub(crate) root_font_size: Au,
     /// The viewport, for `vw` and `vh`.
     pub(crate) device: &'a Device,
+    /// The nearest ancestor container's border box size, for `cq*` units
+    /// (spec 0010, AC-17). `None` when there is no container ancestor, in
+    /// which case `cq*` resolves against the viewport.
+    pub(crate) container_size: Option<Size>,
     /// Registered custom properties from `@property`, for validating declared
     /// values at computed value time (spec 0010, AC-10).
     pub(crate) properties: &'a HashMap<Atom, PropertyRule>,
@@ -89,6 +93,7 @@ pub(crate) fn compute<'a>(
         is_root: inputs.parent.is_none(),
         root_font_size: inputs.root_font_size,
         device: inputs.device,
+        container_size: inputs.container_size,
     };
     computer.style.custom = compute_custom(&custom, &parent.custom, inputs.properties);
 
@@ -454,6 +459,8 @@ struct Computer<'a> {
     is_root: bool,
     root_font_size: Au,
     device: &'a Device,
+    /// The nearest ancestor container's border box size, for `cq*` units.
+    container_size: Option<Size>,
 }
 
 impl Computer<'_> {
@@ -549,14 +556,24 @@ impl Computer<'_> {
     /// Resolves an absolute or viewport length (never `em` or `%`).
     fn viewport_or_px(&self, length: &SpecifiedLength) -> Au {
         let (width, height) = (self.device.width, self.device.height);
+        let (inline, block) = match self.container_size {
+            Some(size) => (size.width.to_f32_px(), size.height.to_f32_px()),
+            None => (width, height),
+        };
         Au::from_px(match length {
             SpecifiedLength::Px(px) => *px,
             SpecifiedLength::Vw(v) => width * *v / 100.0,
             SpecifiedLength::Vh(v) => height * *v / 100.0,
             SpecifiedLength::Vmin(v) => width.min(height) * *v / 100.0,
             SpecifiedLength::Vmax(v) => width.max(height) * *v / 100.0,
-            SpecifiedLength::Em(_) | SpecifiedLength::Rem(_) | SpecifiedLength::Percent(_) => 0.0,
-            SpecifiedLength::Calc(_) => 0.0,
+            SpecifiedLength::Cqw(v) | SpecifiedLength::Cqi(v) => inline * *v / 100.0,
+            SpecifiedLength::Cqh(v) | SpecifiedLength::Cqb(v) => block * *v / 100.0,
+            SpecifiedLength::Cqmin(v) => inline.min(block) * *v / 100.0,
+            SpecifiedLength::Cqmax(v) => inline.max(block) * *v / 100.0,
+            SpecifiedLength::Em(_)
+            | SpecifiedLength::Rem(_)
+            | SpecifiedLength::Percent(_)
+            | SpecifiedLength::Calc(_) => 0.0,
         })
     }
 
@@ -727,6 +744,12 @@ impl Computer<'_> {
             }
             (L::AspectRatio, Value::AspectRatio(ratio)) => {
                 Rc::make_mut(&mut style.size).aspect_ratio = *ratio;
+            }
+            (L::ContainerType, Value::ContainerType(ct)) => {
+                Rc::make_mut(&mut style.size).container_type = *ct;
+            }
+            (L::ContainerName, Value::ContainerName(cn)) => {
+                Rc::make_mut(&mut style.size).container_name = cn.clone();
             }
             (L::MarginTop, Value::Size(m)) => {
                 let m = m.as_ref().map(|l| self.length(l));
@@ -899,9 +922,14 @@ impl Computer<'_> {
             }
             (L::Transform, Value::Transform(transform)) => {
                 let t = Rc::make_mut(&mut self.style.transform);
-                t.scale = transform.scale;
                 t.transform = Rc::clone(&transform.transform);
+                t.translate = transform.translate.clone();
+                t.rotate = transform.rotate.clone();
+                t.scale = transform.scale;
                 t.origin = transform.origin;
+                t.style = transform.style;
+                t.perspective = transform.perspective.clone();
+                t.perspective_origin = transform.perspective_origin.clone();
                 t.binding_id = None;
             }
             (L::GridTemplateColumns, Value::GridTracks(tracks)) => {
@@ -1124,6 +1152,8 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::MaxHeight => copy!(size.max_height),
         L::BoxSizing => copy!(size.box_sizing),
         L::AspectRatio => copy!(size.aspect_ratio),
+        L::ContainerType => copy!(size.container_type),
+        L::ContainerName => copy!(size.container_name),
         L::MarginTop => copy!(margin.top),
         L::MarginRight => copy!(margin.right),
         L::MarginBottom => copy!(margin.bottom),
@@ -1180,8 +1210,22 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::Order => copy!(flex.order),
         L::Transform => {
             copy!(transform.transform);
+            copy!(transform.translate);
+            copy!(transform.rotate);
+            copy!(transform.scale);
+            copy!(transform.origin);
+            copy!(transform.style);
+            copy!(transform.perspective);
+            copy!(transform.perspective_origin);
             copy!(transform.binding_id);
         }
+        L::Translate => copy!(transform.translate),
+        L::Rotate => copy!(transform.rotate),
+        L::Scale => copy!(transform.scale),
+        L::TransformOrigin => copy!(transform.origin),
+        L::TransformStyle => copy!(transform.style),
+        L::Perspective => copy!(transform.perspective),
+        L::PerspectiveOrigin => copy!(transform.perspective_origin),
         L::GridTemplateColumns => copy!(grid.template_columns),
         L::GridTemplateRows => copy!(grid.template_rows),
         L::GridAutoColumns => copy!(grid.auto_columns),
@@ -1289,6 +1333,8 @@ mod tests {
         let device = Device {
             width: 800.0,
             height: 600.0,
+            color_scheme: crate::media::ColorScheme::Light,
+            reduced_motion: false,
         };
         compute(
             &declarations,
@@ -1296,6 +1342,7 @@ mod tests {
                 parent: Some(&parent),
                 root_font_size: Au::from_px(16.0),
                 device: &device,
+                container_size: None,
                 properties: &HashMap::new(),
             },
         )
@@ -1312,6 +1359,8 @@ mod tests {
         let device = Device {
             width: 800.0,
             height: 600.0,
+            color_scheme: crate::media::ColorScheme::Light,
+            reduced_motion: false,
         };
         compute(
             &declarations,
@@ -1319,6 +1368,7 @@ mod tests {
                 parent: Some(&parent),
                 root_font_size: Au::from_px(16.0),
                 device: &device,
+                container_size: None,
                 properties,
             },
         )
@@ -1457,10 +1507,60 @@ mod tests {
                 device: &Device {
                     width: 800.0,
                     height: 600.0,
+                    color_scheme: crate::media::ColorScheme::Light,
+                    reduced_motion: false,
                 },
+                container_size: None,
                 properties: &HashMap::new(),
             },
         );
         assert_eq!(inherited.display_box.float, Float::Left);
+    }
+
+    #[test]
+    fn cq_units_resolve_against_the_container_size() {
+        // AC-17: `cq*` units resolve against the nearest ancestor container's
+        // size, falling back to the viewport when there is no container.
+        let parent = ComputedStyle::default();
+        let declarations = crate::parse_declarations("width: 50cqw; height: 25cqh;", None);
+        let device = Device {
+            width: 800.0,
+            height: 600.0,
+            color_scheme: crate::media::ColorScheme::Light,
+            reduced_motion: false,
+        };
+        let container = Size::new(Au::from_px(200.0), Au::from_px(100.0));
+        let with_container = compute(
+            &declarations,
+            &CascadeInputs {
+                parent: Some(&parent),
+                root_font_size: Au::from_px(16.0),
+                device: &device,
+                container_size: Some(container),
+                properties: &HashMap::new(),
+            },
+        );
+        assert_eq!(
+            with_container.size.width,
+            Some(Length::Au(Au::from_px(100.0)))
+        );
+        assert_eq!(
+            with_container.size.height,
+            Some(Length::Au(Au::from_px(25.0)))
+        );
+
+        // Without a container, `cq*` resolves against the viewport.
+        let without = compute(
+            &declarations,
+            &CascadeInputs {
+                parent: Some(&parent),
+                root_font_size: Au::from_px(16.0),
+                device: &device,
+                container_size: None,
+                properties: &HashMap::new(),
+            },
+        );
+        assert_eq!(without.size.width, Some(Length::Au(Au::from_px(400.0))));
+        assert_eq!(without.size.height, Some(Length::Au(Au::from_px(150.0))));
     }
 }

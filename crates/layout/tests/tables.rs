@@ -21,7 +21,7 @@ mod support;
 use std::collections::HashMap;
 
 use base::Point;
-use css::{Device, Stylist, VerticalAlign};
+use css::{ColorScheme, Device, Stylist, VerticalAlign};
 use dom::{Document, NodeId};
 use layout::{BoxTree, Fragment, FragmentTree};
 use std::rc::Rc;
@@ -36,7 +36,15 @@ struct Built {
 /// Builds the case `tree` with real table elements.
 fn build(tree: &str) -> Built {
     let (width, height) = VIEWPORT;
-    let stylist = Stylist::new(&[css::ua_stylesheet()], Device { width, height });
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width,
+            height,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
     let mut doc = Document::new("about:blank");
     let root = doc.root();
     let html = add(&mut doc, &stylist, root, "html", "margin:0");
@@ -632,6 +640,8 @@ fn collapsed_edges_lie_inside_the_table_border_box() {
         Device {
             width: 800.0,
             height: 600.0,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
         },
     );
     let root = doc.root();

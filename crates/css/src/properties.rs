@@ -13,17 +13,20 @@ use base::Au;
 use base::atoms::Atom;
 use cssparser::{Delimiter, ParseError, Parser, Token, parse_important};
 
+use crate::style::{ContainerName, ContainerType};
 use crate::values::{
-    LengthRules, ParseResult, SpecifiedColor, SpecifiedLength, invalid, parse_color,
-    parse_font_family, parse_keyword, parse_length, parse_url,
+    LengthRules, ParseResult, SpecifiedCalcExpr, SpecifiedColor, SpecifiedLength, invalid,
+    parse_color, parse_font_family, parse_keyword, parse_length, parse_url,
 };
 use crate::{
-    AlignItems, AspectRatio, BorderCollapse, BorderStyle, BoxSizing, CaptionSide, Clear, ClipRect,
-    Cursor, Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, GridArea, GridAutoFlow,
-    GridLine, JustifyContent, ListStylePosition, ListStyleType, OutlineStyle, Overflow, Position,
-    RepeatCount, TableLayout, TextAlign, TextDecorationLine, TextOverflow, Transform, TransformFn,
-    UserSelect, VerticalAlign, Visibility, WhiteSpace,
+    AlignItems, AspectRatio, BorderCollapse, BorderStyle, BoxSizing, CalcExpr, CaptionSide, Clear,
+    ClipRect, Cursor, Display, EmptyCells, FlexDirection, FlexWrap, Float, FontStyle, GridArea,
+    GridAutoFlow, GridLine, JustifyContent, Length, ListStylePosition, ListStyleType, OutlineStyle,
+    Overflow, Position, RepeatCount, TableLayout, TextAlign, TextDecorationLine, TextOverflow,
+    Transform, TransformFn, TransformStyle, UserSelect, VerticalAlign, Visibility, WhiteSpace,
 };
+
+use crate::style::Angle;
 
 macro_rules! longhands {
     ($($variant:ident = $name:literal, $inherited:literal;)*) => {
@@ -117,6 +120,13 @@ longhands! {
     AlignSelf = "align-self", false;
     Order = "order", false;
     Transform = "transform", false;
+    Translate = "translate", false;
+    Rotate = "rotate", false;
+    Scale = "scale", false;
+    TransformOrigin = "transform-origin", false;
+    TransformStyle = "transform-style", false;
+    Perspective = "perspective", false;
+    PerspectiveOrigin = "perspective-origin", false;
     GridTemplateColumns = "grid-template-columns", false;
     GridTemplateRows = "grid-template-rows", false;
     GridAutoColumns = "grid-auto-columns", false;
@@ -152,6 +162,8 @@ longhands! {
     CaptionSide = "caption-side", true;
     EmptyCells = "empty-cells", true;
     AspectRatio = "aspect-ratio", false;
+    ContainerType = "container-type", false;
+    ContainerName = "container-name", false;
 }
 
 impl Longhand {
@@ -495,8 +507,26 @@ pub(crate) enum Value {
     EmptyCells(EmptyCells),
     /// `aspect-ratio`: the computed width-to-height ratio.
     AspectRatio(AspectRatio),
+    /// `container-type`: `normal`, `inline-size` or `size` (spec 0010, AC-16).
+    ContainerType(ContainerType),
+    /// `container-name`: custom-ident names (spec 0010, AC-16).
+    ContainerName(ContainerName),
     /// `transform`: the computed transform functions.
     Transform(Rc<Transform>),
+    /// `translate`: the computed translate offsets.
+    Translate(Length, Option<Length>),
+    /// `rotate`: the computed rotation angle.
+    Rotate(Angle),
+    /// `scale`: the computed scale factors (unitless numbers).
+    Scale(f32, Option<f32>),
+    /// `transform-origin`: origin in border box coordinates.
+    TransformOrigin(Length, Length),
+    /// `transform-style`: flat or preserve-3d (flat renders both here).
+    TransformStyle(TransformStyle),
+    /// `perspective`: distance to the viewer.
+    Perspective(Length),
+    /// `perspective-origin`: origin of the perspective view.
+    PerspectiveOrigin(Length, Length),
     /// `grid-template-columns` / `grid-template-rows`.
     GridTracks(SpecifiedTrackList),
     /// `grid-auto-columns` / `grid-auto-rows`.
@@ -1052,6 +1082,25 @@ fn parse_longhand(
         }
         L::Order => Value::Integer(input.expect_integer()?),
         L::Transform => Value::Transform(Rc::new(parse_transform(input)?)),
+        L::Translate => {
+            let (x, y) = parse_translate(input)?;
+            Value::Translate(x, y)
+        }
+        L::Rotate => Value::Rotate(parse_rotate(input)?),
+        L::Scale => {
+            let (x, y) = parse_scale(input)?;
+            Value::Scale(x, y)
+        }
+        L::TransformOrigin => {
+            let (x, y) = parse_transform_origin(input)?;
+            Value::TransformOrigin(x, y)
+        }
+        L::TransformStyle => Value::TransformStyle(parse_transform_style(input)?),
+        L::Perspective => Value::Perspective(parse_perspective(input)?),
+        L::PerspectiveOrigin => {
+            let (x, y) = parse_perspective_origin(input)?;
+            Value::PerspectiveOrigin(x, y)
+        }
         L::GridTemplateColumns | L::GridTemplateRows => Value::GridTracks(parse_track_list(input)?),
         L::GridAutoColumns | L::GridAutoRows => {
             Value::GridAutoTracks(parse_track_size_list(input)?)
@@ -1142,6 +1191,8 @@ fn parse_longhand(
             &[("hide", EmptyCells::Hide)],
         )?),
         L::AspectRatio => Value::AspectRatio(parse_aspect_ratio(input)?),
+        L::ContainerType => Value::ContainerType(parse_container_type(input)?),
+        L::ContainerName => Value::ContainerName(parse_container_name(input)?),
     })
 }
 
@@ -1538,29 +1589,277 @@ fn parse_gap(input: &mut Parser<'_>) -> ParseResult<SpecifiedLength> {
     parse_length(input, LengthRules::NON_NEGATIVE)
 }
 
-/// `transform`: `scale(s)` in this slice; every other function is dropped
-/// and the declaration computes to the identity (spec 0010, AC-19).
+/// `transform`: every 2D and 3D transform function (spec 0010, AC-19).
 fn parse_transform(input: &mut Parser<'_>) -> ParseResult<Transform> {
     if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
         return Ok(Transform::default());
     }
-    let mut fns: Vec<TransformFn> = Vec::new();
     let name = input.expect_function()?.to_ascii_lowercase();
-    if name != "scale" {
-        return invalid();
-    }
-    let s = input.parse_nested_block(|input| {
-        let value = input.expect_number()?;
-        Ok(value)
-    })?;
-    fns.push(TransformFn::Scale(s));
-    let scale_value = Some(s);
+    let fns = vec![input.parse_nested_block(|input| match name.as_str() {
+        "translate" => {
+            let x = parse_transform_length(input)?;
+            let y = if input.try_parse(Parser::expect_comma).is_ok() {
+                Some(parse_transform_length(input)?)
+            } else {
+                None
+            };
+            Ok(TransformFn::Translate(x, y))
+        }
+        "translatex" => Ok(TransformFn::TranslateX(parse_transform_length(input)?)),
+        "translatey" => Ok(TransformFn::TranslateY(parse_transform_length(input)?)),
+        "scale" => {
+            let x = parse_transform_number(input)?;
+            let y = if input.try_parse(Parser::expect_comma).is_ok() {
+                Some(parse_transform_number(input)?)
+            } else {
+                None
+            };
+            Ok(TransformFn::Scale(x, y))
+        }
+        "scalex" => Ok(TransformFn::ScaleX(parse_transform_number(input)?)),
+        "scaley" => Ok(TransformFn::ScaleY(parse_transform_number(input)?)),
+        "rotate" => Ok(TransformFn::Rotate(parse_angle(input)?)),
+        "skew" => {
+            let ax = parse_angle(input)?;
+            let ay = if input.try_parse(Parser::expect_comma).is_ok() {
+                Some(parse_angle(input)?)
+            } else {
+                None
+            };
+            Ok(TransformFn::Skew(ax, ay))
+        }
+        "skewx" => Ok(TransformFn::SkewX(parse_angle(input)?)),
+        "skewy" => Ok(TransformFn::SkewY(parse_angle(input)?)),
+        "translatez" => Ok(TransformFn::TranslateZ(parse_transform_length(input)?)),
+        "translate3d" => {
+            let x = parse_transform_length(input)?;
+            let y = if input.try_parse(Parser::expect_comma).is_ok() {
+                parse_transform_length(input)?
+            } else {
+                return invalid();
+            };
+            let z = if input.try_parse(Parser::expect_comma).is_ok() {
+                parse_transform_length(input)?
+            } else {
+                return invalid();
+            };
+            Ok(TransformFn::Translate3d(x, y, z))
+        }
+        "scalez" => Ok(TransformFn::ScaleZ(parse_transform_number(input)?)),
+        "scale3d" => {
+            let x = parse_transform_number(input)?;
+            let y = if input.try_parse(Parser::expect_comma).is_ok() {
+                parse_transform_number(input)?
+            } else {
+                return invalid();
+            };
+            let z = if input.try_parse(Parser::expect_comma).is_ok() {
+                parse_transform_number(input)?
+            } else {
+                return invalid();
+            };
+            Ok(TransformFn::Scale3d(x, y, z))
+        }
+        "rotatex" => Ok(TransformFn::RotateX(parse_angle(input)?)),
+        "rotatey" => Ok(TransformFn::RotateY(parse_angle(input)?)),
+        "rotatez" => Ok(TransformFn::RotateZ(parse_angle(input)?)),
+        "rotate3d" => {
+            let x = parse_transform_number(input)?;
+            let y = if input.try_parse(Parser::expect_comma).is_ok() {
+                parse_transform_number(input)?
+            } else {
+                return invalid();
+            };
+            let z = if input.try_parse(Parser::expect_comma).is_ok() {
+                parse_transform_number(input)?
+            } else {
+                return invalid();
+            };
+            let angle = parse_angle(input)?;
+            Ok(TransformFn::Rotate3d(x, y, z, angle))
+        }
+        "matrix" => {
+            let m = parse_matrix6(input)?;
+            Ok(TransformFn::Matrix(m[0], m[1], m[2], m[3], m[4], m[5]))
+        }
+        "matrix3d" => {
+            let m = parse_matrix16(input)?;
+            Ok(TransformFn::Matrix3d(m))
+        }
+        "perspective" => Ok(TransformFn::Perspective(parse_transform_length(input)?)),
+        _ => invalid(),
+    })?];
     Ok(Transform {
         transform: Rc::from(fns),
-        scale: scale_value,
+        translate: None,
+        rotate: None,
+        scale: None,
         origin: Default::default(),
+        style: TransformStyle::Flat,
+        perspective: None,
+        perspective_origin: None,
         binding_id: None,
     })
+}
+
+/// `translate`, `scale`, `perspective`: a `<length>` or `<percentage>`.
+fn parse_transform_length(input: &mut Parser<'_>) -> ParseResult<Length> {
+    let sl = parse_length(input, LengthRules::ANY)?;
+    match sl {
+        SpecifiedLength::Px(px) => Ok(Length::px(px)),
+        SpecifiedLength::Percent(p) => Ok(Length::Percent(p)),
+        SpecifiedLength::Calc(expr) => {
+            Ok(Length::Calc(Rc::new(convert_calc_expr((*expr).clone())?)))
+        }
+        _ => invalid(),
+    }
+}
+
+/// A unitless transform number, as in `scale(1.5)`.
+fn parse_transform_number(input: &mut Parser<'_>) -> ParseResult<f32> {
+    match *input.next()? {
+        cssparser::Token::Number { value, .. } => Ok(value),
+        _ => invalid(),
+    }
+}
+
+/// An `<angle>`: `deg`, `rad`, `grad` or `turn` (spec 0010, AC-19).
+fn parse_angle(input: &mut Parser<'_>) -> ParseResult<Angle> {
+    match *input.next()? {
+        cssparser::Token::Dimension {
+            value, ref unit, ..
+        } => match unit.as_ref().to_ascii_lowercase().as_str() {
+            "deg" => Ok(Angle::Deg(value)),
+            "rad" => Ok(Angle::Rad(value)),
+            "grad" => Ok(Angle::Grad(value)),
+            "turn" => Ok(Angle::Turn(value)),
+            _ => invalid(),
+        },
+        _ => invalid(),
+    }
+}
+
+/// `matrix(a, b, c, d, tx, ty)`.
+fn parse_matrix6(input: &mut Parser<'_>) -> ParseResult<[f32; 6]> {
+    let mut m = [0.0; 6];
+    for i in &mut m {
+        *i = parse_transform_number(input)?;
+    }
+    Ok(m)
+}
+
+/// `matrix3d(...)`: 16 values.
+fn parse_matrix16(input: &mut Parser<'_>) -> ParseResult<[f32; 16]> {
+    let mut m = [0.0; 16];
+    for i in &mut m {
+        *i = parse_transform_number(input)?;
+    }
+    Ok(m)
+}
+
+/// Convert a specified calc expression to a computed-value-time calc
+/// expression. Non-px leaves make the declaration drop.
+fn convert_calc_expr(expr: SpecifiedCalcExpr) -> ParseResult<CalcExpr> {
+    match expr {
+        SpecifiedCalcExpr::Leaf(sl) => Ok(CalcExpr::Leaf(specified_length_to_length(sl)?)),
+        SpecifiedCalcExpr::Sum(terms) => Ok(CalcExpr::Sum(
+            terms
+                .into_iter()
+                .map(convert_calc_expr)
+                .collect::<ParseResult<_>>()?,
+        )),
+        SpecifiedCalcExpr::Product(term, factor) => Ok(CalcExpr::Product(
+            Box::new(convert_calc_expr((*term).clone())?),
+            factor,
+        )),
+        SpecifiedCalcExpr::Min(terms) => Ok(CalcExpr::Min(
+            terms
+                .into_iter()
+                .map(convert_calc_expr)
+                .collect::<ParseResult<_>>()?,
+        )),
+        SpecifiedCalcExpr::Max(terms) => Ok(CalcExpr::Max(
+            terms
+                .into_iter()
+                .map(convert_calc_expr)
+                .collect::<ParseResult<_>>()?,
+        )),
+        SpecifiedCalcExpr::Clamp(a, b, c) => Ok(CalcExpr::Clamp(
+            Box::new(convert_calc_expr((*a).clone())?),
+            Box::new(convert_calc_expr((*b).clone())?),
+            Box::new(convert_calc_expr((*c).clone())?),
+        )),
+    }
+}
+
+/// Convert a specified length to a computed-value-time length. Only px,
+/// percent and calc-with-px leaves are supported here; anything else
+/// drops the declaration (spec 0010, AC-8, invalid CSS is dropped).
+fn specified_length_to_length(sl: SpecifiedLength) -> ParseResult<Length> {
+    match sl {
+        SpecifiedLength::Px(px) => Ok(Length::px(px)),
+        SpecifiedLength::Percent(p) => Ok(Length::Percent(p)),
+        SpecifiedLength::Calc(expr) => {
+            Ok(Length::Calc(Rc::new(convert_calc_expr((*expr).clone())?)))
+        }
+        _ => invalid(),
+    }
+}
+
+/// `translate(tx, ty?)`: parse the longhand `translate` property.
+fn parse_translate(input: &mut Parser<'_>) -> ParseResult<(Length, Option<Length>)> {
+    let x = parse_transform_length(input)?;
+    let y = input.try_parse(parse_transform_length).ok();
+    Ok((x, y))
+}
+
+/// `rotate(a)`: parse the longhand `rotate` property.
+fn parse_rotate(input: &mut Parser<'_>) -> ParseResult<Angle> {
+    parse_angle(input)
+}
+
+/// `scale(sx, sy?)`: parse the longhand `scale` property.
+fn parse_scale(input: &mut Parser<'_>) -> ParseResult<(f32, Option<f32>)> {
+    let x = parse_transform_number(input)?;
+    let y = input.try_parse(parse_transform_number).ok();
+    Ok((x, y))
+}
+
+/// `transform-origin`: two lengths/percentages.
+fn parse_transform_origin(input: &mut Parser<'_>) -> ParseResult<(Length, Length)> {
+    let x = parse_transform_length(input)?;
+    let y = parse_transform_length(input)?;
+    Ok((x, y))
+}
+
+/// `transform-style`: `flat` or `preserve-3d` (both accepted, flat
+/// renders in this slice, spec 0010, AC-19).
+fn parse_transform_style(input: &mut Parser<'_>) -> ParseResult<TransformStyle> {
+    match *input.next()? {
+        cssparser::Token::Ident(ref value) => {
+            let v = value.as_ref().to_ascii_lowercase();
+            if v == "preserve-3d" {
+                Ok(TransformStyle::Preserve3d)
+            } else if v == "flat" {
+                Ok(TransformStyle::Flat)
+            } else {
+                invalid()
+            }
+        }
+        _ => invalid(),
+    }
+}
+
+/// `perspective(d)`: parse the longhand `perspective` property.
+fn parse_perspective(input: &mut Parser<'_>) -> ParseResult<Length> {
+    parse_transform_length(input)
+}
+
+/// `perspective-origin`: two lengths/percentages.
+fn parse_perspective_origin(input: &mut Parser<'_>) -> ParseResult<(Length, Length)> {
+    let x = parse_transform_length(input)?;
+    let y = parse_transform_length(input)?;
+    Ok((x, y))
 }
 
 /// `grid-template-columns` / `grid-template-rows`: `none`, or a list of
@@ -1946,6 +2245,36 @@ fn parse_optional_ratio(input: &mut Parser<'_>) -> ParseResult<Option<(f32, f32)
         Ok(ratio) => Ok(Some(ratio)),
         Err(_) => Ok(None),
     }
+}
+
+/// `container-type: normal | inline-size | size` (spec 0010, AC-16).
+fn parse_container_type(input: &mut Parser<'_>) -> ParseResult<ContainerType> {
+    parse_keyword(
+        input,
+        &[
+            ("normal", ContainerType::Normal),
+            ("inline-size", ContainerType::InlineSize),
+            ("size", ContainerType::Size),
+        ],
+    )
+}
+
+/// `container-name: <custom-ident>+` (spec 0010, AC-16).
+fn parse_container_name(input: &mut Parser<'_>) -> ParseResult<ContainerName> {
+    let mut names = Vec::new();
+    loop {
+        input.skip_whitespace();
+        match input.next() {
+            Ok(cssparser::Token::Ident(name)) => {
+                names.push(Atom::from(name.as_ref()));
+            }
+            _ => break,
+        }
+    }
+    if names.is_empty() {
+        return invalid();
+    }
+    Ok(ContainerName(names))
 }
 
 /// `clip: auto` or `clip: rect(top, right, bottom, left)` (CSS 2.2 section
@@ -3273,5 +3602,85 @@ mod tests {
             "",
             &PropertySyntax::Repeated(Box::new(PropertySyntax::Length))
         ));
+    }
+
+    #[test]
+    fn transform_functions_parse() {
+        let transform = |text: &str| match parse(text).as_slice() {
+            [(_, DeclaredValue::Value(Value::Transform(t)), _)] => t.clone(),
+            other => panic!("{text} gave {other:?}"),
+        };
+        // `scale(s)` uses unitless numbers.
+        assert_eq!(
+            transform("transform: scale(1.5)").transform.as_ref(),
+            &[TransformFn::Scale(1.5, None)]
+        );
+        // `translate(tx, ty)` takes lengths.
+        assert_eq!(
+            transform("transform: translate(10px, 20px)")
+                .transform
+                .as_ref(),
+            &[TransformFn::Translate(
+                Length::px(10.0),
+                Some(Length::px(20.0))
+            )]
+        );
+        // `rotate(a)` takes an angle.
+        assert_eq!(
+            transform("transform: rotate(45deg)").transform.as_ref(),
+            &[TransformFn::Rotate(Angle::Deg(45.0))]
+        );
+        // `perspective(d)` takes a length.
+        assert_eq!(
+            transform("transform: perspective(1000px)")
+                .transform
+                .as_ref(),
+            &[TransformFn::Perspective(Length::px(1000.0))]
+        );
+        // `none` computes to the identity.
+        assert_eq!(
+            transform("transform: none").transform.as_ref(),
+            &[] as &[TransformFn]
+        );
+        // An unknown function drops the declaration.
+        assert!(parse("transform: skewz(45deg)").is_empty());
+    }
+
+    #[test]
+    fn scale_property_parses_unitless_numbers() {
+        assert_eq!(value("scale: 1.5"), Value::Scale(1.5, None));
+        assert_eq!(value("scale: 1.5 2.0"), Value::Scale(1.5, Some(2.0)));
+        assert_eq!(value("scale: -1"), Value::Scale(-1.0, None));
+        // `px` is not a unitless number, so the declaration drops.
+        assert!(parse("scale: 1px").is_empty());
+    }
+
+    #[test]
+    fn transform_origin_and_style_parse() {
+        assert_eq!(
+            value("transform-origin: 10px 20%"),
+            Value::TransformOrigin(Length::px(10.0), Length::Percent(20.0))
+        );
+        assert_eq!(
+            value("transform-style: preserve-3d"),
+            Value::TransformStyle(TransformStyle::Preserve3d)
+        );
+        assert_eq!(
+            value("transform-style: flat"),
+            Value::TransformStyle(TransformStyle::Flat)
+        );
+        assert!(parse("transform-style: preserve3d").is_empty());
+    }
+
+    #[test]
+    fn translate_and_perspective_properties_parse() {
+        assert_eq!(
+            value("translate: 10px 20px"),
+            Value::Translate(Length::px(10.0), Some(Length::px(20.0)))
+        );
+        assert_eq!(
+            value("perspective: 1000px"),
+            Value::Perspective(Length::px(1000.0))
+        );
     }
 }
