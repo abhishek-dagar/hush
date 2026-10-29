@@ -634,3 +634,53 @@ fn editing_a_style_element_restyles_the_page() {
     page.begin_frame(16.0).unwrap();
     assert_eq!(color(&page, "p"), "#0000ffff");
 }
+
+/// AC-15: relative combinators inside :has() match against the subject.
+#[test]
+fn has_relative_combinators_match() {
+    let page = load(
+        r#"<style>
+            #h:has(> #t) { color: red }
+            #g:has(+ .sib) { color: green }
+            #a:has(~ .far) { color: blue }
+        </style>
+        <div id=h><span id=t>t</span></div>
+        <div id=g></div><span class=sib>sib</span>
+        <div id=a></div><span class=far>far</span>"#,
+    );
+    assert_eq!(color(&page, "h"), "#ff0000ff", "child combinator");
+    assert_eq!(color(&page, "g"), "#008000ff", "next sibling combinator");
+    assert_eq!(color(&page, "a"), "#0000ffff", "later sibling combinator");
+}
+
+/// AC-15: changing a descendant restyles the :has() subject in one frame.
+#[test]
+fn has_dynamic_restyles_subject() {
+    let mut page = load(
+        r#"<style>
+            #h:has(.on) { width: 200px; }
+            #g.on { width: 200px; }
+        </style>
+        <div id=h><span id=c>c</span></div>
+        <div id=g class=on>g</div>"#,
+    );
+    assert_eq!(value(&page, "g", "width").as_deref(), Some("200px"));
+    assert_ne!(
+        value(&page, "h", "width").as_deref(),
+        Some("200px"),
+        "#h should not match :has(.on) yet"
+    );
+
+    let doc = &mut page.main_frame_mut().document;
+    let child = doc.element_by_id(&Atom::from("c")).unwrap();
+    doc.set_attribute(child, QualName::attribute(LocalName::from("class")), "on")
+        .unwrap();
+    page.end_task();
+    assert!(page.take_frame_request());
+    page.begin_frame(16.0).unwrap();
+    assert_eq!(
+        value(&page, "h", "width").as_deref(),
+        Some("200px"),
+        ":has subject restyled"
+    );
+}

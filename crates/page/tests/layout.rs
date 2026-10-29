@@ -589,3 +589,102 @@ fn relayout_reuses_clean_boxes_and_keeps_their_collapsed_margins() {
     let size = Size::new(Au::from_px(800.0), Au::from_px(400.0));
     assert_eq!(page.main_frame().fragments.as_ref().unwrap().viewport, size);
 }
+
+/// AC-16: `container-type: size` contains the box on both axes, so a box
+/// with `height: auto` sizes as if it had no contents (height 0, not its
+/// child's height).
+#[test]
+fn size_container_block_size_is_zero() {
+    let (page, _) = load(
+        "<style>#c { container-type: size; width: 100px; margin: 0; padding: 0; border: 0; }</style>\
+         <div id=c><div style='height:50px;width:1px;'></div></div>",
+    );
+    let (_, _, w, h) = rect(&page, "c");
+    assert!((w - 100.0).abs() < 0.5, "width stays definite");
+    assert!((h - 0.0).abs() < 0.5, "block size as if empty");
+}
+
+/// AC-16: `container-type: inline-size` contains only the inline axis, so
+/// `height: auto` still follows the content.
+#[test]
+fn inline_size_container_block_size_follows_content() {
+    let (page, _) = load(
+        "<style>#c { container-type: inline-size; width: 100px; margin: 0; padding: 0; border: 0; }</style>\
+         <div id=c><div style='height:50px;width:1px;'></div></div>",
+    );
+    let (_, _, _, h) = rect(&page, "c");
+    assert!((h - 50.0).abs() < 0.5, "block size follows content");
+}
+
+/// AC-17: nested containers use the nearest ancestor container for
+/// `@container` and `cq*` units.
+#[test]
+fn nested_container_uses_nearest_ancestor() {
+    let (page, _) = load(
+        "<style>\
+          #outer { container-type: inline-size; width: 500px; margin: 0; padding: 0; border: 0; }\
+          #inner { container-type: inline-size; width: 250px; margin: 0; padding: 0; border: 0; }\
+          #inner > #child { width: 50cqi; }\
+        </style>\
+         <div id=outer><div id=inner><div id=child></div></div></div>",
+    );
+    let (_, _, w, _) = rect(&page, "child");
+    assert!(
+        (w - 125.0).abs() < 0.5,
+        "50cqi of the 250px inner container"
+    );
+}
+
+/// AC-17: `@container` matches against the nearest ancestor container, not
+/// an outer one. The inner container is 250px wide, so `min-width: 400px`
+/// must not match inside it (it would match the 500px outer container).
+#[test]
+fn container_query_uses_nearest_ancestor() {
+    let (page, _) = load(
+        "<style>\
+          #outer { container-type: inline-size; width: 500px; margin: 0; padding: 0; border: 0; }\
+          #inner { container-type: inline-size; width: 250px; margin: 0; padding: 0; border: 0; }\
+          #child { width: 30px; }\
+          @container (min-width: 400px) { #child { width: 60px; } }\
+        </style>\
+         <div id=outer><div id=inner><div id=child></div></div></div>",
+    );
+    let (_, _, w, _) = rect(&page, "child");
+    assert!(
+        (w - 30.0).abs() < 0.5,
+        "@container checked against nearest (250px) container"
+    );
+}
+
+/// AC-32: container queries re-evaluate on resize.
+#[test]
+fn container_queries_reevaluate_on_resize() {
+    let (mut page, _) = load(
+        "<style>\
+          #c { container-type: inline-size; width: 50%; margin: 0; padding: 0; border: 0; }\
+          #ci { width: 100px; }\
+          @container (width < 300px) { #ci { width: 7px; } }\
+        </style>\
+         <div id=c><div id=ci></div></div>",
+    );
+    // At 800px, #c is 400px wide, so the query does not match and #ci stays 100px.
+    let (_, _, w, _) = rect(&page, "ci");
+    assert!(
+        (w - 100.0).abs() < 0.5,
+        "at 800px the container query does not match"
+    );
+    // Resize to 500px: #c is 250px wide, so the query matches and #ci becomes 7px.
+    page.resize(
+        SizeF {
+            width: 500.0,
+            height: 600.0,
+        },
+        1.0,
+    );
+    page.begin_frame(0.0);
+    let (_, _, w, _) = rect(&page, "ci");
+    assert!(
+        (w - 7.0).abs() < 0.5,
+        "container query re-evaluated on resize"
+    );
+}
