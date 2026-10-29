@@ -2,10 +2,13 @@
 //! the viewport, plus OS preference features (spec 0004, child 0003,
 //! Media queries, AC-19; spec 0010, AC-12, AC-13).
 
+use std::rc::Rc;
+
 use cssparser::Parser;
 use serde::{Deserialize, Serialize};
 
 use crate::values::{LengthRules, ParseResult, SpecifiedLength, invalid, parse_length};
+use base::atoms::Atom;
 
 /// What media queries are evaluated against.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,32 +46,144 @@ enum MediaType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Axis {
+pub enum Axis {
     Width,
     Height,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Range {
+pub enum Range {
+    /// `>=`: inclusive lower bound.
     Min,
+    /// `<=`: inclusive upper bound.
     Max,
+    /// `>`: strict lower bound.
+    StrictMin,
+    /// `<`: strict upper bound.
+    StrictMax,
+}
+
+impl Range {
+    /// Whether this is an upper bound (`<=` or `<`).
+    fn is_max(self) -> bool {
+        matches!(self, Range::Max | Range::StrictMax)
+    }
+    /// Whether the comparison is strict (`>` or `<`).
+    fn is_strict(self) -> bool {
+        matches!(self, Range::StrictMin | Range::StrictMax)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Feature {
     Width {
         axis: Axis,
-        min: Option<f32>,
-        max: Option<f32>,
+        /// Inclusive lower bound unless `strict`. `None` means unbounded.
+        min: Option<(f32, bool)>,
+        /// Inclusive upper bound unless `strict`. `None` means unbounded.
+        max: Option<(f32, bool)>,
     },
     Orientation(Orientation),
-    AspectRatio(f32),
+    AspectRatio {
+        /// `min-aspect-ratio` lower bound, `None` when not set.
+        min: Option<f32>,
+        /// `max-aspect-ratio` upper bound, `None` when not set.
+        max: Option<f32>,
+    },
     PrefersColorScheme(ColorScheme),
     PrefersReducedMotion(bool),
 }
 
+/// A `@container` size condition: `all`, `any`, `not`, or a single feature.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SizeCondition {
+    /// All of the conditions must hold (`and`).
+    All(Vec<SizeCondition>),
+    /// Any of the conditions must hold (`or`).
+    Any(Vec<SizeCondition>),
+    /// The condition must not hold (`not`).
+    Not(Box<SizeCondition>),
+    /// A single feature test.
+    Feature(ContainerFeature),
+}
+
+/// A single `@container` size feature.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContainerFeature {
+    Width {
+        axis: Axis,
+        /// Inclusive lower bound unless `strict`. `None` means unbounded.
+        min: Option<(f32, bool)>,
+        /// Inclusive upper bound unless `strict`. `None` means unbounded.
+        max: Option<(f32, bool)>,
+    },
+    AspectRatio {
+        /// Lower bound, `None` when not set.
+        min: Option<f32>,
+        /// Upper bound, `None` when not set.
+        max: Option<f32>,
+    },
+    Orientation(Orientation),
+}
+
+impl ContainerFeature {
+    /// Whether the container's size satisfies this feature.
+    pub(crate) fn evaluate(&self, width: f32, height: f32) -> bool {
+        match self {
+            ContainerFeature::Width { axis, min, max } => {
+                let actual = match axis {
+                    Axis::Width => width,
+                    Axis::Height => height,
+                };
+                let ok_min =
+                    min.is_none_or(|(m, strict)| if strict { actual > m } else { actual >= m });
+                let ok_max =
+                    max.is_none_or(|(m, strict)| if strict { actual < m } else { actual <= m });
+                ok_min && ok_max
+            }
+            ContainerFeature::AspectRatio { min, max } => {
+                let actual = width / height;
+                min.is_none_or(|m| actual >= m) && max.is_none_or(|m| actual <= m)
+            }
+            ContainerFeature::Orientation(orientation) => {
+                let actual = if width >= height {
+                    Orientation::Landscape
+                } else {
+                    Orientation::Portrait
+                };
+                actual == *orientation
+            }
+        }
+    }
+}
+
+impl SizeCondition {
+    /// Whether the container of `width` by `height` satisfies this condition.
+    pub(crate) fn evaluate(&self, width: f32, height: f32) -> bool {
+        match self {
+            SizeCondition::All(conditions) => conditions.iter().all(|c| c.evaluate(width, height)),
+            SizeCondition::Any(conditions) => conditions.iter().any(|c| c.evaluate(width, height)),
+            SizeCondition::Not(condition) => !condition.evaluate(width, height),
+            SizeCondition::Feature(feature) => feature.evaluate(width, height),
+        }
+    }
+}
+
+/// A `@container` condition: the container names to match (from
+/// `@container name`) and an optional size condition (from `@container
+/// ( ... )`). A rule inside `@container` applies when the element sits in an
+/// ancestor container carrying one of `names` (empty = any container) whose
+/// size satisfies `condition` (when present).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerCondition {
+    /// The container names the element's nearest container must carry.
+    pub names: Rc<[Atom]>,
+    /// The size condition, `None` for a name-only `@container name`.
+    pub condition: Option<SizeCondition>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Orientation {
+pub enum Orientation {
     Portrait,
     Landscape,
 }
@@ -127,20 +242,30 @@ fn parse_query(input: &mut Parser<'_>) -> ParseResult<MediaQuery> {
     let mut media_type = None;
     if let Ok(ident) = input.try_parse(|i| i.expect_ident_cloned()) {
         let lower = ident.to_ascii_lowercase();
-        let named = match lower.as_str() {
+        match lower.as_str() {
             "not" | "only" => {
                 negated = lower == "not";
-                input.expect_ident_cloned()?.to_ascii_lowercase()
+                // The media type is optional: `not (width < 100px)` has none.
+                if let Ok(mt) = input.try_parse(|i| i.expect_ident_cloned()) {
+                    media_type = Some(match mt.to_ascii_lowercase().as_str() {
+                        "all" => MediaType::All,
+                        "screen" => MediaType::Screen,
+                        // The reserved words cannot name a type.
+                        "and" | "or" | "not" | "only" | "layer" => return invalid(),
+                        _ => MediaType::Other,
+                    });
+                }
             }
-            _ => lower,
-        };
-        media_type = Some(match named.as_str() {
-            "all" => MediaType::All,
-            "screen" => MediaType::Screen,
-            // The reserved words cannot name a type.
-            "and" | "or" | "not" | "only" | "layer" => return invalid(),
-            _ => MediaType::Other,
-        });
+            _ => {
+                media_type = Some(match lower.as_str() {
+                    "all" => MediaType::All,
+                    "screen" => MediaType::Screen,
+                    // The reserved words cannot name a type.
+                    "and" | "or" | "not" | "only" | "layer" => return invalid(),
+                    _ => MediaType::Other,
+                });
+            }
+        }
     }
     let mut features = Vec::new();
     loop {
@@ -175,13 +300,13 @@ fn parse_range_op(input: &mut Parser<'_>) -> ParseResult<Range> {
         if input.try_parse(|i| i.expect_delim('=')).is_ok() {
             return Ok(Range::Min);
         }
-        return Ok(Range::Min); // `>` treated as `>=` for media queries
+        return Ok(Range::StrictMin);
     }
     if input.try_parse(|i| i.expect_delim('<')).is_ok() {
         if input.try_parse(|i| i.expect_delim('=')).is_ok() {
             return Ok(Range::Max);
         }
-        return Ok(Range::Max); // `<` treated as `<=` for media queries
+        return Ok(Range::StrictMax);
     }
     invalid()
 }
@@ -209,12 +334,15 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
                 Axis::Height
             };
             let (min, max) = match (range1, range2) {
-                (Range::Max, Range::Max) => {
-                    // `400px <= width <= 900px` (or `<` treated as `<=`)
-                    (Some(first_px), Some(second_px))
-                }
-                (Range::Min, Range::Min) => {
-                    // `400px >= width >= 900px` is meaningless
+                // `400px <= width <= 900px`
+                (Range::Max, Range::Max) => (Some((first_px, false)), Some((second_px, false))),
+                // `400px <= width < 900px` or `400px > width > 900px` etc.
+                (range1, range2) if range1.is_max() && range2.is_max() => (
+                    Some((first_px, range1.is_strict())),
+                    Some((second_px, range2.is_strict())),
+                ),
+                // `400px >= width >= 900px` is meaningless
+                (Range::Min, Range::Min) | (Range::StrictMin, Range::StrictMin) => {
                     return invalid();
                 }
                 _ => return invalid(),
@@ -237,8 +365,8 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
                 _ => return invalid(),
             };
             let (min, max) = match range {
-                Range::Min => (Some(px), None),
-                Range::Max => (None, Some(px)),
+                Range::Min | Range::StrictMin => (Some((px, range.is_strict())), None),
+                Range::Max | Range::StrictMax => (None, Some((px, range.is_strict()))),
             };
             return Ok(Feature::Width { axis, min, max });
         }
@@ -253,8 +381,8 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
             input.expect_exhausted()?;
             Ok(Feature::Width {
                 axis: Axis::Width,
-                min: Some(px),
-                max: Some(px),
+                min: Some((px, false)),
+                max: Some((px, false)),
             })
         }
         "min-width" => {
@@ -263,7 +391,7 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
             input.expect_exhausted()?;
             Ok(Feature::Width {
                 axis: Axis::Width,
-                min: Some(px),
+                min: Some((px, false)),
                 max: None,
             })
         }
@@ -274,7 +402,7 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
             Ok(Feature::Width {
                 axis: Axis::Width,
                 min: None,
-                max: Some(px),
+                max: Some((px, false)),
             })
         }
         "height" => {
@@ -283,8 +411,8 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
             input.expect_exhausted()?;
             Ok(Feature::Width {
                 axis: Axis::Height,
-                min: Some(px),
-                max: Some(px),
+                min: Some((px, false)),
+                max: Some((px, false)),
             })
         }
         "min-height" => {
@@ -293,7 +421,7 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
             input.expect_exhausted()?;
             Ok(Feature::Width {
                 axis: Axis::Height,
-                min: Some(px),
+                min: Some((px, false)),
                 max: None,
             })
         }
@@ -304,7 +432,7 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
             Ok(Feature::Width {
                 axis: Axis::Height,
                 min: None,
-                max: Some(px),
+                max: Some((px, false)),
             })
         }
         "orientation" => {
@@ -322,7 +450,28 @@ fn parse_feature(input: &mut Parser<'_>) -> ParseResult<Feature> {
             input.expect_colon()?;
             let ratio = parse_aspect_ratio(input)?;
             input.expect_exhausted()?;
-            Ok(Feature::AspectRatio(ratio))
+            Ok(Feature::AspectRatio {
+                min: Some(ratio),
+                max: Some(ratio),
+            })
+        }
+        "min-aspect-ratio" => {
+            input.expect_colon()?;
+            let ratio = parse_aspect_ratio(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::AspectRatio {
+                min: Some(ratio),
+                max: None,
+            })
+        }
+        "max-aspect-ratio" => {
+            input.expect_colon()?;
+            let ratio = parse_aspect_ratio(input)?;
+            input.expect_exhausted()?;
+            Ok(Feature::AspectRatio {
+                min: None,
+                max: Some(ratio),
+            })
         }
         "prefers-color-scheme" => {
             input.expect_colon()?;
@@ -373,6 +522,209 @@ fn parse_aspect_ratio(input: &mut Parser<'_>) -> ParseResult<f32> {
     Ok(first as f32 / second as f32)
 }
 
+/// Parses a `@container` size condition: `not X`, `X and Y`, `X or Y`,
+/// `(X)`, or a single feature test such as `width >= 400px` or
+/// `min-width: 400px` (spec 0010, AC-17).
+pub(crate) fn parse_container_condition(input: &mut Parser<'_>) -> ParseResult<SizeCondition> {
+    parse_container_condition_or(input)
+}
+
+fn parse_container_condition_or(input: &mut Parser<'_>) -> ParseResult<SizeCondition> {
+    let mut result = parse_container_condition_and(input)?;
+    loop {
+        input.skip_whitespace();
+        if input.try_parse(|i| i.expect_ident_matching("or")).is_ok() {
+            let rhs = parse_container_condition_and(input)?;
+            result = SizeCondition::Any(vec![result, rhs]);
+        } else {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+fn parse_container_condition_and(input: &mut Parser<'_>) -> ParseResult<SizeCondition> {
+    let mut result = parse_container_condition_not(input)?;
+    loop {
+        input.skip_whitespace();
+        if input.try_parse(|i| i.expect_ident_matching("and")).is_ok() {
+            let rhs = parse_container_condition_not(input)?;
+            result = SizeCondition::All(vec![result, rhs]);
+        } else {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+fn parse_container_condition_not(input: &mut Parser<'_>) -> ParseResult<SizeCondition> {
+    input.skip_whitespace();
+    if input.try_parse(|i| i.expect_ident_matching("not")).is_ok() {
+        let result = parse_container_condition_not(input)?;
+        return Ok(SizeCondition::Not(Box::new(result)));
+    }
+    if input.try_parse(|i| i.expect_parenthesis_block()).is_ok() {
+        let result = input.parse_nested_block(|input| parse_container_condition(input))?;
+        return Ok(result);
+    }
+    Ok(SizeCondition::Feature(parse_container_feature(input)?))
+}
+
+fn parse_container_feature(input: &mut Parser<'_>) -> ParseResult<ContainerFeature> {
+    // Try the two-sided Level 4 range form: `400px <= width < 900px`.
+    let state = input.state();
+    if let Ok(first_px) = parse_length_px(input)
+        && let Ok(range1) = parse_range_op(input)
+        && let Ok(name) = input.try_parse(|i| i.expect_ident_cloned())
+    {
+        let lower = name.to_ascii_lowercase();
+        if (lower == "width" || lower == "height")
+            && let Ok(range2) = parse_range_op(input)
+            && let Ok(second_px) = parse_length_px(input)
+        {
+            input.expect_exhausted()?;
+            let axis = if lower == "width" {
+                Axis::Width
+            } else {
+                Axis::Height
+            };
+            let (min, max) = match (range1, range2) {
+                (Range::Max, Range::Max) => (Some((first_px, false)), Some((second_px, false))),
+                (range1, range2) if range1.is_max() && range2.is_max() => (
+                    Some((first_px, range1.is_strict())),
+                    Some((second_px, range2.is_strict())),
+                ),
+                _ => return invalid(),
+            };
+            return Ok(ContainerFeature::Width { axis, min, max });
+        }
+    }
+    input.reset(&state);
+    // Try the single-sided range form: `width >= 400px`.
+    if let Ok(name) = input.try_parse(|i| i.expect_ident_cloned()) {
+        let lower = name.to_ascii_lowercase();
+        if let Ok(range) = parse_range_op(input)
+            && let Ok(px) = parse_length_px(input)
+        {
+            input.expect_exhausted()?;
+            let axis = match lower.as_str() {
+                "width" => Axis::Width,
+                "height" => Axis::Height,
+                _ => return invalid(),
+            };
+            let (min, max) = match range {
+                Range::Min | Range::StrictMin => (Some((px, range.is_strict())), None),
+                Range::Max | Range::StrictMax => (None, Some((px, range.is_strict()))),
+            };
+            return Ok(ContainerFeature::Width { axis, min, max });
+        }
+    }
+    input.reset(&state);
+    // Fall back to the `name: value` form.
+    let name = input.expect_ident()?.to_ascii_lowercase();
+    match name.as_str() {
+        "width" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::Width {
+                axis: Axis::Width,
+                min: Some((px, false)),
+                max: Some((px, false)),
+            })
+        }
+        "min-width" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::Width {
+                axis: Axis::Width,
+                min: Some((px, false)),
+                max: None,
+            })
+        }
+        "max-width" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::Width {
+                axis: Axis::Width,
+                min: None,
+                max: Some((px, false)),
+            })
+        }
+        "height" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::Width {
+                axis: Axis::Height,
+                min: Some((px, false)),
+                max: Some((px, false)),
+            })
+        }
+        "min-height" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::Width {
+                axis: Axis::Height,
+                min: Some((px, false)),
+                max: None,
+            })
+        }
+        "max-height" => {
+            input.expect_colon()?;
+            let px = parse_length_px(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::Width {
+                axis: Axis::Height,
+                min: None,
+                max: Some((px, false)),
+            })
+        }
+        "orientation" => {
+            input.expect_colon()?;
+            let ident = input.expect_ident()?.to_ascii_lowercase();
+            let orientation = match ident.as_str() {
+                "portrait" => Orientation::Portrait,
+                "landscape" => Orientation::Landscape,
+                _ => return invalid(),
+            };
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::Orientation(orientation))
+        }
+        "aspect-ratio" => {
+            input.expect_colon()?;
+            let ratio = parse_aspect_ratio(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::AspectRatio {
+                min: Some(ratio),
+                max: Some(ratio),
+            })
+        }
+        "min-aspect-ratio" => {
+            input.expect_colon()?;
+            let ratio = parse_aspect_ratio(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::AspectRatio {
+                min: Some(ratio),
+                max: None,
+            })
+        }
+        "max-aspect-ratio" => {
+            input.expect_colon()?;
+            let ratio = parse_aspect_ratio(input)?;
+            input.expect_exhausted()?;
+            Ok(ContainerFeature::AspectRatio {
+                min: None,
+                max: Some(ratio),
+            })
+        }
+        _ => invalid(),
+    }
+}
+
 impl MediaQuery {
     fn evaluate(&self, device: &Device) -> bool {
         let type_matches = match self.media_type {
@@ -392,7 +744,11 @@ impl Feature {
                     Axis::Width => device.width,
                     Axis::Height => device.height,
                 };
-                min.is_none_or(|m| actual >= m) && max.is_none_or(|m| actual <= m)
+                let ok_min =
+                    min.is_none_or(|(m, strict)| if strict { actual > m } else { actual >= m });
+                let ok_max =
+                    max.is_none_or(|(m, strict)| if strict { actual < m } else { actual <= m });
+                ok_min && ok_max
             }
             Feature::Orientation(orientation) => {
                 let actual = if device.width >= device.height {
@@ -402,9 +758,9 @@ impl Feature {
                 };
                 actual == *orientation
             }
-            Feature::AspectRatio(ratio) => {
+            Feature::AspectRatio { min, max } => {
                 let actual = device.width / device.height;
-                (actual - ratio).abs() < f32::EPSILON
+                min.is_none_or(|m| actual >= m) && max.is_none_or(|m| actual <= m)
             }
             Feature::PrefersColorScheme(scheme) => device.color_scheme == *scheme,
             Feature::PrefersReducedMotion(reduce) => device.reduced_motion == *reduce,
@@ -491,5 +847,48 @@ mod tests {
         assert!(on("(width >= 600px)", light));
         assert!(!on("(width >= 600px)", NARROW));
         assert!(on("(400px <= width < 900px)", NARROW));
+    }
+
+    #[test]
+    fn strict_range_and_not_without_type() {
+        // AC-12: `>` and `<` are strict, not inclusive.
+        let at800 = Device {
+            width: 800.0,
+            height: 600.0,
+            ..WIDE
+        };
+        assert!(!on("(width > 800px)", at800));
+        assert!(!on("(width < 800px)", at800));
+        assert!(on("(width > 799px)", at800));
+        assert!(on("(width < 801px)", at800));
+        // Inclusive forms still work.
+        assert!(on("(width >= 800px)", at800));
+        assert!(on("(width <= 800px)", at800));
+        // `not` without a media type negates the feature alone.
+        assert!(on("not (width < 100px)", WIDE));
+        let tiny = Device {
+            width: 50.0,
+            height: 50.0,
+            ..WIDE
+        };
+        assert!(on("(width < 100px)", tiny));
+        assert!(!on("not (width < 100px)", tiny));
+    }
+
+    #[test]
+    fn aspect_ratio_range() {
+        // AC-12: min-aspect-ratio / max-aspect-ratio.
+        let d800x600 = Device {
+            width: 800.0,
+            height: 600.0,
+            ..WIDE
+        };
+        assert!(on("(min-aspect-ratio: 4/3)", d800x600));
+        assert!(on("(max-aspect-ratio: 4/3)", d800x600));
+        assert!(!on("(min-aspect-ratio: 16/9)", d800x600));
+        assert!(!on("(max-aspect-ratio: 1/1)", d800x600));
+        // Plain aspect-ratio is still exact.
+        assert!(on("(aspect-ratio: 4/3)", d800x600));
+        assert!(!on("(aspect-ratio: 16/9)", d800x600));
     }
 }

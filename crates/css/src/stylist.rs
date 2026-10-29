@@ -94,10 +94,18 @@ impl Stylist {
     /// first, then the document's in tree order).
     pub fn new(sheets: &[Rc<Stylesheet>], device: Device) -> Self {
         // Assign layer ids in first appearance across sheets, in document
-        // order (spec 0010, AC-9).
+        // order (spec 0010, AC-9). `@layer` statements and blocks declare
+        // layer names even when they hold no rules, so those declarations
+        // are recorded on the sheet and consulted here.
         let mut layer_ids: HashMap<Atom, LayerId> = HashMap::new();
         let mut next = 0u32;
         for sheet in sheets {
+            for name in &sheet.layers {
+                if !layer_ids.contains_key(name) {
+                    layer_ids.insert(name.clone(), LayerId(next));
+                    next += 1;
+                }
+            }
             for rule in &sheet.rules {
                 if let Some(name) = &rule.layer
                     && !layer_ids.contains_key(name)
@@ -259,7 +267,13 @@ impl Stylist {
         container_context: &ContainerContext<'_>,
         context: &mut MatchContext<E>,
     ) -> (ComputedStyle, bool) {
-        let (matched, has_subject) = self.matching(element, None, container_context.names, context);
+        let (matched, has_subject) = self.matching(
+            element,
+            None,
+            container_context.names,
+            container_context.size,
+            context,
+        );
         let presentational = presentational_hints(element);
         let style = self.cascade_matched(
             matched,
@@ -304,8 +318,13 @@ impl Stylist {
         root_font_size: Au,
     ) -> Rc<ComputedStyle> {
         let mut context = MatchContext::default();
-        let (matched, _has_subject) =
-            self.matching(element, Some(PseudoElement::Placeholder), &[], &mut context);
+        let (matched, _has_subject) = self.matching(
+            element,
+            Some(PseudoElement::Placeholder),
+            &[],
+            None,
+            &mut context,
+        );
         Rc::new(self.cascade_matched(matched, Some(input_style), &[], root_font_size, None, &[]))
     }
 
@@ -390,6 +409,7 @@ impl Stylist {
         element: &E,
         pseudo: Option<PseudoElement>,
         container_names: &[Atom],
+        container_size: Option<Size>,
         context: &mut MatchContext<E>,
     ) -> (Vec<Entry>, bool) {
         let buckets = &self.buckets;
@@ -420,22 +440,47 @@ impl Stylist {
                 let selector =
                     &self.rules[entry.rule as usize].rule.selectors[entry.selector as usize];
                 let rule = &self.rules[entry.rule as usize].rule;
-                // `@container name` rules apply only within an ancestor
-                // container carrying one of their names (spec 0010, AC-17).
-                if let Some(names) = &rule.container
-                    && !names.is_empty()
-                    && !names.iter().any(|name| container_names.contains(name))
+                // `@container name`: apply only within an ancestor container
+                // carrying one of their names (spec 0010, AC-17).
+                if let Some(container) = &rule.container
+                    && !container.names.is_empty()
+                    && !container
+                        .names
+                        .iter()
+                        .any(|name| container_names.contains(name))
                 {
                     return false;
                 }
+                // `@container ( ... )`: evaluate the size condition against
+                // the nearest ancestor container's size (spec 0010, AC-17).
+                if let Some(condition) = rule.container.as_ref().and_then(|c| c.condition.as_ref())
+                {
+                    let (width, height) = match container_size {
+                        Some(size) => (size.width.to_f32_px(), size.height.to_f32_px()),
+                        None => return false, // no container to match against
+                    };
+                    if !condition.evaluate(width, height) {
+                        return false;
+                    }
+                }
                 let matches = selector.pseudo_element() == pseudo
                     && selector.matches_compounds(element, context);
-                if matches
-                    && selector
-                        .subject()
-                        .0
-                        .iter()
-                        .any(|simple| matches!(simple, Simple::Has(_)))
+                // An element is a :has() subject when the subject compound of a
+                // :has() rule matches it: the :has() part is a filter on the
+                // subject, not part of subject-hood, so the element must be
+                // restyled when a descendant or following sibling changes and
+                // the :has() filter may start or stop matching (spec 0010,
+                // AC-15). The flag is set even when :has() does not currently
+                // match, otherwise a :has() rule could never start matching.
+                if selector
+                    .subject()
+                    .0
+                    .iter()
+                    .any(|simple| matches!(simple, Simple::Has(_)))
+                    && selector.subject().0.iter().all(|simple| match simple {
+                        Simple::Has(_) => true,
+                        _ => simple.matches(element),
+                    })
                 {
                     has_subject = true;
                 }

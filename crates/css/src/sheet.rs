@@ -12,7 +12,7 @@ use encoding_rs::Encoding;
 use tracing::debug;
 
 use crate::font_face::{FontFaceRule, parse_font_face};
-use crate::media::MediaList;
+use crate::media::{ContainerCondition, MediaList, parse_container_condition};
 use crate::properties::{
     Declaration, ParseContext, PropertySyntax, parse_declaration, parse_property_syntax,
 };
@@ -41,9 +41,10 @@ pub struct Rule {
     /// Whether every enclosing `@supports` condition held when this rule was
     /// parsed (spec 0010, AC-11). A rule inside a false block never applies.
     pub(crate) supports: bool,
-    /// The container names from `@container` rules this rule is nested inside
-    /// (spec 0010, AC-17). `None` when not inside any `@container`.
-    pub(crate) container: Option<Rc<[Atom]>>,
+    /// The `@container` rule(s) this rule is nested inside: their container
+    /// names and/or size conditions (spec 0010, AC-17). `None` when not
+    /// inside any `@container`.
+    pub(crate) container: Option<Rc<ContainerCondition>>,
 }
 
 /// A registered custom property from `@property` (spec 0010, AC-10).
@@ -95,6 +96,9 @@ pub struct Stylesheet {
     pub(crate) properties: Vec<PropertyRule>,
     /// The `@keyframes` animations, in source order (spec 0010, AC-24).
     pub(crate) keyframes: Vec<KeyframesRule>,
+    /// The `@layer` names declared by this sheet, in first-appearance order
+    /// (spec 0010, AC-9).
+    pub(crate) layers: Vec<Atom>,
     /// The `media` attribute of the `<link>` or `<style>` it came from.
     pub media: Option<Rc<MediaList>>,
     /// Whether any value may read the viewport size.
@@ -110,6 +114,7 @@ impl Stylesheet {
             font_faces: Vec::new(),
             properties: Vec::new(),
             keyframes: Vec::new(),
+            layers: Vec::new(),
             media: None,
             uses_viewport_units: false,
         }
@@ -158,6 +163,7 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         layer: Vec::new(),
         supports: Vec::new(),
         container: Vec::new(),
+        layers: Vec::new(),
         rules: Vec::new(),
         font_faces: Vec::new(),
         properties: Vec::new(),
@@ -174,6 +180,7 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         font_faces,
         properties,
         keyframes,
+        layers,
         ..
     } = parser;
     let uses_viewport_units = rules
@@ -186,6 +193,7 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         font_faces,
         properties,
         keyframes,
+        layers,
         media: None,
         uses_viewport_units,
     }
@@ -233,12 +241,15 @@ struct TopLevel<'a> {
     /// outermost first. A rule applies only when every entry is true
     /// (spec 0010, AC-11).
     supports: Vec<bool>,
-    /// The container names from `@container` rules the parser is inside,
-    /// outermost first. `None` means no enclosing `@container`; `Some([])`
-    // means an empty condition form `@container ( ... )`.
-    container: Vec<Option<Rc<[Atom]>>>,
+    /// The `@container` rules the parser is inside, outermost first. `None`
+    /// means no enclosing `@container`; `Some(...)` holds the container
+    /// names and/or size condition (spec 0010, AC-17).
+    container: Vec<Option<Rc<ContainerCondition>>>,
     rules: Vec<Rule>,
     font_faces: Vec<FontFaceRule>,
+    /// The `@layer` names declared by `@layer` statements and blocks, in
+    /// first-appearance order within this sheet (spec 0010, AC-9).
+    layers: Vec<Atom>,
     /// The registered custom properties from `@property`.
     properties: Vec<PropertyRule>,
     /// The `@keyframes` animations parsed so far.
@@ -249,15 +260,16 @@ struct TopLevel<'a> {
 enum AtPrelude {
     Media(Rc<MediaList>),
     FontFace,
-    /// The `@layer` name, `None` for an anonymous layer.
-    Layer(Option<Atom>),
+    /// The `@layer` names, in the order written. Empty for an anonymous layer.
+    Layer(Vec<Atom>),
     /// The `@property` name, without the leading `--`.
     Property(Atom),
     /// The result of an `@supports` condition, evaluated at parse time
     /// (spec 0010, AC-11).
     Supports(bool),
-    /// The container names from an `@container` rule (spec 0010, AC-17).
-    Container(Rc<[Atom]>),
+    /// The `@container` rule this is nested inside: its container names and/or
+    /// size condition (spec 0010, AC-17).
+    Container(Rc<ContainerCondition>),
     /// The name of an `@keyframes` animation (spec 0010, AC-24).
     Keyframes(Atom),
 }
@@ -312,15 +324,17 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
             return Ok(AtPrelude::FontFace);
         }
         if name.eq_ignore_ascii_case("layer") {
-            // `@layer name { }` or an anonymous `@layer { }`. Only the first
-            // name matters for the block form in this feature.
+            // `@layer a, b { }` or an anonymous `@layer { }`. The statement
+            // form `@layer a, b;` (no block) also declares the layers.
+            // All names are recorded so cascade order is fixed by first
+            // appearance (spec 0010, AC-9).
             let names: Vec<Atom> = input
                 .parse_comma_separated(|input| -> Result<Atom, ParseError<()>> {
                     let ident = input.expect_ident()?;
                     Ok(Atom::from(ident.as_ref()))
                 })
                 .unwrap_or_default();
-            return Ok(AtPrelude::Layer(names.into_iter().next()));
+            return Ok(AtPrelude::Layer(names));
         }
         if name.eq_ignore_ascii_case("property") {
             // `@property --foo { ... }`. The name must start with `--`.
@@ -348,29 +362,38 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
             return Ok(AtPrelude::Supports(condition));
         }
         if name.eq_ignore_ascii_case("container") {
-            // `@container <name> { ... }` or `@container ( ... ) { ... }`.
-            // The name(s) are stored and matched against ancestor containers at
-            // style time (spec 0010, AC-17).
-            let names = if input.try_parse(|i| i.expect_parenthesis_block()).is_ok() {
-                // Condition form: parse but don't evaluate yet; condition
-                // evaluation against container sizes requires the layout pass
-                // loop (AC-18).
-                input.parse_nested_block(|input| {
-                    while input.next().is_ok() {}
-                    Ok(())
-                })?;
-                Rc::from([])
+            // `@container <name> ( ... ) { ... }`: an optional name followed by
+            // an optional size condition (spec 0010, AC-17).
+            let mut names: Vec<Atom> = Vec::new();
+            loop {
+                input.skip_whitespace();
+                let state = input.state();
+                match input.next_including_whitespace() {
+                    Ok(Token::Ident(ident)) => names.push(Atom::from(ident.as_ref())),
+                    _ => {
+                        input.reset(&state);
+                        break;
+                    }
+                }
+                input.skip_whitespace();
+                let state = input.state();
+                match input.next_including_whitespace() {
+                    Ok(Token::Comma) => continue,
+                    _ => {
+                        input.reset(&state);
+                        break;
+                    }
+                }
+            }
+            let condition = if input.try_parse(|i| i.expect_parenthesis_block()).is_ok() {
+                Some(input.parse_nested_block(|input| parse_container_condition(input))?)
             } else {
-                // Name form: one or more custom idents.
-                let names: Vec<Atom> = input
-                    .parse_comma_separated(|input| -> Result<Atom, ParseError<()>> {
-                        let ident = input.expect_ident()?;
-                        Ok(Atom::from(ident.as_ref()))
-                    })
-                    .unwrap_or_default();
-                Rc::from(names)
+                None
             };
-            return Ok(AtPrelude::Container(names));
+            return Ok(AtPrelude::Container(Rc::new(ContainerCondition {
+                names: Rc::from(names),
+                condition,
+            })));
         }
         if name.eq_ignore_ascii_case("keyframes") {
             // `@keyframes name { ... }`. The name is a single ident.
@@ -397,8 +420,15 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
                     .extend(parse_font_face(input, self.context, media));
                 return Ok(());
             }
-            AtPrelude::Layer(name) => {
-                self.layer.push(name);
+            AtPrelude::Layer(names) => {
+                // Record every declared name so cascade order is fixed by
+                // first appearance across sheets (spec 0010, AC-9).
+                for name in &names {
+                    self.layers.push(name.clone());
+                }
+                // Rules inside the block file into the first named layer
+                // (or none for an anonymous layer).
+                self.layer.push(names.first().cloned());
                 for result in StyleSheetParser::new(input, self) {
                     if let Err((_, source, _)) = result {
                         debug!(rule = source, "css rule dropped");
@@ -459,6 +489,21 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
         }
         self.media.pop();
         Ok(())
+    }
+
+    /// End an at-rule without a block. Only `@layer` statements declare
+    /// layers here; every other at-rule without a block is invalid.
+    fn rule_without_block(&mut self, prelude: AtPrelude, _start: &ParserState) -> Result<(), ()> {
+        if let AtPrelude::Layer(names) = prelude {
+            // `@layer a, b;` without a block: declare the layers in order so
+            // cascade order is fixed by first appearance across sheets
+            // (spec 0010, AC-9).
+            for name in names {
+                self.layers.push(name);
+            }
+            return Ok(());
+        }
+        Err(())
     }
 }
 
@@ -835,7 +880,7 @@ mod tests {
         let names: Vec<_> = sheet
             .rules
             .iter()
-            .map(|r| r.container.as_deref().map(|n| n.to_vec()))
+            .map(|r| r.container.as_deref().map(|c| c.names.to_vec()))
             .collect();
         assert_eq!(
             names,
@@ -845,14 +890,29 @@ mod tests {
             ]
         );
 
-        // `@container ( ... )` condition form stores an empty name list.
+        // `@container ( ... )` condition form stores an empty name list plus
+        // the size condition.
         let sheet = parse_stylesheet(
             "@container (width > 100px) { c { color: green; } }",
             Origin::Author,
             None,
         );
         assert_eq!(sheet.len(), 1);
-        assert_eq!(sheet.rules[0].container.as_deref(), Some(&[] as &[Atom]));
+        assert_eq!(
+            sheet.rules[0]
+                .container
+                .as_deref()
+                .map(|c| c.names.to_vec()),
+            Some(vec![])
+        );
+        assert!(
+            sheet.rules[0]
+                .container
+                .as_deref()
+                .unwrap()
+                .condition
+                .is_some()
+        );
     }
 
     #[test]
