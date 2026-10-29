@@ -13,7 +13,7 @@
 use std::rc::Rc;
 
 use base::{Au, BoxId, Point, Rect, SideOffsets, Size, mat4_mul, mat4_translate};
-use css::{BoxSizing, Clear, ComputedStyle, Length, WritingMode};
+use css::{BoxSizing, Clear, ComputedStyle, ContainerType, Length, WritingMode};
 use dom::NodeId;
 
 use crate::Fonts;
@@ -766,7 +766,11 @@ impl InProgress {
         let mut top = MarginStrut::new(self.own_top);
         let mut bottom = MarginStrut::new(self.own_bottom);
         let mut collapses_through = false;
-        let auto_height = if self.at_top {
+        let auto_height = if self.style.size.container_type == ContainerType::Size {
+            // Size containment: the box's block size is computed as if it had
+            // no contents, so `height: auto` is zero (spec 0010, AC-16).
+            Au::ZERO
+        } else if self.at_top {
             // Nothing with content inside: whatever margins the empty
             // children had adjoin this box's top margin.
             top.append(self.pending);
@@ -785,9 +789,10 @@ impl InProgress {
             }
         };
         // A BFC root's `height: auto` grows to hold its floats
-        // (CSS 2.2 section 10.6.7; spec 0009, child 0001).
-        let auto_height = if self.bfc_root {
-            // Floats its children placed count too.
+        // (CSS 2.2 section 10.6.7; spec 0009, child 0001). A size-contained
+        // box is as if empty, so its floats do not count.
+        let auto_height = if self.bfc_root && self.style.size.container_type != ContainerType::Size
+        {
             auto_height
                 .max(self.float_bottom)
                 .max(self.exclusions.clearance_both())
