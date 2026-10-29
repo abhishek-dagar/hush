@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use base::atoms::{LocalName, QualName};
 use base::ns;
 use css::MatchContext;
+use display_list::Binding;
 use dom::{Document, FrameId, NodeData, NodeId, NodeRef};
 use script::{
     ConsoleLevel, DomException, LocationAction, NodeKind, ReadyState, ScriptHost, TimerId,
@@ -148,6 +149,48 @@ fn is_valid_name(name: &str) -> bool {
     };
     let starts = |c: char| c.is_alphabetic() || c == '_' || c == ':';
     starts(first) && chars.all(|c| starts(c) || c.is_alphanumeric() || matches!(c, '-' | '.'))
+}
+
+/// Formats a computed `f32` as CSS would: shortest form without trailing
+/// zeros, so `1.0` becomes `1` and `0.5` stays `0.5`.
+fn css_number(value: f32) -> String {
+    let mut text = format!("{:.6}", value);
+    text = text.trim_end_matches('0').trim_end_matches('.').to_owned();
+    if text == "-0" || text.is_empty() {
+        text = "0".to_owned();
+    }
+    text
+}
+
+/// Serializes a composed 4 by 4 transform matrix to a CSS `matrix()` or
+/// `matrix3d()` value (spec 0010, AC-31).
+fn matrix_to_css(m: &[f32; 16]) -> String {
+    let f = |v: f32| css_number(v);
+    // A 2D affine matrix has an identity third row and column.
+    let is_2d = m[2] == 0.0
+        && m[3] == 0.0
+        && m[6] == 0.0
+        && m[7] == 0.0
+        && m[8] == 0.0
+        && m[9] == 0.0
+        && m[11] == 0.0
+        && m[14] == 0.0
+        && (m[10] - 1.0).abs() < f32::EPSILON
+        && (m[15] - 1.0).abs() < f32::EPSILON;
+    if is_2d {
+        format!(
+            "matrix({}, {}, {}, {}, {}, {})",
+            f(m[0]),
+            f(m[1]),
+            f(m[4]),
+            f(m[5]),
+            f(m[12]),
+            f(m[13])
+        )
+    } else {
+        let values = (0..16).map(|i| f(m[i])).collect::<Vec<_>>().join(", ");
+        format!("matrix3d({values})")
+    }
 }
 
 impl ScriptHost for PageHost {
@@ -476,10 +519,33 @@ impl ScriptHost for PageHost {
     fn history_length(&self) -> u32 {
         self.history_length
     }
+
+    /// `window.getComputedStyle(element).getPropertyValue(name)` (spec
+    /// 0010, AC-31). Returns the resolved value for `property`, or `None`
+    /// when the engine does not compute it yet.
+    fn computed_style(&self, element: NodeRef, property: &str) -> Option<String> {
+        let id = self.local(element)?;
+        let style = self.document.node(id)?.as_element()?.style()?;
+        match property {
+            "transform" => style
+                .transform
+                .functions_matrix(base::Size::default())
+                .map(|m| matrix_to_css(&m)),
+            "opacity" => Some(match style.effects.opacity {
+                Binding::Static(v) | Binding::Bound { value: v, .. } => css_number(v),
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU32;
+    use std::rc::Rc;
+
+    use css::ComputedStyle;
+
     use super::*;
 
     #[test]
@@ -516,5 +582,44 @@ mod tests {
         for bad in ["", "1a", "a b", "a<b", "-x"] {
             assert!(!is_valid_name(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn computed_style_returns_transform_and_opacity() {
+        // AC-31: getComputedStyle resolves transform and opacity.
+        let mut host = PageHost::new();
+        let doc = &mut host.document;
+        let root = doc.root();
+        let div = doc.create_element(QualName::html(LocalName::from("div")));
+        let _ = doc.append_child(root, div);
+        let mut style = ComputedStyle::default();
+        // `transform` resolves the function list only; the separate `scale`
+        // is its own property (CSSOM).
+        let t = Rc::make_mut(&mut style.transform);
+        t.transform = Rc::from([css::TransformFn::Scale(2.0, None)]);
+        t.scale = Some((3.0, None));
+        Rc::make_mut(&mut style.effects).opacity = Binding::Static(0.5);
+        let _ = doc.set_style(div, Some(Rc::new(style)));
+
+        let div_ref = NodeRef {
+            frame: FrameId::MAIN,
+            node: div,
+        };
+        assert_eq!(
+            host.computed_style(div_ref, "transform"),
+            Some("matrix(2, 0, 0, 2, 0, 0)".to_owned())
+        );
+        assert_eq!(
+            host.computed_style(div_ref, "opacity"),
+            Some("0.5".to_owned())
+        );
+        // Unsupported properties resolve to nothing.
+        assert_eq!(host.computed_style(div_ref, "color"), None);
+        // A missing node resolves to nothing.
+        let gone = NodeRef {
+            frame: FrameId::MAIN,
+            node: NodeId::from_parts(999, NonZeroU32::new(1).unwrap()),
+        };
+        assert_eq!(host.computed_style(gone, "transform"), None);
     }
 }

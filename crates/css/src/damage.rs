@@ -57,7 +57,11 @@ impl StyleDamage {
             || old.vertical_align != new.vertical_align
             || !same(&old.background, &new.background)
             || !same(&old.effects, &new.effects)
-            || !same(&old.outline, &new.outline);
+            || !same(&old.outline, &new.outline)
+            // Transforms are paint only (spec 0010, AC-28); motion is read
+            // from the box to start and cancel animations (AC-24).
+            || !same(&old.transform, &new.transform)
+            || !same(&old.motion, &new.motion);
         if repaint { Self::Repaint } else { Self::None }
     }
 }
@@ -83,6 +87,11 @@ mod tests {
     fn each_kind_of_change_gives_its_damage() {
         // AC-8
         assert_eq!(changed(|_| {}), StyleDamage::None);
+        // A transform alone repaints, so the box sees it (spec 0010, AC-28).
+        assert_eq!(
+            changed(|s| Rc::make_mut(&mut s.transform).scale = Some((2.0, None))),
+            StyleDamage::Repaint
+        );
         assert_eq!(
             changed(|s| Rc::make_mut(&mut s.inherited_text).color = Color::rgb8(1, 2, 3)),
             StyleDamage::Repaint

@@ -8,8 +8,9 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use base::Au;
 use base::atoms::Atom;
-use base::{Au, Point};
+use display_list::Binding;
 
 use crate::sheet::KeyframesRule;
 use crate::{Color, Length};
@@ -1192,8 +1193,9 @@ pub struct Transform {
     pub rotate: Option<Angle>,
     /// `scale`; `None` means `auto`, i.e. take `transform`.
     pub scale: Option<(f32, Option<f32>)>,
-    /// `transform-origin`, in border box coordinates.
-    pub origin: Point,
+    /// `transform-origin`, from the border box's top left corner;
+    /// percentages refer to the border box size. Initially `50% 50%`.
+    pub origin: (Length, Length),
     /// `transform-style`: `flat` in this slice (`preserve-3d` parses but
     /// renders flat, spec 0010, AC-19).
     pub style: TransformStyle,
@@ -1228,7 +1230,7 @@ impl Default for Transform {
             translate: None,
             rotate: None,
             scale: None,
-            origin: Point::default(),
+            origin: (Length::Percent(50.0), Length::Percent(50.0)),
             style: TransformStyle::Flat,
             perspective: None,
             perspective_origin: None,
@@ -1288,6 +1290,41 @@ pub enum TimingFunction {
     Steps(usize),
 }
 
+/// The playback direction of an `@keyframes` animation (spec 0010, AC-24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationDirection {
+    /// `normal`: each iteration plays forward.
+    Normal,
+    /// `reverse`: each iteration plays backward.
+    Reverse,
+    /// `alternate`: forward, then backward, alternating.
+    Alternate,
+    /// `alternate-reverse`: backward, then forward, alternating.
+    AlternateReverse,
+}
+
+/// What an animation shows outside its active interval (spec 0010, AC-24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillMode {
+    /// `none`: nothing outside the active interval.
+    None,
+    /// `forwards`: the final keyframe style holds after the last iteration.
+    Forwards,
+    /// `backwards`: the first keyframe style shows during the delay.
+    Backwards,
+    /// `both`: both `forwards` and `backwards`.
+    Both,
+}
+
+/// Whether an animation is running or paused (spec 0010, AC-24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayState {
+    /// `running`: the animation plays.
+    Running,
+    /// `paused`: the animation is suspended at its current value.
+    Paused,
+}
+
 /// One transition spec: which property, how long, how it eases (spec
 /// 0010, AC-23).
 #[derive(Debug, Clone, PartialEq)]
@@ -1328,6 +1365,12 @@ pub struct AnimationSpec {
     pub iteration_count: Option<f64>,
     /// The timing function.
     pub timing: TimingFunction,
+    /// The playback direction.
+    pub direction: AnimationDirection,
+    /// What shows outside the active interval.
+    pub fill_mode: FillMode,
+    /// `animation-play-state`: a paused animation holds its current value.
+    pub play_state: PlayState,
 }
 
 impl Default for Motion {
@@ -1346,8 +1389,9 @@ pub type CustomProperties = HashMap<Atom, Rc<str>>;
 /// Visual effects. `transform` and filters arrive with their slices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Effects {
-    /// `opacity`, 0 to 1.
-    pub opacity: f32,
+    /// `opacity`, 0 to 1. Animated opacity travels as a `Binding::Bound`
+    /// (spec 0010, AC-28); otherwise `Binding::Static`.
+    pub opacity: Binding<f32>,
     /// `z-index`; `None` is `auto`.
     pub z_index: Option<i32>,
     /// `clip: rect(...)`, or `None` for `auto` / no clip. Applied only to
@@ -1373,7 +1417,7 @@ pub struct ClipRect {
 impl Default for Effects {
     fn default() -> Self {
         Self {
-            opacity: 1.0,
+            opacity: Binding::Static(1.0),
             z_index: None,
             clip: None,
         }

@@ -130,6 +130,17 @@ impl Stylesheet {
     pub fn font_faces(&self) -> &[FontFaceRule] {
         &self.font_faces
     }
+
+    /// The `@keyframes` rule named `name`, if any sheet holds it (spec 0010,
+    /// AC-24). Later rules for the same name win, so the last match wins.
+    pub fn keyframes_rule(&self, name: &Atom) -> Option<Rc<KeyframesRule>> {
+        self.keyframes
+            .iter()
+            .rev()
+            .find(|rule| rule.name == *name)
+            .cloned()
+            .map(Rc::new)
+    }
 }
 
 /// Parses `text` as a sheet of `origin`, resolving `url()` against
@@ -428,8 +439,15 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
                 return Ok(());
             }
             AtPrelude::Keyframes(name) => {
-                self.keyframes
-                    .push(parse_keyframes_block(input, name, self.context)?);
+                let rule = parse_keyframes_block(input, name, self.context)?;
+                // Hostile input stays bounded: past the cap the whole rule
+                // is ignored (spec 0010, AC-38).
+                let keys: usize = rule.keyframes.iter().map(|k| k.keys.len()).sum();
+                if keys > MAX_KEYFRAMES {
+                    debug!(name = %rule.name, keys, "@keyframes over the keyframe cap dropped");
+                } else {
+                    self.keyframes.push(rule);
+                }
                 return Ok(());
             }
         };
@@ -443,6 +461,10 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
         Ok(())
     }
 }
+
+/// The most keyframe selectors one `@keyframes` rule may have; a rule
+/// with more is ignored (spec 0010, AC-38).
+pub const MAX_KEYFRAMES: usize = 1_000;
 
 /// Parses the block of an `@keyframes name { ... }` rule: a series of
 /// keyframe selectors, each followed by a declaration block (spec 0010,

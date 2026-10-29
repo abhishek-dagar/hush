@@ -19,6 +19,9 @@ url.workspace = true
 # Serde for IPC message types that cross the process boundary
 # (spec 0010, AC-13).
 serde.workspace = true
+# `Binding` for animatable values (transform, opacity) that travel to the
+# display list (spec 0010, AC-28).
+display-list.workspace = true
 
 [lints]
 workspace = true

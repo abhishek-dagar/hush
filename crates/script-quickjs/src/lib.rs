@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use dom::NodeRef;
 use rquickjs::context::EvalOptions;
 use rquickjs::{CatchResultExt, CaughtError, Context, Ctx, Function, Object, Persistent, Runtime};
-use script::{EventTarget, ScriptEngine, ScriptError, ScriptHost, TimerId};
+use script::{EventTarget, MotionEvent, ScriptEngine, ScriptError, ScriptHost, TimerId};
 use tracing::warn;
 
 use crate::bindings::{Host, Unpins};
@@ -178,6 +178,22 @@ impl ScriptEngine for QuickJsEngine {
             EventTarget::Document => "document",
         };
         self.call_internal("fire", (target, event), event)
+    }
+
+    fn fire_motion_event(
+        &mut self,
+        target: NodeRef,
+        event: &MotionEvent<'_>,
+    ) -> Result<(), ScriptError> {
+        let args = (
+            bindings::key(target),
+            event.kind.to_owned(),
+            event.transition,
+            event.name.to_owned(),
+            event.elapsed_time,
+            event.pseudo_element.to_owned(),
+        );
+        self.call_internal("fireMotion", args, event.kind)
     }
 
     fn run_timer(&mut self, id: TimerId) -> Result<(), ScriptError> {

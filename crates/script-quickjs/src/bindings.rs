@@ -400,6 +400,18 @@ pub(crate) fn natives<'js>(ctx: &Ctx<'js>, host: &Host, unpins: &Unpins) -> Resu
     define(&native, "historyLength", move || {
         h.borrow().history_length()
     })?;
+    // `window.getComputedStyle(element).getPropertyValue(name)` (spec
+    // 0010, AC-31). Takes the node wrapper and a property name, returns the
+    // resolved value or `null` when the engine does not compute it.
+    let h = Rc::clone(host);
+    define(
+        &native,
+        "getComputedStyle",
+        move |element: Class<'js, NodeWrapper>, property: String| -> Option<String> {
+            let node = node_of(&element);
+            h.borrow().computed_style(node, &property)
+        },
+    )?;
     Ok(native)
 }
 

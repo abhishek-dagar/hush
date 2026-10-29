@@ -14,7 +14,7 @@ mod mat4;
 pub use arena::{Arena, Id};
 pub use au::{AU_PER_PX, Au};
 pub use geometry::{Point, Rect, SideOffsets, Size};
-pub use mat4::{mat4_identity, mat4_inverse, mat4_mul, mat4_translate};
+pub use mat4::{mat4_identity, mat4_inverse, mat4_mul, mat4_translate, mat4_unproject};
 
 /// Marks ids into a document's box tree.
 ///

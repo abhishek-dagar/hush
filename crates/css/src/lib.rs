@@ -13,6 +13,7 @@ mod damage;
 mod dump;
 mod font_face;
 mod hints;
+mod interpolate;
 mod invalidation;
 mod media;
 mod properties;
@@ -33,26 +34,27 @@ use base::atoms::{Atom, QualName};
 
 pub use damage::StyleDamage;
 pub use font_face::{FontFaceRule, FontSource};
+pub use interpolate::{PropertyId, declared_properties, keyframe_timing};
 pub use invalidation::{ElementChange, InvalidationMap, restyle_hint};
 pub use media::{ColorScheme, Device, MediaList};
 pub use properties::Declaration;
 pub use selector::{MatchContext, PseudoElement, Selector, parse_selectors};
 pub use sharing::{SHARING_CACHE_SIZE, SharingCache};
 pub use sheet::{
-    Keyframe, KeyframesRule, Origin, PropertyRule, Rule, Stylesheet, decode_stylesheet,
-    parse_declarations, parse_stylesheet,
+    Keyframe, KeyframesRule, MAX_KEYFRAMES, Origin, PropertyRule, Rule, Stylesheet,
+    decode_stylesheet, parse_declarations, parse_stylesheet,
 };
 pub use style::{
-    AlignItems, AspectRatio, Background, Border, BorderCollapse, BorderRadius, BorderSide,
-    BorderStyle, BoxSizing, Breadth, CaptionSide, Clear, ClipRect, ComputedStyle, ContainerType,
-    Cursor, CustomProperties, Direction, Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis,
-    FlexDirection, FlexWrap, Float, Font, FontStyle, Grid, GridArea, GridAutoFlow, GridLine,
-    InheritedBox, InheritedTable, InheritedText, JustifyContent, LineHeight, List,
-    ListStylePosition, ListStyleType, Margin, Motion, Outline, OutlineStyle, Overflow,
-    OverflowWrap, Padding, Position, PositionOffsets, RepeatCount, Sizes, Table, TableLayout,
-    TextAlign, TextDecorationLine, TextOverflow, TimingFunction, TrackEntry, TrackList, TrackSize,
-    Transform, TransformFn, TransformStyle, UserSelect, VerticalAlign, Visibility, WhiteSpace,
-    WritingMode,
+    AlignItems, AnimationDirection, AnimationSpec, AspectRatio, Background, Border, BorderCollapse,
+    BorderRadius, BorderSide, BorderStyle, BoxSizing, Breadth, CaptionSide, Clear, ClipRect,
+    ComputedStyle, ContainerType, Cursor, CustomProperties, Direction, Display, DisplayBox,
+    Effects, EmptyCells, FillMode, Flex, FlexBasis, FlexDirection, FlexWrap, Float, Font,
+    FontStyle, Grid, GridArea, GridAutoFlow, GridLine, InheritedBox, InheritedTable, InheritedText,
+    JustifyContent, LineHeight, List, ListStylePosition, ListStyleType, Margin, Motion, Outline,
+    OutlineStyle, Overflow, OverflowWrap, Padding, PlayState, Position, PositionOffsets,
+    RepeatCount, Sizes, Table, TableLayout, TextAlign, TextDecorationLine, TextOverflow,
+    TimingFunction, TrackEntry, TrackList, TrackSize, Transform, TransformFn, TransformStyle,
+    TransitionSpec, UserSelect, VerticalAlign, Visibility, WhiteSpace, WritingMode,
 };
 pub use stylist::{ContainerContext, Stylist};
 pub use ua::ua_stylesheet;
@@ -152,7 +154,7 @@ impl CalcExpr {
         match self {
             Self::Leaf(length) => length.resolve(basis),
             Self::Sum(terms) => terms.iter().map(|t| t.resolve(basis)).sum(),
-            Self::Product(term, factor) => Au(term.resolve(basis).0 * factor.round() as i32),
+            Self::Product(term, factor) => term.resolve(basis).scale_by(*factor),
             Self::Min(terms) => terms
                 .iter()
                 .map(|t| t.resolve(basis))

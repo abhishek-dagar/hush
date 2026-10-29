@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use base::atoms::{LocalName, QualName};
+use base::atoms::{Atom, LocalName, QualName};
 use base::{Au, Size};
 use base::{local_name, ns};
 use css::{
-    ColorScheme, ComputedStyle, ContainerType, Device, MatchContext, MediaList, Origin, Stylesheet,
-    Stylist,
+    ColorScheme, ComputedStyle, ContainerType, Device, KeyframesRule, MatchContext, MediaList,
+    Origin, Stylesheet, Stylist,
 };
 use dom::{Document, NodeData, NodeId};
 use ipc::FetchId;
@@ -145,6 +145,17 @@ impl Styles {
     /// The rules in use.
     pub fn stylist(&self) -> &Stylist {
         &self.stylist
+    }
+
+    /// The `@keyframes` rule named `name`, if any of the document's sheets
+    /// holds it (spec 0010, AC-24). Later rules for the same name win.
+    pub fn keyframes_rule(&self, name: &Atom) -> Option<Rc<KeyframesRule>> {
+        // The last `@keyframes` with the name wins, across sheets too (spec
+        // 0010, AC-24).
+        self.sheets()
+            .iter()
+            .rev()
+            .find_map(|sheet| sheet.keyframes_rule(name))
     }
 
     /// Takes the fetches and cancels to send.

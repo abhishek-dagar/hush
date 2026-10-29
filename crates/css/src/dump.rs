@@ -3,6 +3,7 @@
 //! that differ from their initial value, so dumps stay short and readable.
 
 use crate::{BorderSide, Color, ComputedStyle, FlexBasis, Length, LineHeight};
+use display_list::Binding;
 
 impl ComputedStyle {
     /// The chosen properties that differ from the initial style, as
@@ -153,7 +154,12 @@ fn properties(style: &ComputedStyle) -> Vec<(String, String)> {
                 .map_or("auto".into(), |a| lower(&a)),
         ),
         ("order", style.flex.order.to_string()),
-        ("opacity", number(style.effects.opacity)),
+        (
+            "opacity",
+            number(match style.effects.opacity {
+                Binding::Static(v) | Binding::Bound { value: v, .. } => v,
+            }),
+        ),
         (
             "z-index",
             style

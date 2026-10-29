@@ -17,6 +17,7 @@ mod head;
 mod images;
 mod input;
 mod links;
+mod motion;
 mod resources;
 pub mod sample;
 mod script_host;
@@ -29,16 +30,17 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use base::{Au, Point, Size, atoms::Atom};
-use css::{ColorScheme, Device, Stylesheet, TimingFunction};
+use css::{ColorScheme, ComputedStyle, Device, Stylesheet};
 use display_list::{
     ColorF, DisplayList, Epoch, MAX_ENCODED_LEN, PageId, PointF, RectF, ScrollId, ScrollOffset,
     SizeF,
 };
-use dom::{Document, FrameChange, FrameId, NodeId, NodeRef};
+pub use dom::NodeRef;
+use dom::{Document, FrameChange, FrameId, NodeId};
 use html::{ParseStep, Parser, ParserOptions};
 use ipc::{Destination, DocumentKind, FetchError, FetchId, NavigationId, SharedBytes};
 use layout::{BoxTree, FragmentTree};
-pub use script::{EventTarget, ReadyState, ScriptEngine, ScriptError, TimerId};
+pub use script::{EventTarget, MotionEvent, ReadyState, ScriptEngine, ScriptError, TimerId};
 
 /// Wraps each page's script engine at creation time: perf mode installs a
 /// timing wrapper here (spec 0007, Script timing). The page never reads a
@@ -60,6 +62,10 @@ pub use dom_sink::DomSink;
 pub use editor::{EditState, MAX_PASTE_BYTES, PAGE_SELECTION};
 pub use fonts::{BLOCK_PERIOD, FontRequest, MAX_FONT_FACES, WebFonts};
 pub use images::{ImageRequest, Images};
+pub use motion::{
+    AnimatedValue, AnimatedValues, AnimationSet, Keyframe, MAX_RUNNING, PageEvent, Tracks,
+    TransitionStart, ease, resolve_keyframes,
+};
 pub use resources::ResourceTable;
 pub use styles::{ContainerSizes, RENDER_BLOCKING_CAP, StyleRequest, StyleStats, Styles};
 
@@ -96,140 +102,9 @@ impl FetchIds {
     }
 }
 
-/// A running transition: interpolates `from` to `to` over `duration`
-/// seconds starting at `start` (spec 0010, AC-23).
-#[derive(Debug, Clone)]
-struct RunningTransition {
-    from: f32,
-    to: f32,
-    start: f64,
-    delay: f64,
-    duration: f64,
-    timing: TimingFunction,
-    /// The display-list binding id for this animation, stable for its
-    /// lifetime on this element (spec 0010, AC-28).
-    binding_id: u64,
-}
-
-/// The running transitions and animations on one page, sampled each frame
-/// at `frame_time` (spec 0010, AC-27).
-#[derive(Debug, Clone, Default)]
-pub struct AnimationSet {
-    /// Transitions keyed by `(node, property)`.
-    transitions: HashMap<(NodeId, Atom), RunningTransition>,
-    /// The next binding id to hand out.
-    next_binding_id: u64,
-}
-
-impl AnimationSet {
-    /// Start a transition on `node` for `property`, from `from` to `to`,
-    /// beginning at `start`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one transition's timing and endpoints, set together"
-    )]
-    pub fn start_transition(
-        &mut self,
-        node: NodeId,
-        property: Atom,
-        from: f32,
-        to: f32,
-        duration: f64,
-        delay: f64,
-        timing: TimingFunction,
-        start: f64,
-    ) {
-        let binding_id = self.next_binding_id;
-        self.next_binding_id = self.next_binding_id.saturating_add(1);
-        self.transitions.insert(
-            (node, property),
-            RunningTransition {
-                from,
-                to,
-                start,
-                delay,
-                duration,
-                timing,
-                binding_id,
-            },
-        );
-    }
-
-    /// Sample every running transition at `frame_time`. Returns the current
-    /// scale value and binding id for each node whose transform changed.
-    /// Transitions past their end are removed.
-    pub fn sample(&mut self, frame_time: f64) -> AnimatedValues {
-        let mut transforms = HashMap::new();
-        let mut finished = Vec::new();
-        for ((node, property), running) in &self.transitions {
-            let elapsed = frame_time - running.start - running.delay;
-            let progress: f32 = if elapsed <= 0.0 {
-                0.0
-            } else if elapsed >= running.duration {
-                1.0
-            } else {
-                ease(running.timing, (elapsed / running.duration) as f32)
-            };
-            let value = running.from + (running.to - running.from) * progress;
-            if *property == css_property_scale() {
-                transforms.insert(*node, (value, running.binding_id));
-            }
-            if elapsed >= running.duration {
-                finished.push((*node, property.clone()));
-            }
-        }
-        for key in finished {
-            self.transitions.remove(&key);
-        }
-        let dirty_nodes: Vec<NodeId> = transforms.keys().copied().collect();
-        AnimatedValues {
-            transforms,
-            dirty_nodes,
-        }
-    }
-
-    /// Whether anything is still running, so the page asks for the next
-    /// frame.
-    pub fn is_running(&self) -> bool {
-        !self.transitions.is_empty()
-    }
-}
-
-/// The sampled animation values for one frame.
-#[derive(Debug, Clone, Default)]
-pub struct AnimatedValues {
-    /// The sampled scale and binding id for each node whose transform
-    /// changed.
-    pub transforms: HashMap<NodeId, (f32, u64)>,
-    /// Nodes whose style must be recomputed from the sampled values.
-    pub dirty_nodes: Vec<NodeId>,
-}
-
-fn css_property_scale() -> Atom {
-    Atom::from("transform")
-}
-
-/// Ease `progress` (0 to 1) with `timing`.
-fn ease(timing: TimingFunction, progress: f32) -> f32 {
-    match timing {
-        TimingFunction::Linear => progress,
-        TimingFunction::Ease => {
-            // cubic-bezier(0.25, 0.1, 0.25, 1)
-            let p = progress.clamp(0.0, 1.0);
-            p / (p + (1.0 - p) * 0.25 / 0.75)
-        }
-        TimingFunction::EaseIn => progress * progress,
-        TimingFunction::EaseOut => 1.0 - (1.0 - progress) * (1.0 - progress),
-        TimingFunction::EaseInOut => {
-            if progress < 0.5 {
-                2.0 * progress * progress
-            } else {
-                1.0 - 2.0 * (1.0 - progress) * (1.0 - progress)
-            }
-        }
-        TimingFunction::Steps(_) => progress,
-    }
-}
+/// A snapshot of an element's computed style at the start of a frame, used
+/// by the motion update to detect which transitionable properties changed.
+type BeforeStyles = HashMap<NodeId, Rc<ComputedStyle>>;
 
 /// A committed document's script engine and the host it calls back into
 /// (spec 0004, child 0006, Runtime per page).
@@ -299,6 +174,9 @@ pub struct Page {
     /// The running transitions and animations, sampled each frame (spec
     /// 0010, AC-27).
     animation_set: AnimationSet,
+    /// Each animated element's own style under the animated one written to
+    /// its DOM node (spec 0010, AC-26).
+    animated: motion::Animated,
     /// Font and image keys.
     resources: ResourceTable,
     /// The page's fonts, which text is shaped with.
@@ -373,6 +251,9 @@ pub struct Page {
     /// The OS color scheme and reduced motion setting from the last
     /// `Preferences`, which every committed document starts with.
     preferences: (ColorScheme, bool),
+    /// Every transition and animation event dispatched, for the tests.
+    #[cfg(test)]
+    page_events: Vec<PageEvent>,
 }
 
 impl Page {
@@ -398,6 +279,7 @@ impl Page {
             frame_requested: false,
             scroll: HashMap::new(),
             animation_set: AnimationSet::default(),
+            animated: motion::Animated::new(),
             resources: ResourceTable::new(id),
             fonts: FontContext::new(),
             web_fonts: WebFonts::new(),
@@ -428,6 +310,8 @@ impl Page {
             history: ipc::HistoryInfo::default(),
             builtin: None,
             preferences: (ColorScheme::Light, false),
+            #[cfg(test)]
+            page_events: Vec::new(),
         }
     }
 
@@ -582,6 +466,9 @@ impl Page {
         // The old document's iframes go with it.
         self.frames.clear();
         self.scroll.clear();
+        // Motion belongs to the old document's elements.
+        self.animation_set = AnimationSet::default();
+        self.animated.clear();
         self.input.document_replaced();
         self.edits.clear();
         self.caret_moved = None;
@@ -1469,6 +1356,64 @@ impl Page {
         }
         false
     }
+}
+
+/// Snapshots every element's computed style before this frame's
+/// mutations, so the motion update can detect which transitionable
+/// properties changed (spec 0010, AC-23).
+fn snapshot_styles(document: &Document) -> BeforeStyles {
+    let mut map = BeforeStyles::new();
+    let mut stack = vec![document.root()];
+    while let Some(id) = stack.pop() {
+        let Some(node) = document.node(id) else {
+            continue;
+        };
+        if let Some(element) = node.as_element()
+            && let Some(style) = element.style()
+        {
+            map.insert(id, Rc::clone(style));
+        }
+        stack.extend(document.children(id));
+    }
+    map
+}
+
+/// Drains the dispatched page events (spec 0010, AC-29).
+#[cfg(test)]
+pub(crate) fn take_page_events(page: &mut Page) -> Vec<PageEvent> {
+    std::mem::take(&mut page.page_events)
+}
+
+impl Page {
+    /// Fires the queued transition and animation events at their elements
+    /// as one task, in order, after the frame's style pass (spec 0010,
+    /// AC-29).
+    fn dispatch_motion_events(&mut self) {
+        let events = self.animation_set.take_events();
+        if events.is_empty() {
+            return;
+        }
+        #[cfg(test)]
+        self.page_events.extend(events.iter().cloned());
+        self.with_script(|engine| {
+            for event in &events {
+                let (kind, transition, name, elapsed_time) = event.dom();
+                let target = NodeRef {
+                    frame: FrameId::MAIN,
+                    node: event.node(),
+                };
+                let init = script::MotionEvent {
+                    kind,
+                    transition,
+                    name,
+                    elapsed_time,
+                    pseudo_element: "",
+                };
+                let _ = engine.fire_motion_event(target, &init);
+            }
+            let _ = engine.run_microtasks();
+        });
+    }
 
     /// Runs the rendering update for a `BeginFrame`. Returns the new list, or
     /// `None` when nothing changed (send `FrameSkipped`). At most one list per call.
@@ -1487,42 +1432,22 @@ impl Page {
         // One hit test per frame, however many moves came in (spec 0006,
         // Edge cases).
         self.apply_pending_move();
-        // Sample running transitions and animations at this frame's time,
-        // so their values feed the next style pass (spec 0010, AC-27).
-        let animated = self.animation_set.sample(frame_time);
-        if !animated.transforms.is_empty() {
-            tracing::debug!(animated = animated.transforms.len(), "sampled animations");
-            self.needs_update = true;
-        }
-        // Apply sampled values back to element styles so layout uses them
-        // on the next frame (spec 0010, AC-28).
-        let updates: Vec<(NodeId, f32, u64)> = animated
-            .transforms
-            .iter()
-            .map(|(node, (scale, binding_id))| (*node, *scale, *binding_id))
-            .collect();
-        let document = &mut self.main_frame.document;
-        for (node, scale, binding_id) in updates {
-            let new_style = {
-                let node_ref = document.node(node);
-                let Some(element) = node_ref.and_then(|n| n.as_element()) else {
-                    continue;
-                };
-                let Some(current) = element.style() else {
-                    continue;
-                };
-                let mut new_style = (*current).clone();
-                let computed = Rc::make_mut(&mut new_style);
-                let t = Rc::make_mut(&mut computed.transform);
-                t.scale = Some((scale, None));
-                t.binding_id = Some(binding_id);
-                new_style
-            };
-            let _ = document.set_style(node, Some(new_style));
-        }
+        // `frame_time` is milliseconds (`BeginFrame`); CSS times and the
+        // animation set are in seconds (spec 0010, AC-27).
+        let now = frame_time / 1000.0;
+        // Sample at this frame's time first, so the before change styles
+        // hold the current animated values (spec 0010, AC-23, AC-27).
         let frame = &mut self.main_frame;
+        motion::sample_and_apply(
+            &mut frame.document,
+            &mut self.animation_set,
+            &mut self.animated,
+            now,
+        );
+        let before_styles = snapshot_styles(&frame.document);
         let document_changed = frame.document.take_needs_frame();
         if !self.needs_update && !document_changed && !self.animation_set.is_running() {
+            self.dispatch_motion_events();
             return None;
         }
         self.needs_update = false;
@@ -1556,6 +1481,32 @@ impl Page {
                     "styled"
                 );
                 self.last_style = stats;
+            }
+            // The motion update: start, keep, reverse or cancel transitions
+            // and animations from what the style pass changed, then write
+            // this frame's values before boxes are built, so layout and
+            // paint see them on this frame (spec 0010, AC-23, AC-24, AC-28).
+            {
+                let styles = self.styles.as_ref().filter(|_| frame.computes_styles);
+                let rule = |name: &Atom| styles.and_then(|s| s.keyframes_rule(name));
+                let source = styles.map(|s| motion::KeyframeSource {
+                    stylist: s.stylist(),
+                    rule: &rule,
+                });
+                motion::update(
+                    &frame.document,
+                    &mut self.animation_set,
+                    &self.animated,
+                    &before_styles,
+                    source.as_ref(),
+                    now,
+                );
+                motion::sample_and_apply(
+                    &mut frame.document,
+                    &mut self.animation_set,
+                    &mut self.animated,
+                    now,
+                );
             }
             // The faces follow the sheets and the media queries (spec 0006,
             // AC-10).
@@ -1702,6 +1653,7 @@ impl Page {
         self.overlay = (!self.overlay_roots.is_empty()).then_some(overlay);
         self.settle_pending_scroll(&list);
         self.after_layout(laid_out);
+        self.dispatch_motion_events();
         Some(list)
     }
 
@@ -1904,6 +1856,7 @@ mod tests {
     use base::atoms::{LocalName, QualName};
     use base::local_name;
     use css::MatchElement;
+    use display_list::Binding;
     use dom::ElementKind;
 
     use super::*;
@@ -2512,6 +2465,181 @@ mod tests {
             &DocumentKind::Document
         ));
         assert_eq!(page.navigation(), NavigationId(NAV.0 + 1));
+    }
+
+    /// The computed style of element `#id` on `page`.
+    fn style_of(page: &Page, id: &str) -> Rc<ComputedStyle> {
+        let doc = &page.main_frame().document;
+        let node = doc.element_by_id(&Atom::from(id)).expect("element exists");
+        Rc::clone(
+            doc.node(node)
+                .and_then(|n| n.as_element())
+                .and_then(|e| e.style())
+                .expect("element is styled"),
+        )
+    }
+
+    /// A CSS `scale` transition runs through real frames: millisecond frame
+    /// times against a seconds duration, eased frame by frame, events once
+    /// each, never restarted by its own sampled values (spec 0010, AC-23,
+    /// AC-27, AC-29).
+    #[test]
+    fn a_css_transition_runs_over_its_duration_through_frames() {
+        let mut page = loaded(
+            &[
+                "<!doctype html><style>#d{transition: scale 1s linear} .big{scale:2}</style>",
+                "<body><div id=d>x</div></body>",
+            ],
+            true,
+        );
+        page.begin_frame(0.0);
+        let doc = &mut page.main_frame_mut().document;
+        let div = doc.element_by_id(&Atom::from("d")).expect("div exists");
+        doc.set_attribute(div, QualName::attribute(local_name!("class")), "big")
+            .unwrap();
+        let mut events = Vec::new();
+        let mut scale_at = |page: &mut Page, ms: f64| {
+            page.begin_frame(ms);
+            events.extend(take_page_events(page));
+            style_of(page, "d").transform.scale.map(|(x, _)| x)
+        };
+        // The first frame paints the start value, not the end value.
+        assert_eq!(scale_at(&mut page, 100.0), Some(1.0));
+        let quarter = scale_at(&mut page, 350.0).unwrap();
+        assert!((quarter - 1.25).abs() < 0.01, "{quarter}");
+        let half = scale_at(&mut page, 600.0).unwrap();
+        assert!((half - 1.5).abs() < 0.01, "{half}");
+        assert_eq!(scale_at(&mut page, 1100.0), Some(2.0));
+        assert!(!page.animation_set.is_running());
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                PageEvent::TransitionRun { .. } => "run",
+                PageEvent::TransitionStart { .. } => "start",
+                PageEvent::TransitionEnd { .. } => "end",
+                PageEvent::TransitionCancel { .. } => "cancel",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["run", "start", "end"]);
+    }
+
+    /// A `@keyframes` animation paints its first keyframe on the frame it
+    /// starts, gives the element back its own style when it ends with no
+    /// fill, and does not start again on later frames (spec 0010, AC-24,
+    /// AC-29).
+    #[test]
+    fn a_keyframes_animation_ends_once_and_releases_its_values() {
+        let mut page = loaded(
+            &[
+                "<!doctype html><style>@keyframes fade { from { opacity: 0 } to { opacity: 1 } }",
+                "#d{opacity: 0.8; animation: fade 1s linear 2}</style>",
+                "<body><div id=d>x</div></body>",
+            ],
+            true,
+        );
+        let opacity_at = |page: &mut Page, ms: f64| {
+            // Force a frame, as any other page change would.
+            page.invalidate();
+            page.begin_frame(ms);
+            match style_of(page, "d").effects.opacity {
+                Binding::Static(v) | Binding::Bound { value: v, .. } => v,
+            }
+        };
+        assert_eq!(opacity_at(&mut page, 0.0), 0.0);
+        let quarter = opacity_at(&mut page, 250.0);
+        assert!((quarter - 0.25).abs() < 0.01, "{quarter}");
+        let second = opacity_at(&mut page, 1500.0);
+        assert!((second - 0.5).abs() < 0.01, "{second}");
+        assert_eq!(opacity_at(&mut page, 2100.0), 0.8, "own style once ended");
+        assert!(!page.animation_set.is_running());
+        assert_eq!(opacity_at(&mut page, 2300.0), 0.8, "not started again");
+        let events = take_page_events(&mut page);
+        let starts = events
+            .iter()
+            .filter(|e| matches!(e, PageEvent::AnimationStart { .. }))
+            .count();
+        let ends = events
+            .iter()
+            .filter(|e| matches!(e, PageEvent::AnimationEnd { .. }))
+            .count();
+        assert_eq!((starts, ends), (1, 1));
+    }
+
+    /// Removing an animation's name from the style cancels it (spec 0010,
+    /// AC-29).
+    #[test]
+    fn removing_the_animation_name_cancels_it() {
+        let mut page = loaded(
+            &[
+                "<!doctype html><style>@keyframes fade { from { opacity: 0 } to { opacity: 1 } }",
+                ".on{animation: fade 1s infinite}</style>",
+                "<body><div id=d class=on>x</div></body>",
+            ],
+            true,
+        );
+        page.begin_frame(0.0);
+        assert!(page.animation_set.is_running());
+        let doc = &mut page.main_frame_mut().document;
+        let div = doc.element_by_id(&Atom::from("d")).expect("div exists");
+        doc.set_attribute(div, QualName::attribute(local_name!("class")), "")
+            .unwrap();
+        page.begin_frame(100.0);
+        assert!(!page.animation_set.is_running());
+        assert!(
+            take_page_events(&mut page)
+                .iter()
+                .any(|e| matches!(e, PageEvent::AnimationCancel { .. }))
+        );
+        assert!(matches!(
+            style_of(&page, "d").effects.opacity,
+            Binding::Static(1.0)
+        ));
+    }
+
+    /// A `@keyframes` transform animation reaches paint as a moving
+    /// reference frame, eased by the default `ease` timing and reversed on
+    /// `alternate` iterations (spec 0010, AC-24, AC-28).
+    #[test]
+    fn a_keyframes_transform_animation_moves_the_painted_box() {
+        let mut page = loaded(
+            &[
+                "<!doctype html><style>@keyframes slide { from { transform: translateX(0) }",
+                " to { transform: translateX(120px) } }",
+                "#d { width: 120px; background: blue; animation: slide 2s infinite alternate }",
+                "</style><body><div id=d>text</div></body>",
+            ],
+            true,
+        );
+        let offset_at = |page: &mut Page, ms: f64| {
+            let list = page.begin_frame(ms).expect("a running animation paints");
+            let (index, offset) =
+                list.spatial
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, node)| match &node.kind {
+                        display_list::SpatialKind::ReferenceFrame {
+                            transform: Binding::Bound { value, .. },
+                        } => Some((i, value[12])),
+                        _ => None,
+                    })?;
+            // The box's own background moves with it, not only its text.
+            let frame = display_list::SpatialId(u32::try_from(index).unwrap());
+            assert!(
+                list.items.iter().any(|item| item.spatial == frame
+                    && matches!(item.kind, display_list::ItemKind::Rect { .. })),
+                "background drawn inside the transform"
+            );
+            Some(offset)
+        };
+        page.begin_frame(0.0);
+        // Body margin is 8px; `ease` runs ahead of linear at the midpoint.
+        let mid = offset_at(&mut page, 1000.0).expect("transform painted");
+        assert!(mid > 8.0 + 60.0 + 1.0, "eased, not linear: {mid}");
+        let back = offset_at(&mut page, 3000.0).expect("transform painted");
+        assert!((back - mid).abs() < 0.5, "alternate mirrors: {mid} {back}");
+        let late = offset_at(&mut page, 3900.0).expect("transform painted");
+        assert!(late < back, "moving back toward the start: {late}");
     }
 
     #[test]

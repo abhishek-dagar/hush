@@ -12,7 +12,7 @@
 
 use std::rc::Rc;
 
-use base::{Au, BoxId, Point, Rect, SideOffsets, Size};
+use base::{Au, BoxId, Point, Rect, SideOffsets, Size, mat4_mul, mat4_translate};
 use css::{BoxSizing, Clear, ComputedStyle, Length, WritingMode};
 use dom::NodeId;
 
@@ -947,8 +947,110 @@ pub(crate) fn overflow_of(fragment: &Fragment) -> Rect {
     }
 }
 
+/// Children still to visit for [`transformed_overflow`], the matrix from
+/// their space to the starting box's (`None` while a plain offset) and that
+/// offset.
+type OverflowWork<'a> = (&'a [(Point, Rc<Fragment>)], Option<[f32; 16]>, Point);
+
+/// What the transformed descendants of `fragment` cover, from its border
+/// box corner, or `None` when none of them has a transform. Each one counts
+/// with the bounding rectangle of its overflow mapped through its matrix,
+/// perspective divided; a scroll container below adds only its own box.
+/// Paint adds this to a scroll container's scrollable overflow, since a
+/// transform change is paint damage only (spec 0010, AC-22).
+pub fn transformed_overflow(fragment: &BoxFragment, boxes: &BoxTree) -> Option<Rect> {
+    let mut covered: Option<Rect> = None;
+    // Each entry: a fragment's children, and the matrix from their space to
+    // `fragment`'s border box space (`None` while it is a plain offset).
+    let mut stack: Vec<OverflowWork<'_>> = vec![(&fragment.children, None, Point::default())];
+    while let Some((children, outer, offset)) = stack.pop() {
+        for (at, child) in children {
+            let at = offset.offset_by(*at);
+            match &**child {
+                Fragment::Box(child_box) => {
+                    let matrix = boxes
+                        .get(child_box.box_id)
+                        .and_then(|b| b.style.transform.matrix(child_box.size))
+                        .filter(|_| child_box.inline_edges.is_none());
+                    let space = match (matrix, outer) {
+                        (Some(m), _) => {
+                            let placed = mat4_mul(
+                                &m,
+                                &mat4_translate(at.x.to_f32_px(), at.y.to_f32_px(), 0.0),
+                            );
+                            let to_outer = outer.map_or(placed, |o| mat4_mul(&placed, &o));
+                            let area = if child_box.is_scroll_container {
+                                Rect::new(Point::default(), child_box.size)
+                            } else {
+                                child_box.scrollable_overflow
+                            };
+                            if let Some(bounds) = mapped_bounds(&to_outer, area) {
+                                covered = Some(covered.map_or(bounds, |c| union(c, bounds)));
+                            }
+                            Some(to_outer)
+                        }
+                        (None, Some(o)) => Some(mat4_mul(
+                            &mat4_translate(at.x.to_f32_px(), at.y.to_f32_px(), 0.0),
+                            &o,
+                        )),
+                        (None, None) => None,
+                    };
+                    if !child_box.is_scroll_container {
+                        let origin = if space.is_some() {
+                            Point::default()
+                        } else {
+                            at
+                        };
+                        stack.push((&child_box.children, space, origin));
+                    }
+                }
+                Fragment::Line(line) => stack.push((&line.children, outer, at)),
+                Fragment::Text(_) => {}
+            }
+        }
+    }
+    covered
+}
+
+/// The bounding rectangle of `rect` mapped through `m`, or `None` when a
+/// corner falls behind the viewer.
+fn mapped_bounds(m: &[f32; 16], rect: Rect) -> Option<Rect> {
+    let (x0, y0) = (rect.origin.x.to_f32_px(), rect.origin.y.to_f32_px());
+    let (x1, y1) = (
+        x0 + rect.size.width.to_f32_px(),
+        y0 + rect.size.height.to_f32_px(),
+    );
+    let mut bounds = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+        let w = m[3] * x + m[7] * y + m[15];
+        if w <= 0.0 {
+            return None;
+        }
+        let px = (m[0] * x + m[4] * y + m[12]) / w;
+        let py = (m[1] * x + m[5] * y + m[13]) / w;
+        bounds = [
+            bounds[0].min(px),
+            bounds[1].min(py),
+            bounds[2].max(px),
+            bounds[3].max(py),
+        ];
+    }
+    Some(Rect::new(
+        Point::new(Au::from_px(bounds[0]), Au::from_px(bounds[1])),
+        Size::new(
+            Au::from_px(bounds[2] - bounds[0]),
+            Au::from_px(bounds[3] - bounds[1]),
+        ),
+    ))
+}
+
 /// The smallest rectangle covering both.
-pub(crate) fn union(a: Rect, b: Rect) -> Rect {
+pub fn union(a: Rect, b: Rect) -> Rect {
     let left = a.origin.x.min(b.origin.x);
     let top = a.origin.y.min(b.origin.y);
     let right = (a.origin.x + a.size.width).max(b.origin.x + b.size.width);

@@ -19,10 +19,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use base::{Au, Id, Point, Size, mat4_identity, mat4_mul};
-use css::{Length, Position};
+use base::{Au, Id, Point, Size, mat4_mul, mat4_translate};
+use css::Position;
 use display_list::{
-    BlendMode, BorderStyle, ClipId, ClipNode, ColorF, DisplayItem, DisplayList, Epoch,
+    Binding, BlendMode, BorderStyle, ClipId, ClipNode, ColorF, DisplayItem, DisplayList, Epoch,
     GlyphInstance, ImageKey, ItemKind, PageId, PointF, RectF, ScrollId, ScrollOffset, SizeF,
     SpatialId, SpatialKind, sticky_offset,
 };
@@ -112,28 +112,86 @@ struct PaintWalker<'a, 'b> {
 impl<'a> Walker<'a> for PaintWalker<'a, '_> {
     type State = Space;
 
+    /// A transformed box creates a new coordinate space: the box itself and
+    /// its children draw through its 4 by 4 matrix (spec 0010, AC-20).
+    /// A parent's `perspective` applies here, to its children only (spec
+    /// 0010, AC-19). When the transform is animated, the matrix travels as
+    /// a `Binding::Bound` so a later compositor can animate it without an
+    /// IPC format change; otherwise it is static (spec 0010, AC-28).
+    fn own_space(
+        &mut self,
+        fragment: &'a BoxFragment,
+        origin: Point,
+        (spatial, clip, perspective): Space,
+    ) -> (Point, Space) {
+        let Some(style) = self.boxes.get(fragment.box_id).map(|b| &b.style) else {
+            return (origin, (spatial, clip, perspective));
+        };
+        // Inline boxes and the root element don't get their own space.
+        let own = fragment.inline_edges.is_none() && self.boxes.root() != Some(fragment.box_id);
+        let Some(matrix) = style.transform.matrix(fragment.size).filter(|_| own) else {
+            return (origin, (spatial, clip, perspective));
+        };
+        // `matrix()` maps box-local to box-local (transformed about the
+        // origin); translate by the border box corner to place it in parent
+        // space, then project through the parent's perspective (spec 0010,
+        // AC-20).
+        let placed = mat4_mul(
+            &matrix,
+            &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
+        );
+        let matrix = perspective.map_or(placed, |p| mat4_mul(&placed, &p));
+        let binding = match style.transform.binding_id {
+            Some(id) => display_list::Binding::Bound {
+                id: display_list::BindingId(id),
+                value: matrix,
+            },
+            None => display_list::Binding::Static(matrix),
+        };
+        let transform_spatial = self
+            .list
+            .push_spatial(spatial, SpatialKind::ReferenceFrame { transform: binding });
+        (Point::default(), (transform_spatial, None, None))
+    }
+
     fn children(
         &mut self,
         fragment: &'a BoxFragment,
         origin: Point,
-        &(spatial, clip, perspective): &Space,
+        &(spatial, clip, _): &Space,
     ) -> Option<(Point, Space)> {
+        let (children_origin, (spatial, clip)) =
+            self.children_space(fragment, origin, (spatial, clip))?;
+        // `perspective` on this box applies to its children's transforms
+        // (spec 0010, AC-19), expressed in the space they are placed in,
+        // where the box's border box corner is `children_origin`.
+        let perspective = self.boxes.get(fragment.box_id).and_then(|b| {
+            let p = b.style.transform.perspective_matrix(fragment.size)?;
+            let (x, y) = (children_origin.x.to_f32_px(), children_origin.y.to_f32_px());
+            let to = mat4_mul(&mat4_translate(-x, -y, 0.0), &p);
+            Some(mat4_mul(&to, &mat4_translate(x, y, 0.0)))
+        });
+        Some((children_origin, (spatial, clip, perspective)))
+    }
+}
+
+impl<'a> PaintWalker<'a, '_> {
+    /// Where `fragment`'s children are placed and the spatial node and
+    /// clip they draw in: its clips, sticky offset and scroll frame.
+    fn children_space(
+        &mut self,
+        fragment: &'a BoxFragment,
+        origin: Point,
+        (spatial, clip): (SpatialId, Option<ClipId>),
+    ) -> Option<(Point, (SpatialId, Option<ClipId>))> {
         let Some(style) = self.boxes.get(fragment.box_id).map(|b| &b.style) else {
-            return Some((origin, (spatial, clip, perspective)));
+            return Some((origin, (spatial, clip)));
         };
         // Inline boxes and the root element don't get their own space; the
         // root's overflow is the viewport's.
         if fragment.inline_edges.is_some() || self.boxes.root() == Some(fragment.box_id) {
-            return Some((origin, (spatial, clip, perspective)));
+            return Some((origin, (spatial, clip)));
         }
-        // `perspective` on this box applies to its descendants' transforms
-        // (spec 0010, AC-19); the nearest one wins and non-perspective boxes
-        // pass an ancestor's perspective down.
-        let my_perspective = style.transform.perspective.as_ref().map(|d| {
-            let origin = perspective_origin(&style.transform);
-            perspective_matrix(length_px(d), origin)
-        });
-        let child_perspective = my_perspective.or(perspective);
         let border = layout::border_widths(style);
         let padding_origin = Point::new(origin.x + border.left, origin.y + border.top);
         let padding_size = Size::new(
@@ -199,39 +257,10 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
                 rect: port,
                 radii,
             }));
-            return Some((Point::default(), (sticky_spatial, clip, child_perspective)));
+            return Some((Point::default(), (sticky_spatial, clip)));
         }
-        // A transformed box creates a new coordinate space: children draw
-        // through its 4 by 4 matrix (spec 0010, AC-20). `perspective` from an
-        // ancestor applies once here (spec 0010, AC-19). When the transform is
-        // animated, the matrix travels as a `Binding::Bound` so a later
-        // compositor can animate it without an IPC format change; otherwise
-        // it is static (spec 0010, AC-28). Non-transformed boxes fall through
-        // to the clip and scroll-frame handling below.
-        if let Some(matrix) = style.transform.matrix() {
-            // `matrix()` maps box-local to border-box-local (transformed about
-            // the origin); translate by the border box corner to place it in
-            // parent space (spec 0010, AC-20).
-            let placed = mat4_mul(
-                &matrix,
-                &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
-            );
-            let matrix = perspective.map_or(placed, |p| mat4_mul(&placed, &p));
-            let binding = match style.transform.binding_id {
-                Some(id) => display_list::Binding::Bound {
-                    id: display_list::BindingId(id),
-                    value: matrix,
-                },
-                None => display_list::Binding::Static(matrix),
-            };
-            let transform_spatial = self
-                .list
-                .push_spatial(spatial, SpatialKind::ReferenceFrame { transform: binding });
-            return Some((
-                Point::default(),
-                (transform_spatial, None, child_perspective),
-            ));
-        }
+        // A transformed box already moved into its own space in `own_space`,
+        // so its clips and scroll frame below sit inside the transform.
         // `clip: rect()` clips absolute and fixed boxes (and their
         // descendants) to a rectangle measured from the border box's top
         // left corner (spec 0009, child 0003, AC-12).
@@ -256,10 +285,10 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
                 rect,
                 radii: None,
             }));
-            return Some((origin, (spatial, clip, child_perspective)));
+            return Some((origin, (spatial, clip)));
         }
         if !style.display_box.clips_overflow() {
-            return Some((origin, (spatial, clip, child_perspective)));
+            return Some((origin, (spatial, clip)));
         }
         let clip = Some(self.list.push_clip(ClipNode {
             parent: clip,
@@ -268,13 +297,18 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
             radii,
         }));
         if !fragment.is_scroll_container {
-            return Some((origin, (spatial, clip, child_perspective)));
+            return Some((origin, (spatial, clip)));
         }
         let Some(node) = fragment.node else {
-            return Some((origin, (spatial, clip, child_perspective)));
+            return Some((origin, (spatial, clip)));
         };
         let scroll_id = scroll_id(self.context.frame, node);
-        let overflow = fragment.scrollable_overflow;
+        // Transformed descendants count with their transformed bounds (spec
+        // 0010, AC-22).
+        let overflow = layout::transformed_overflow(fragment, self.boxes)
+            .map_or(fragment.scrollable_overflow, |covered| {
+                layout::union_rects(fragment.scrollable_overflow, covered)
+            });
         let content = Size::new(
             (overflow.origin.x + overflow.size.width - border.left).max(padding_size.width),
             (overflow.origin.y + overflow.size.height - border.top).max(padding_size.height),
@@ -296,10 +330,7 @@ impl<'a> Walker<'a> for PaintWalker<'a, '_> {
         );
         // Children are placed relative to the border box; inside the scroll
         // frame they are relative to the padding box.
-        Some((
-            Point::new(-border.left, -border.top),
-            (spatial, clip, child_perspective),
-        ))
+        Some((Point::new(-border.left, -border.top), (spatial, clip)))
     }
 }
 
@@ -406,9 +437,12 @@ pub fn paint_layers(tree: &FragmentTree, boxes: &BoxTree, context: &PaintContext
                 if root && painter.overlay_from.is_none() {
                     painter.overlay_from = Some(groups.len());
                 }
-                let opacity = painter
-                    .style(fragment)
-                    .map_or(1.0, |style| style.effects.opacity);
+                let opacity =
+                    painter
+                        .style(fragment)
+                        .map_or(1.0, |style| match style.effects.opacity {
+                            Binding::Static(v) | Binding::Bound { value: v, .. } => v,
+                        });
                 let group = opacity < 1.0;
                 if group {
                     painter.push(
@@ -1011,49 +1045,6 @@ fn size_f(size: Size) -> SizeF {
     }
 }
 
-/// A length resolved to CSS px. Percentages and `calc` need the box size at
-/// layout time, which paint does not have; they resolve to zero here.
-fn length_px(length: &Length) -> f32 {
-    match length {
-        Length::Au(au) => au.to_f32_px(),
-        Length::Percent(_) | Length::Calc(_) => 0.0,
-    }
-}
-
-/// The perspective projection matrix: points farther from the viewer shrink
-/// toward the vanishing point at `origin` (spec 0010, AC-19).
-fn perspective_matrix(d: f32, origin: PointF) -> [f32; 16] {
-    let mut m = mat4_identity();
-    m[14] = -1.0 / d;
-    // Conjugate by the vanishing-point origin so the transform is about it.
-    let move_to_center = mat4_translate(-origin.x, -origin.y, 0.0);
-    let move_back = mat4_translate(origin.x, origin.y, 0.0);
-    let centered = mat4_mul(&move_to_center, &m);
-    mat4_mul(&centered, &move_back)
-}
-
-/// A translation matrix.
-fn mat4_translate(x: f32, y: f32, z: f32) -> [f32; 16] {
-    let mut m = mat4_identity();
-    m[12] = x;
-    m[13] = y;
-    m[14] = z;
-    m
-}
-
-/// The perspective-origin in border-box CSS px, defaulting to `50% 50%`
-/// (spec 0010, AC-19).
-fn perspective_origin(transform: &css::Transform) -> PointF {
-    let (x, y) = transform
-        .perspective_origin
-        .clone()
-        .unwrap_or((Length::px(50.0), Length::px(50.0)));
-    PointF {
-        x: length_px(&x),
-        y: length_px(&y),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use base::atoms::QualName;
@@ -1198,7 +1189,7 @@ mod tests {
         let mut doc = Document::new("about:blank");
         let root = doc.root();
         let mut html = style(Color::TRANSPARENT, 0.0, None);
-        Rc::make_mut(&mut html.effects).opacity = 0.5;
+        Rc::make_mut(&mut html.effects).opacity = Binding::Static(0.5);
         let html = add(&mut doc, root, html);
         let mut boxed = style(Color::rgb8(0, 255, 0), 0.0, Some(20.0));
         let side = BorderSide {
@@ -1345,7 +1336,7 @@ mod tests {
         let root = doc.root();
         let html = add(&mut doc, root, style(Color::TRANSPARENT, 0.0, None));
         let mut faded = style(Color::rgb8(255, 0, 0), 0.0, Some(10.0));
-        Rc::make_mut(&mut faded.effects).opacity = 0.5;
+        Rc::make_mut(&mut faded.effects).opacity = Binding::Static(0.5);
         add(&mut doc, html, faded);
         let b = add(&mut doc, html, style(Color::TRANSPARENT, 0.0, None));
         let text = doc.create_text("words");

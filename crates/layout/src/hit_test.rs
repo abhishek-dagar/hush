@@ -4,21 +4,20 @@
 
 use std::rc::Rc;
 
-use base::{Au, Point, Rect, Size, mat4_identity, mat4_inverse, mat4_mul, mat4_translate};
+use base::{Au, Point, Rect, Size, mat4_mul, mat4_translate, mat4_unproject};
 use dom::NodeId;
 
 use crate::stacking::{self, Placed, Step, Walker};
 use crate::{BoxFragment, BoxTree, FragmentTree, border_widths, corner_radii, inner_radii};
 
-/// Applies matrix `m` to `point` (with perspective divide), or `None` when
-/// `w` is zero (the point is behind the viewer or the matrix is singular).
-fn transform_point(m: &[f32; 16], point: Point) -> Option<Point> {
-    let w = m[3] * point.x.to_f32_px() + m[7] * point.y.to_f32_px() + m[15];
-    if w == 0.0 {
-        return None;
-    }
-    let x = (m[0] * point.x.to_f32_px() + m[4] * point.y.to_f32_px() + m[12]) / w;
-    let y = (m[1] * point.x.to_f32_px() + m[5] * point.y.to_f32_px() + m[13]) / w;
+/// The page point `point` in the space `to_page` maps to the page (`None`
+/// is the page itself), or `None` when no point of that space is drawn
+/// there (spec 0010, AC-21).
+fn to_space(to_page: Option<&[f32; 16]>, point: Point) -> Option<Point> {
+    let Some(m) = to_page else {
+        return Some(point);
+    };
+    let (x, y) = mat4_unproject(m, point.x.to_f32_px(), point.y.to_f32_px())?;
     Some(Point::new(Au::from_px(x), Au::from_px(y)))
 }
 
@@ -69,7 +68,7 @@ pub fn hit_test(
     let root = Placed {
         origin,
         fragment: root,
-        state: (None, None),
+        state: (None, None, None),
     };
     let steps = stacking::paint_order(boxes, root, &mut walker);
     // The last box in paint order that contains the point is on top. Text
@@ -79,31 +78,16 @@ pub fn hit_test(
         Step::Box {
             fragment,
             origin,
-            state,
+            state: (clip, to_page, _),
         } => {
             let node = fragment.node?;
-            let style = boxes.get(fragment.box_id).map(|b| &b.style);
-            let (clip, _forward) = state;
-            // `origin` is this box's border box corner in page space (layout
-            // already applied scroll offsets). `m` maps box-local to
-            // border-box-local (transformed about the origin); `tm` maps
-            // box-local to page space. Undo it to test the page point against
-            // the border box in box-local space. A box whose matrix cannot be
-            // inverted (for example `scale(0)`) is never hit (spec 0010,
-            // AC-21).
-            let m = style
-                .and_then(|s| s.transform.matrix())
-                .unwrap_or(mat4_identity());
-            let tm = mat4_mul(
-                &m,
-                &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
-            );
-            // A box whose matrix cannot be inverted (for example `scale(0)`)
-            // is never hit (spec 0010, AC-21).
-            let local = mat4_inverse(&tm).and_then(|inv| transform_point(&inv, point))?;
+            // `origin` is the box's border box corner in its own space, which
+            // `to_page` maps to the page. Map the point back into it; a box
+            // whose matrix cannot be inverted (for example `scale(0)`) is
+            // never hit (spec 0010, AC-21).
+            let at = to_space(to_page.as_ref(), point)?;
+            let local = Point::new(at.x - origin.x, at.y - origin.y);
             let border_box = Rect::new(Point::default(), fragment.size);
-            // Keep the page-space clip check (the pre-transform behavior) so
-            // scrolling and overflow clips keep working (spec 0009, AC-7).
             let inside =
                 contains(border_box, local) && clip.as_ref().is_none_or(|c| c.contains(point));
             inside.then(|| HitTestResult {
@@ -115,28 +99,12 @@ pub fn hit_test(
         Step::Text {
             fragment,
             origin,
-            state,
+            state: (clip, to_page, _),
         } if selectable_text.is_none() => {
-            let (clip, forward) = state;
-            // The text run sits at `origin` in parent space; measure the page
-            // point from it in box-local space (spec 0010, AC-21).
-            let m = fragment.style.transform.matrix().unwrap_or(mat4_identity());
-            let tm = mat4_mul(
-                &m,
-                &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
-            );
-            let local_box = forward
-                .as_ref()
-                .and_then(mat4_inverse)
-                .and_then(|inv| transform_point(&inv, point))
-                .unwrap_or(point);
-            let text_box = mat4_inverse(&tm)
-                .and_then(|inv| transform_point(&inv, *origin))
-                .unwrap_or_default();
-            let local = Point::new(local_box.x - text_box.x, local_box.y - text_box.y);
+            let at = to_space(to_page.as_ref(), point)?;
+            let local = Point::new(at.x - origin.x, at.y - origin.y);
             let run = Rect::new(Point::default(), fragment.size);
-            let p_in_parent = transform_point(&tm, local_box).unwrap_or(point);
-            if contains(run, local) && clip.as_ref().is_none_or(|c| c.contains(p_in_parent)) {
+            if contains(run, local) && clip.as_ref().is_none_or(|c| c.contains(point)) {
                 let user_select = fragment.style.inherited_box.user_select;
                 selectable_text = Some(user_select != css::UserSelect::None);
             }
@@ -147,10 +115,13 @@ pub fn hit_test(
 }
 
 /// A clip a box sets for its content: its padding box with rounded corners,
-/// inside the clips around it.
+/// inside the clips around it. Each clip applies in the space of the box
+/// that sets it (spec 0010, AC-22).
 #[derive(Debug)]
 struct Clip {
     rect: Rect,
+    /// Maps the clip's space to the page; `None` is the page itself.
+    to_page: Option<[f32; 16]>,
     /// Corner radii in CSS px, as [`corner_radii`] orders them, already
     /// shrunk to fit.
     radii: Option<[f32; 8]>,
@@ -158,10 +129,14 @@ struct Clip {
 }
 
 impl Clip {
+    /// Whether the page point `point` is inside this clip and those
+    /// around it.
     fn contains(&self, point: Point) -> bool {
         let mut clip = Some(self);
         while let Some(current) = clip {
-            if !rounded_contains(current.rect, current.radii, point) {
+            let inside = to_space(current.to_page.as_ref(), point)
+                .is_some_and(|at| rounded_contains(current.rect, current.radii, at));
+            if !inside {
                 return false;
             }
             clip = current.parent.as_deref();
@@ -178,19 +153,45 @@ struct HitWalker<'b, F> {
 }
 
 impl<'a, F: Fn(NodeId) -> Point> Walker<'a> for HitWalker<'_, F> {
-    /// The clip in force for the subtree, and the matrix mapping the space
-    /// that children origins are expressed in back to page space (`None` is
-    /// the identity).
-    type State = (Option<Rc<Clip>>, Option<[f32; 16]>);
+    /// The clip in force for the subtree, the matrix mapping the space that
+    /// origins are expressed in to the page (`None` is the page itself),
+    /// and the parent's `perspective` for a child's transform, in that
+    /// space.
+    type State = (Option<Rc<Clip>>, Option<[f32; 16]>, Option<[f32; 16]>);
+
+    /// A transformed box draws itself and its content in its own space, as
+    /// paint does (spec 0010, AC-20, AC-21).
+    fn own_space(
+        &mut self,
+        fragment: &'a BoxFragment,
+        origin: Point,
+        (clip, to_page, perspective): Self::State,
+    ) -> (Point, Self::State) {
+        let own = fragment.inline_edges.is_none() && self.boxes.root() != Some(fragment.box_id);
+        let Some(matrix) = self
+            .boxes
+            .get(fragment.box_id)
+            .and_then(|b| b.style.transform.matrix(fragment.size))
+            .filter(|_| own)
+        else {
+            return (origin, (clip, to_page, perspective));
+        };
+        let placed = mat4_mul(
+            &matrix,
+            &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
+        );
+        let placed = perspective.map_or(placed, |p| mat4_mul(&placed, &p));
+        let to_page = to_page.map_or(placed, |outer| mat4_mul(&placed, &outer));
+        (Point::default(), (clip, Some(to_page), None))
+    }
 
     fn children(
         &mut self,
         fragment: &'a BoxFragment,
         origin: Point,
-        state: &Self::State,
+        (clip, to_page, _): &Self::State,
     ) -> Option<(Point, Self::State)> {
         let style = self.boxes.get(fragment.box_id).map(|b| &b.style);
-        let (clip, forward) = state;
         let mut child_clip = clip.clone();
         let mut child_origin = origin;
         // `overflow` does not apply to an inline box's pieces, and the root
@@ -214,6 +215,7 @@ impl<'a, F: Fn(NodeId) -> Point> Walker<'a> for HitWalker<'_, F> {
                 .map(|inner| fit_radii(padding_box.size, inner));
             child_clip = Some(Rc::new(Clip {
                 rect: padding_box,
+                to_page: *to_page,
                 radii,
                 parent: clip.clone(),
             }));
@@ -225,28 +227,20 @@ impl<'a, F: Fn(NodeId) -> Point> Walker<'a> for HitWalker<'_, F> {
             let offset = (self.scroll_offset)(node);
             child_origin = Point::new(origin.x - offset.x, origin.y - offset.y);
         }
-        // Content outside the clip cannot be hit, so skip it entirely. The
-        // clip rect lives in the same page space as `origin` (layout already
-        // applied scroll offsets), so compare the page point directly.
+        // Content outside the clip cannot be hit, so skip it entirely.
         if child_clip.as_ref().is_some_and(|c| !c.contains(self.point)) {
             return None;
         }
-        // A transformed box maps its children's space through its matrix,
-        // about its border box (spec 0010, AC-20, AC-21). `child_forward`
-        // maps box-local space to page space: apply this box's matrix, then
-        // the ancestor chain.
-        let m = style
-            .and_then(|s| s.transform.matrix())
-            .unwrap_or(mat4_identity());
-        // `m` maps box-local to border-box-local; translate by `origin` to
-        // place it in parent space (`tm`), then the ancestor chain (`forward`)
-        // reaches page space: `forward ∘ tm`.
-        let tm = mat4_mul(
-            &m,
-            &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
-        );
-        let child_forward = forward.map(|f| mat4_mul(&f, &tm)).or(Some(tm));
-        Some((child_origin, (child_clip, child_forward)))
+        // `perspective` applies to the children's transforms, about the box's
+        // corner as the children are placed (spec 0010, AC-19).
+        let perspective = style
+            .and_then(|s| s.transform.perspective_matrix(fragment.size))
+            .map(|p| {
+                let (x, y) = (child_origin.x.to_f32_px(), child_origin.y.to_f32_px());
+                let to = mat4_mul(&mat4_translate(-x, -y, 0.0), &p);
+                mat4_mul(&to, &mat4_translate(x, y, 0.0))
+            });
+        Some((child_origin, (child_clip, *to_page, perspective)))
     }
 }
 

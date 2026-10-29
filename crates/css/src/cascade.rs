@@ -11,6 +11,7 @@ use std::rc::Rc;
 use base::atoms::Atom;
 use base::{Au, Size};
 use cssparser::{ParseError, Parser, Token};
+use display_list::Binding;
 
 use crate::CalcExpr;
 use crate::media::Device;
@@ -20,11 +21,14 @@ use crate::properties::{
     SpecifiedTrackEntry, SpecifiedTrackList, SpecifiedTrackSize, Unparsed, Value, parse_values,
     syntax_matches,
 };
+use crate::style::{
+    AnimationDirection, AnimationSpec, FillMode, PlayState, TimingFunction, TransitionSpec,
+};
 use crate::values::{SpecifiedCalcExpr, SpecifiedLength};
 use crate::{
     BorderStyle, Breadth, Color, ComputedStyle, CustomProperties, Display, FlexBasis, Float, Font,
-    Length, LineHeight, OutlineStyle, Overflow, Position, PropertyRule, TrackEntry, TrackList,
-    TrackSize,
+    Length, LineHeight, Motion, OutlineStyle, Overflow, Position, PropertyRule, TrackEntry,
+    TrackList, TrackSize,
 };
 
 /// The longest text a `var()` substitution may produce. Past it the
@@ -40,6 +44,121 @@ const MAX_VAR_DEPTH: usize = 64;
 const MONOSPACE_PX: f32 = 13.0;
 /// `medium` for every other family.
 const MEDIUM_PX: f32 = 16.0;
+
+/// Builds the `Motion` group from the won `transition-*` and `animation-*`
+/// declarations (spec 0010, AC-23, AC-24). Each element gets at most one
+/// transition spec and one animation spec: the shorthand expands them and
+/// the cascade keeps one winner per longhand. The `@keyframes` rule is
+/// resolved by name when the animation starts, in `page`.
+fn compute_motion(applied: &[(Longhand, Applied)]) -> Motion {
+    use Longhand as L;
+    let value_of = |longhand: L| {
+        applied
+            .iter()
+            .find(|(l, _)| *l == longhand)
+            .and_then(|(_, value)| match value {
+                Applied::Value(value) => Some(value),
+                _ => None,
+            })
+    };
+    let duration = |longhand: L| {
+        value_of(longhand)
+            .and_then(|v| match v {
+                Value::TransitionDuration(d) | Value::AnimationDuration(d) => Some(*d),
+                _ => None,
+            })
+            .unwrap_or(0.0)
+    };
+    let delay = |longhand: L| {
+        value_of(longhand)
+            .and_then(|v| match v {
+                Value::TransitionDelay(d) | Value::AnimationDelay(d) => Some(*d),
+                _ => None,
+            })
+            .unwrap_or(0.0)
+    };
+    let timing = |longhand: L| {
+        value_of(longhand)
+            .and_then(|v| match v {
+                Value::TransitionTimingFunction(t) | Value::AnimationTimingFunction(t) => Some(*t),
+                _ => None,
+            })
+            .unwrap_or(TimingFunction::Ease)
+    };
+    // Transitions: one spec per element.
+    let transitions = if value_of(L::TransitionProperty).is_some() {
+        vec![TransitionSpec {
+            property: match value_of(L::TransitionProperty).cloned() {
+                Some(Value::TransitionProperty(p)) => p,
+                _ => None,
+            },
+            duration: duration(L::TransitionDuration),
+            delay: delay(L::TransitionDelay),
+            timing: timing(L::TransitionTimingFunction),
+        }]
+    } else {
+        Vec::new()
+    };
+    // Animations: one spec per element.
+    let animations = if value_of(L::AnimationName).is_some() {
+        let iteration_count = value_of(L::AnimationIterationCount).and_then(|v| match v {
+            Value::AnimationIterationCount(c) => *c,
+            _ => None,
+        });
+        let direction = value_of(L::AnimationDirection).and_then(|v| match v {
+            Value::AnimationDirection(d) => Some(*d),
+            _ => None,
+        });
+        let fill_mode = value_of(L::AnimationFillMode).and_then(|v| match v {
+            Value::AnimationFillMode(f) => Some(*f),
+            _ => None,
+        });
+        let play_state = value_of(L::AnimationPlayState).and_then(|v| match v {
+            Value::AnimationPlayState(p) => Some(*p),
+            _ => None,
+        });
+        vec![AnimationSpec {
+            name: match value_of(L::AnimationName) {
+                Some(Value::AnimationName(n)) => n.clone(),
+                _ => Atom::from("none"),
+            },
+            keyframes: None,
+            duration: duration(L::AnimationDuration),
+            delay: delay(L::AnimationDelay),
+            iteration_count,
+            timing: timing(L::AnimationTimingFunction),
+            direction: direction.unwrap_or(AnimationDirection::Normal),
+            fill_mode: fill_mode.unwrap_or(FillMode::None),
+            play_state: play_state.unwrap_or(PlayState::Running),
+        }]
+    } else {
+        Vec::new()
+    };
+    Motion {
+        transitions: Rc::from(transitions),
+        animations: Rc::from(animations),
+    }
+}
+
+/// Whether a longhand belongs to the `Motion` group and is handled by
+/// `compute_motion` rather than `Computer::apply`.
+fn is_motion(longhand: Longhand) -> bool {
+    matches!(
+        longhand,
+        Longhand::TransitionProperty
+            | Longhand::TransitionDuration
+            | Longhand::TransitionDelay
+            | Longhand::TransitionTimingFunction
+            | Longhand::AnimationName
+            | Longhand::AnimationDuration
+            | Longhand::AnimationDelay
+            | Longhand::AnimationTimingFunction
+            | Longhand::AnimationIterationCount
+            | Longhand::AnimationDirection
+            | Longhand::AnimationFillMode
+            | Longhand::AnimationPlayState
+    )
+}
 
 /// What computing a style reads besides the declarations.
 pub(crate) struct CascadeInputs<'a> {
@@ -114,7 +233,9 @@ pub(crate) fn compute<'a>(
         };
         applied.push((longhand, value));
     }
-
+    // `transition-*` and `animation-*` are reset-group properties computed
+    // together by `compute_motion` (spec 0010, AC-23, AC-24).
+    computer.style.motion = Rc::new(compute_motion(&applied));
     computer.compute_font(&applied);
     // `color` before everything that may say `currentcolor`.
     for (longhand, value) in &applied {
@@ -125,7 +246,7 @@ pub(crate) fn compute<'a>(
     let mut border = BorderInputs::default();
     let mut outline = OutlineInputs::default();
     for (longhand, value) in &applied {
-        if is_font(*longhand) || *longhand == Longhand::Color {
+        if is_font(*longhand) || *longhand == Longhand::Color || is_motion(*longhand) {
             continue;
         }
         match (longhand, value) {
@@ -835,7 +956,7 @@ impl Computer<'_> {
                 Rc::make_mut(&mut style.background).image = image.clone();
             }
             (L::Opacity, Value::Number(opacity)) => {
-                Rc::make_mut(&mut style.effects).opacity = *opacity;
+                Rc::make_mut(&mut style.effects).opacity = Binding::Static(*opacity);
             }
             (L::Color, Value::Color(c)) => {
                 // `currentcolor` on `color` itself means the parent's color.
@@ -923,17 +1044,34 @@ impl Computer<'_> {
             (L::Order, Value::Integer(order)) => {
                 Rc::make_mut(&mut style.flex).order = *order;
             }
+            // `transform` sets only the function list; `translate`, `rotate`,
+            // `scale` and the origin are their own longhands (spec 0010, AC-19).
             (L::Transform, Value::Transform(transform)) => {
                 let t = Rc::make_mut(&mut self.style.transform);
                 t.transform = Rc::clone(&transform.transform);
-                t.translate = transform.translate.clone();
-                t.rotate = transform.rotate.clone();
-                t.scale = transform.scale;
-                t.origin = transform.origin;
-                t.style = transform.style;
-                t.perspective = transform.perspective.clone();
-                t.perspective_origin = transform.perspective_origin.clone();
                 t.binding_id = None;
+            }
+            (L::Translate, Value::Translate(x, y)) => {
+                Rc::make_mut(&mut self.style.transform).translate = Some((x.clone(), y.clone()));
+            }
+            (L::Rotate, Value::Rotate(angle)) => {
+                Rc::make_mut(&mut self.style.transform).rotate = Some(angle.clone());
+            }
+            (L::Scale, Value::Scale(x, y)) => {
+                Rc::make_mut(&mut self.style.transform).scale = Some((*x, *y));
+            }
+            (L::TransformOrigin, Value::TransformOrigin(x, y)) => {
+                Rc::make_mut(&mut self.style.transform).origin = (x.clone(), y.clone());
+            }
+            (L::TransformStyle, Value::TransformStyle(style)) => {
+                Rc::make_mut(&mut self.style.transform).style = *style;
+            }
+            (L::Perspective, Value::Perspective(distance)) => {
+                Rc::make_mut(&mut self.style.transform).perspective = Some(distance.clone());
+            }
+            (L::PerspectiveOrigin, Value::PerspectiveOrigin(x, y)) => {
+                Rc::make_mut(&mut self.style.transform).perspective_origin =
+                    Some((x.clone(), y.clone()));
             }
             (L::GridTemplateColumns, Value::GridTracks(tracks)) => {
                 let tracks = self.track_list(tracks);
@@ -1212,17 +1350,9 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::JustifySelf => copy!(alignment.justify_self),
         L::AlignSelf => copy!(alignment.align_self),
         L::Order => copy!(flex.order),
-        L::Transform => {
-            copy!(transform.transform);
-            copy!(transform.translate);
-            copy!(transform.rotate);
-            copy!(transform.scale);
-            copy!(transform.origin);
-            copy!(transform.style);
-            copy!(transform.perspective);
-            copy!(transform.perspective_origin);
-            copy!(transform.binding_id);
-        }
+        // `transform` is the function list only; the others are their own
+        // longhands (spec 0010, AC-19).
+        L::Transform => copy!(transform.transform),
         L::Translate => copy!(transform.translate),
         L::Rotate => copy!(transform.rotate),
         L::Scale => copy!(transform.scale),
@@ -1265,6 +1395,9 @@ fn copy_longhand(style: &mut ComputedStyle, source: &ComputedStyle, longhand: Lo
         L::BorderSpacing => copy!(inherited_table.border_spacing),
         L::CaptionSide => copy!(inherited_table.caption_side),
         L::EmptyCells => copy!(inherited_table.empty_cells),
+        // `transition-*` and `animation-*` are computed together by
+        // `compute_motion`; they are never copied here one field at a time.
+        _ => {}
     }
 }
 
@@ -1350,6 +1483,16 @@ mod tests {
                 properties: &HashMap::new(),
             },
         )
+    }
+
+    #[test]
+    fn individual_transform_properties_compute_beside_transform() {
+        // AC-19: `scale` and friends are their own longhands, and a later
+        // `transform` does not reset them.
+        let style = computed("scale: 2; rotate: 45deg; transform: translateX(1px)");
+        assert_eq!(style.transform.scale, Some((2.0, None)));
+        assert!(style.transform.rotate.is_some());
+        assert_eq!(style.transform.transform.len(), 1);
     }
 
     /// Like [`computed`], but with registered custom properties from

@@ -474,7 +474,7 @@ pub(crate) struct Scene<'a> {
     pub(crate) height: u32,
 }
 
-impl Scene<'_> {
+impl<'a> Scene<'a> {
     /// Where the page's origin lands in the target and the clip around it,
     /// or `None` when the chrome shows no page.
     fn page_area(&self) -> Option<([f32; 2], Clip)> {
@@ -495,7 +495,7 @@ impl Scene<'_> {
     /// The lists to draw in order, each with where it lands and whether
     /// it is the page: the chrome over the whole target, then the page in
     /// its area, then the chrome's overlay over both (spec 0008).
-    fn layers(&self) -> Vec<(&DisplayList, Geometry, bool)> {
+    fn layers(&self) -> Vec<(&'a DisplayList, Geometry<'a>, bool)> {
         let mut layers = Vec::with_capacity(3);
         let target = [0.0, 0.0, self.width as f32, self.height as f32];
         if let Some(chrome) = self.chrome {
@@ -524,7 +524,15 @@ pub(crate) struct Built {
 }
 
 /// Where each spatial node's origin lands, and each clip, in target pixels.
-struct Geometry {
+///
+/// A reference frame maps points through its full 4 by 4 matrix (rotation,
+/// scale and translation, with perspective divide), so corners are mapped
+/// through the spatial chain rather than treating the origin as a pure
+/// translation (spec 0010, AC-19).
+struct Geometry<'a> {
+    /// The list the spatial nodes and clips come from, kept so each corner
+    /// can be mapped through the full spatial chain.
+    list: &'a DisplayList,
     origins: Vec<Option<PointF>>,
     clips: Vec<Option<Clip>>,
     page_clip: Clip,
@@ -534,11 +542,12 @@ struct Geometry {
     offset: [f32; 2],
 }
 
-impl Geometry {
-    /// Spatial nodes only move their content (scroll offsets and the
-    /// translation part of a reference frame), which is all paint emits.
+impl<'a> Geometry<'a> {
+    /// Spatial nodes move their content through the full spatial chain:
+    /// scroll offsets and reference-frame matrices (rotation, scale,
+    /// translation, perspective divide).
     fn new(
-        list: &DisplayList,
+        list: &'a DisplayList,
         scale: f32,
         offset: [f32; 2],
         page_clip: Clip,
@@ -548,6 +557,7 @@ impl Geometry {
             .map(|i| list.to_root(SpatialId(i as u32), PointF::default()))
             .collect();
         let mut geometry = Self {
+            list,
             origins,
             clips: Vec::with_capacity(list.clips.len()),
             page_clip,
@@ -586,6 +596,37 @@ impl Geometry {
         ]
     }
 
+    /// Maps `rect` from `spatial`'s local space into target space, applying
+    /// the full spatial chain (scroll offsets and reference-frame matrices,
+    /// with perspective divide) and the target scale and offset. Returns the
+    /// bounding edges of the transformed corners, or `None` when a corner
+    /// falls behind the viewer (spec 0010, AC-19, AC-21).
+    fn rect_to_target(&self, spatial: SpatialId, rect: RectF) -> Option<Edges> {
+        let [x0, y0, x1, y1] = [
+            rect.origin.x,
+            rect.origin.y,
+            rect.origin.x + rect.size.width,
+            rect.origin.y + rect.size.height,
+        ];
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for [x, y] in [[x0, y0], [x1, y0], [x0, y1], [x1, y1]] {
+            let p = self.list.to_root(spatial, PointF { x, y })?;
+            if !p.x.is_finite() || !p.y.is_finite() {
+                return None;
+            }
+            let sx = p.x * self.scale + self.offset[0];
+            let sy = p.y * self.scale + self.offset[1];
+            min_x = min_x.min(sx);
+            min_y = min_y.min(sy);
+            max_x = max_x.max(sx);
+            max_y = max_y.max(sy);
+        }
+        Some([min_x, min_y, max_x, max_y])
+    }
+
     /// The item's space origin and its clip, or `None` when either is
     /// missing (a list the validator would refuse).
     fn place(&self, item: &DisplayItem) -> Option<(PointF, Clip)> {
@@ -619,19 +660,25 @@ impl Geometry {
     }
 
     /// A glyph's atlas key and its pen position: x in target pixels with
-    /// its fraction kept for the subpixel bin, y on a whole pixel.
+    /// its fraction kept for the subpixel bin, y on a whole pixel. The pen
+    /// is mapped through the spatial chain (spec 0010, AC-19). Returns
+    /// `None` when the pen falls behind the viewer.
     fn glyph(
         &self,
         page: PageId,
         font: FontKey,
         size: f32,
         glyph: &GlyphInstance,
-        origin: PointF,
-    ) -> (GlyphKey, [f32; 2]) {
-        let x = (origin.x + glyph.point.x) * self.scale + self.offset[0];
-        let y = ((origin.y + glyph.point.y) * self.scale + self.offset[1]).round();
+        spatial: SpatialId,
+    ) -> Option<(GlyphKey, [f32; 2])> {
+        let p = self.list.to_root(spatial, glyph.point)?;
+        if !p.x.is_finite() || !p.y.is_finite() {
+            return None;
+        }
+        let x = p.x * self.scale + self.offset[0];
+        let y = (p.y * self.scale + self.offset[1]).round();
         let key = GlyphKey::new(page, font, glyph.index, size * self.scale, x);
-        (key, [x.floor(), y])
+        Some((key, [x.floor(), y]))
     }
 }
 
@@ -647,11 +694,11 @@ pub(crate) fn glyph_keys(scene: &Scene<'_>) -> Vec<GlyphKey> {
             else {
                 continue;
             };
-            let Some((origin, clip)) = geometry.place(item) else {
+            let Some((_origin, clip)) = geometry.place(item) else {
                 continue;
             };
             keys.extend(glyphs.iter().filter_map(|glyph| {
-                let (key, pen) = geometry.glyph(list.page, *font, *size, glyph, origin);
+                let (key, pen) = geometry.glyph(list.page, *font, *size, glyph, item.spatial)?;
                 geometry.glyph_shows(pen, *size, &clip).then_some(key)
             }));
         }
@@ -669,6 +716,10 @@ pub(crate) fn glyph_keys(scene: &Scene<'_>) -> Vec<GlyphKey> {
 /// Splits happen only outside groups; inside one, or when the very first
 /// text cannot fit an empty atlas, the glyphs that do not fit are left out
 /// with a warning.
+#[allow(
+    clippy::question_mark,
+    reason = "build returns `Built`, not `Option`, so `?` cannot propagate a missing glyph"
+)]
 pub(crate) fn build(
     scene: &Scene<'_>,
     start: usize,
@@ -699,13 +750,15 @@ pub(crate) fn build(
                 }
                 _ => {}
             }
-            let Some((origin, clip)) = geometry.place(item) else {
+            let Some((_origin, clip)) = geometry.place(item) else {
                 continue;
             };
             let scale = geometry.scale;
             match &item.kind {
                 ItemKind::Rect { rect, color, radii } => {
-                    let quad = geometry.edges(*rect, origin);
+                    let Some(quad) = geometry.rect_to_target(item.spatial, *rect) else {
+                        continue;
+                    };
                     if geometry.shows(quad, &clip) {
                         let radii = corner_radii(*rect, *radii, scale);
                         builder.fill(quad, *color, radii, clip);
@@ -718,7 +771,9 @@ pub(crate) fn build(
                     styles,
                     radii,
                 } => {
-                    let quad = geometry.edges(*rect, origin);
+                    let Some(quad) = geometry.rect_to_target(item.spatial, *rect) else {
+                        continue;
+                    };
                     if !geometry.shows(quad, &clip) {
                         continue;
                     }
@@ -740,7 +795,11 @@ pub(crate) fn build(
                     let mut placed = Vec::with_capacity(glyphs.len());
                     let mut full = false;
                     for glyph in glyphs {
-                        let (key, pen) = geometry.glyph(list.page, *font, *size, glyph, origin);
+                        let Some((key, pen)) =
+                            geometry.glyph(list.page, *font, *size, glyph, item.spatial)
+                        else {
+                            continue;
+                        };
                         // Matches `glyph_keys`, so an unseen glyph never
                         // takes atlas room.
                         if !geometry.glyph_shows(pen, *size, &clip) {
@@ -786,7 +845,9 @@ pub(crate) fn build(
                     drew_text = true;
                 }
                 ItemKind::Image { key, rect } => {
-                    let quad = geometry.edges(*rect, origin);
+                    let Some(quad) = geometry.rect_to_target(item.spatial, *rect) else {
+                        continue;
+                    };
                     if geometry.shows(quad, &clip) {
                         builder.image(
                             Texture::Image(list.page, *key),
@@ -933,7 +994,7 @@ fn dot_centers(
 
 #[cfg(test)]
 mod tests {
-    use display_list::{BlendMode, Epoch, SizeF};
+    use display_list::{Binding, BlendMode, Epoch, SizeF, SpatialKind};
 
     use super::*;
     use crate::PageSlot;
@@ -1449,5 +1510,120 @@ mod tests {
         }
         let list = list(vec![kind]);
         assert_eq!(glyph_keys(&scene(&list, 1.0)).len(), 1);
+    }
+
+    #[test]
+    fn rect_to_target_maps_root_space_one_to_one() {
+        let list = DisplayList::new(PageId(1), Epoch(1), SizeF::default());
+        let geometry = Geometry::new(&list, 2.0, [0.0, 0.0], NO_CLIP, [0.0, 0.0, 100.0, 100.0]);
+        let rect = RectF {
+            origin: PointF { x: 10.0, y: 10.0 },
+            size: SizeF {
+                width: 20.0,
+                height: 20.0,
+            },
+        };
+        let edges = geometry.rect_to_target(SpatialId::ROOT, rect).unwrap();
+        assert_eq!(edges, [20.0, 20.0, 60.0, 60.0]);
+    }
+
+    #[test]
+    fn rect_to_target_scales_in_a_reference_frame() {
+        let mut scale = [0.0; 16];
+        scale[0] = 2.0;
+        scale[5] = 2.0;
+        scale[10] = 1.0;
+        scale[15] = 1.0;
+        let mut list = DisplayList::new(PageId(1), Epoch(1), SizeF::default());
+        let spatial = list.push_spatial(
+            SpatialId::ROOT,
+            SpatialKind::ReferenceFrame {
+                transform: Binding::Static(scale),
+            },
+        );
+        let geometry = Geometry::new(&list, 1.0, [0.0, 0.0], NO_CLIP, [0.0, 0.0, 100.0, 100.0]);
+        let rect = RectF {
+            origin: PointF { x: 10.0, y: 10.0 },
+            size: SizeF {
+                width: 20.0,
+                height: 20.0,
+            },
+        };
+        let edges = geometry.rect_to_target(spatial, rect).unwrap();
+        assert_eq!(edges, [20.0, 20.0, 60.0, 60.0]);
+    }
+
+    #[test]
+    fn rect_to_target_translates_in_a_reference_frame() {
+        let mut translate = [0.0; 16];
+        translate[0] = 1.0;
+        translate[5] = 1.0;
+        translate[10] = 1.0;
+        translate[15] = 1.0;
+        translate[12] = 100.0;
+        translate[13] = 50.0;
+        let mut list = DisplayList::new(PageId(1), Epoch(1), SizeF::default());
+        let spatial = list.push_spatial(
+            SpatialId::ROOT,
+            SpatialKind::ReferenceFrame {
+                transform: Binding::Static(translate),
+            },
+        );
+        let geometry = Geometry::new(&list, 1.0, [0.0, 0.0], NO_CLIP, [0.0, 0.0, 100.0, 100.0]);
+        let rect = RectF {
+            origin: PointF { x: 10.0, y: 10.0 },
+            size: SizeF {
+                width: 20.0,
+                height: 20.0,
+            },
+        };
+        let edges = geometry.rect_to_target(spatial, rect).unwrap();
+        assert_eq!(edges, [110.0, 60.0, 130.0, 80.0]);
+    }
+
+    #[test]
+    fn rect_to_target_rotates_180_degrees_about_the_origin() {
+        let mut rotate = [0.0; 16];
+        rotate[0] = -1.0;
+        rotate[5] = -1.0;
+        rotate[10] = 1.0;
+        rotate[15] = 1.0;
+        let mut list = DisplayList::new(PageId(1), Epoch(1), SizeF::default());
+        let spatial = list.push_spatial(
+            SpatialId::ROOT,
+            SpatialKind::ReferenceFrame {
+                transform: Binding::Static(rotate),
+            },
+        );
+        let geometry = Geometry::new(&list, 1.0, [0.0, 0.0], NO_CLIP, [0.0, 0.0, 100.0, 100.0]);
+        let rect = RectF {
+            origin: PointF { x: 10.0, y: 10.0 },
+            size: SizeF {
+                width: 20.0,
+                height: 20.0,
+            },
+        };
+        let edges = geometry.rect_to_target(spatial, rect).unwrap();
+        assert_eq!(edges, [-30.0, -30.0, -10.0, -10.0]);
+    }
+
+    #[test]
+    fn rect_to_target_is_none_when_a_corner_is_behind_the_viewer() {
+        let mut list = DisplayList::new(PageId(1), Epoch(1), SizeF::default());
+        let spatial = list.push_spatial(
+            SpatialId::ROOT,
+            SpatialKind::ReferenceFrame {
+                transform: Binding::Static([0.0; 16]),
+            },
+        );
+        let geometry = Geometry::new(&list, 1.0, [0.0, 0.0], NO_CLIP, [0.0, 0.0, 100.0, 100.0]);
+        let rect = RectF {
+            origin: PointF::default(),
+            size: SizeF {
+                width: 10.0,
+                height: 10.0,
+            },
+        };
+        assert!(geometry.rect_to_target(spatial, rect).is_none());
     }
 }

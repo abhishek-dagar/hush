@@ -42,6 +42,7 @@ use text::{FontContext, FontDescriptor, LineMetrics, ShapedRun, WebFontLayer};
 use exclusion::ExclusionSpace;
 
 use block::InProgress;
+pub use block::{transformed_overflow, union as union_rects};
 pub use box_tree::{BoxFlags, BoxKind, BoxTree, InlineItem, LayoutBox, NaturalSize};
 pub use fragment::{
     BackgroundLayer, BlockMargins, BoxFragment, Fragment, FragmentTree, InlineEdges, LineFragment,
@@ -549,7 +550,7 @@ fn lay_out_box(
 mod tests {
     use base::atoms::QualName;
     use base::local_name;
-    use css::{Clear, Display, Float, Length, Margin, Padding, Position};
+    use css::{Clear, Display, Float, Length, Margin, Padding, Position, VerticalAlign};
     use dom::{Document, NodeId};
 
     use super::*;
@@ -568,6 +569,14 @@ mod tests {
         doc.append_child(parent, id).unwrap();
         doc.set_style(id, Some(style)).unwrap();
         id
+    }
+
+    fn inline_block(width: f32, height: f32, align: VerticalAlign) -> Rc<ComputedStyle> {
+        let mut style = (*block(0.0, 0.0, Some(height))).clone();
+        Rc::make_mut(&mut style.display_box).display = Display::InlineBlock;
+        Rc::make_mut(&mut style.size).width = Some(Length::px(width));
+        style.vertical_align = align;
+        Rc::new(style)
     }
 
     fn px(px: f32) -> Au {
@@ -613,6 +622,48 @@ mod tests {
         assert_eq!(b_fragment.node, Some(b));
         assert_eq!(b_fragment.size, Size::new(px(762.0), px(30.0)));
         let _ = a;
+    }
+
+    #[test]
+    fn inline_blocks_align_to_the_top_of_their_line() {
+        // Spec 0009, child 0004, AC-16: `vertical-align: top` aligns an
+        // inline block's margin box with the line box's top, whatever the
+        // block's height. Before the fix every atomic inline sat on the
+        // baseline, so a taller block pushed the shorter one down.
+        let mut doc = Document::new("about:blank");
+        let root = doc.root();
+        let html = add(&mut doc, root, block(0.0, 0.0, None));
+        let body = add(&mut doc, html, block(0.0, 0.0, None));
+        add(
+            &mut doc,
+            body,
+            inline_block(100.0, 20.0, VerticalAlign::Top),
+        );
+        add(
+            &mut doc,
+            body,
+            inline_block(100.0, 50.0, VerticalAlign::Top),
+        );
+
+        let mut boxes = BoxTree::build(&mut doc);
+        let (tree, _) = layout(
+            &mut boxes,
+            Size::new(px(800.0), px(600.0)),
+            &mut FontContext::new(),
+            &text::WebFontLayer::default(),
+        );
+        let (_, root_fragment) = tree.root.unwrap();
+        let html_fragment = root_fragment.as_box().unwrap();
+        let body_fragment = html_fragment.children[0].1.as_box().unwrap();
+        let Fragment::Line(line) = &*body_fragment.children[0].1 else {
+            panic!("the body's inline content is one line");
+        };
+        let tops: Vec<_> = line.children.iter().map(|(point, _)| point.y).collect();
+        assert_eq!(
+            tops,
+            [px(0.0), px(0.0)],
+            "both inline blocks sit on the line's top edge"
+        );
     }
 
     #[test]

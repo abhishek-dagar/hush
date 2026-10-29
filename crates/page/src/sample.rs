@@ -11,6 +11,7 @@ use css::{
     Background, Border, BorderSide, BorderStyle, Color, ComputedStyle, Display, Length, Margin,
     Overflow, Padding,
 };
+use display_list::Binding;
 use dom::{Document, NodeId};
 
 /// Header, a row of colored cards stacked as blocks, a scroll box of rows,
@@ -174,7 +175,7 @@ fn add(doc: &mut Document, parent: NodeId, name: LocalName, style: Style) -> Nod
     }
     // Only touch the group when it changes, so the others keep sharing it.
     if style.opacity < 1.0 {
-        Rc::make_mut(&mut computed.effects).opacity = style.opacity;
+        Rc::make_mut(&mut computed.effects).opacity = Binding::Static(style.opacity);
     }
     // `parent` and `id` both come from this document and an element under
     // an element is always valid, so these cannot fail.

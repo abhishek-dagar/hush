@@ -27,7 +27,7 @@ use crate::{
     WhiteSpace,
 };
 
-use crate::style::Angle;
+use crate::style::{Angle, AnimationDirection, FillMode, PlayState, TimingFunction};
 
 macro_rules! longhands {
     ($($variant:ident = $name:literal, $inherited:literal;)*) => {
@@ -166,6 +166,18 @@ longhands! {
     AspectRatio = "aspect-ratio", false;
     ContainerType = "container-type", false;
     ContainerName = "container-name", false;
+    AnimationName = "animation-name", false;
+    AnimationDuration = "animation-duration", false;
+    AnimationDelay = "animation-delay", false;
+    AnimationTimingFunction = "animation-timing-function", false;
+    AnimationIterationCount = "animation-iteration-count", false;
+    AnimationDirection = "animation-direction", false;
+    AnimationFillMode = "animation-fill-mode", false;
+    AnimationPlayState = "animation-play-state", false;
+    TransitionProperty = "transition-property", false;
+    TransitionDuration = "transition-duration", false;
+    TransitionDelay = "transition-delay", false;
+    TransitionTimingFunction = "transition-timing-function", false;
 }
 
 impl Longhand {
@@ -177,7 +189,7 @@ impl Longhand {
         self as usize
     }
 
-    fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         Self::ALL
             .iter()
             .copied()
@@ -215,10 +227,12 @@ pub(crate) enum Shorthand {
     GridArea,
     GridTemplate,
     Grid,
+    Animation,
+    Transition,
 }
 
 impl Shorthand {
-    fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         let name = name.to_ascii_lowercase();
         Some(match name.as_str() {
             "margin" => Self::Margin,
@@ -248,6 +262,8 @@ impl Shorthand {
             "grid-area" => Self::GridArea,
             "grid-template" => Self::GridTemplate,
             "grid" => Self::Grid,
+            "animation" => Self::Animation,
+            "transition" => Self::Transition,
             _ => return None,
         })
     }
@@ -351,6 +367,22 @@ impl Shorthand {
                 L::GridAutoRows,
                 L::GridAutoColumns,
                 L::GridAutoFlow,
+            ],
+            Self::Animation => &[
+                L::AnimationName,
+                L::AnimationDuration,
+                L::AnimationTimingFunction,
+                L::AnimationDelay,
+                L::AnimationIterationCount,
+                L::AnimationDirection,
+                L::AnimationFillMode,
+                L::AnimationPlayState,
+            ],
+            Self::Transition => &[
+                L::TransitionProperty,
+                L::TransitionDuration,
+                L::TransitionDelay,
+                L::TransitionTimingFunction,
             ],
         }
     }
@@ -514,6 +546,30 @@ pub(crate) enum Value {
     ContainerType(ContainerType),
     /// `container-name`: custom-ident names (spec 0010, AC-16).
     ContainerName(ContainerName),
+    /// `animation-name`: the keyframes animation to play.
+    AnimationName(Atom),
+    /// `animation-duration`: seconds.
+    AnimationDuration(f64),
+    /// `animation-delay`: seconds.
+    AnimationDelay(f64),
+    /// `animation-timing-function`.
+    AnimationTimingFunction(TimingFunction),
+    /// `animation-iteration-count`: `None` means `infinite`.
+    AnimationIterationCount(Option<f64>),
+    /// `animation-direction`.
+    AnimationDirection(AnimationDirection),
+    /// `animation-fill-mode`.
+    AnimationFillMode(FillMode),
+    /// `animation-play-state`: running or paused.
+    AnimationPlayState(PlayState),
+    /// `transition-property`: `None` means `all`.
+    TransitionProperty(Option<Atom>),
+    /// `transition-duration`: seconds.
+    TransitionDuration(f64),
+    /// `transition-delay`: seconds.
+    TransitionDelay(f64),
+    /// `transition-timing-function`.
+    TransitionTimingFunction(TimingFunction),
     /// `transform`: the computed transform functions.
     Transform(Rc<Transform>),
     /// `translate`: the computed translate offsets.
@@ -1204,6 +1260,43 @@ fn parse_longhand(
         L::AspectRatio => Value::AspectRatio(parse_aspect_ratio(input)?),
         L::ContainerType => Value::ContainerType(parse_container_type(input)?),
         L::ContainerName => Value::ContainerName(parse_container_name(input)?),
+        L::AnimationName => Value::AnimationName(Atom::from(input.expect_ident()?.as_ref())),
+        L::AnimationDuration => Value::AnimationDuration(parse_css_time(input)?),
+        L::AnimationDelay => Value::AnimationDelay(parse_css_time(input)?),
+        L::AnimationTimingFunction => {
+            Value::AnimationTimingFunction(parse_timing_function(input, context, longhand)?)
+        }
+        L::AnimationIterationCount => {
+            if input
+                .try_parse(|i| i.expect_ident_matching("infinite"))
+                .is_ok()
+            {
+                Value::AnimationIterationCount(None)
+            } else {
+                Value::AnimationIterationCount(Some(input.expect_number()? as f64))
+            }
+        }
+        L::AnimationDirection => {
+            Value::AnimationDirection(parse_animation_direction(input, context, longhand)?)
+        }
+        L::AnimationFillMode => {
+            Value::AnimationFillMode(parse_animation_fill_mode(input, context, longhand)?)
+        }
+        L::AnimationPlayState => {
+            Value::AnimationPlayState(parse_animation_play_state(input, context, longhand)?)
+        }
+        L::TransitionProperty => {
+            if input.try_parse(|i| i.expect_ident_matching("all")).is_ok() {
+                Value::TransitionProperty(None)
+            } else {
+                Value::TransitionProperty(Some(Atom::from(input.expect_ident()?.as_ref())))
+            }
+        }
+        L::TransitionDuration => Value::TransitionDuration(parse_css_time(input)?),
+        L::TransitionDelay => Value::TransitionDelay(parse_css_time(input)?),
+        L::TransitionTimingFunction => {
+            Value::TransitionTimingFunction(parse_timing_function(input, context, longhand)?)
+        }
     })
 }
 
@@ -1435,6 +1528,94 @@ fn parse_non_negative_number(input: &mut Parser<'_>) -> ParseResult<f32> {
         return invalid();
     }
     Ok(number)
+}
+
+/// `linear`, `ease`, `ease-in`, `ease-out`, `ease-in-out`, `steps(n)`,
+/// `step-start`, `step-end` or `cubic-bezier(...)` (spec 0010, AC-23).
+/// `cubic-bezier` and `steps` with a timing other than `linear` fall back to
+/// `ease` here, which is fine for the values this slice animates.
+fn parse_timing_function(
+    input: &mut Parser<'_>,
+    _context: &ParseContext,
+    _longhand: Longhand,
+) -> ParseResult<TimingFunction> {
+    let ident = input.expect_ident()?;
+    // Only the keyword timing functions: any other ident is not a timing
+    // function, and in the `animation` shorthand it is the animation name
+    // (spec 0010, AC-24).
+    Ok(if ident.eq_ignore_ascii_case("linear") {
+        TimingFunction::Linear
+    } else if ident.eq_ignore_ascii_case("ease") {
+        TimingFunction::Ease
+    } else if ident.eq_ignore_ascii_case("ease-in") {
+        TimingFunction::EaseIn
+    } else if ident.eq_ignore_ascii_case("ease-out") {
+        TimingFunction::EaseOut
+    } else if ident.eq_ignore_ascii_case("ease-in-out") {
+        TimingFunction::EaseInOut
+    } else if ident.eq_ignore_ascii_case("step-start") || ident.eq_ignore_ascii_case("step-end") {
+        TimingFunction::Steps(1)
+    } else {
+        return invalid();
+    })
+}
+
+/// `normal`, `reverse`, `alternate`, `alternate-reverse` (spec 0010, AC-24).
+fn parse_animation_direction(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+    longhand: Longhand,
+) -> ParseResult<AnimationDirection> {
+    parse_mapped_keyword(
+        input,
+        context,
+        longhand,
+        &[
+            ("normal", AnimationDirection::Normal),
+            ("reverse", AnimationDirection::Reverse),
+            ("alternate", AnimationDirection::Alternate),
+            ("alternate-reverse", AnimationDirection::AlternateReverse),
+        ],
+        &[],
+    )
+}
+
+/// `none`, `forwards`, `backwards`, `both` (spec 0010, AC-24).
+fn parse_animation_fill_mode(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+    longhand: Longhand,
+) -> ParseResult<FillMode> {
+    parse_mapped_keyword(
+        input,
+        context,
+        longhand,
+        &[
+            ("none", FillMode::None),
+            ("forwards", FillMode::Forwards),
+            ("backwards", FillMode::Backwards),
+            ("both", FillMode::Both),
+        ],
+        &[],
+    )
+}
+
+/// `running` or `paused` (spec 0010, AC-24).
+fn parse_animation_play_state(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+    longhand: Longhand,
+) -> ParseResult<PlayState> {
+    parse_mapped_keyword(
+        input,
+        context,
+        longhand,
+        &[
+            ("running", PlayState::Running),
+            ("paused", PlayState::Paused),
+        ],
+        &[],
+    )
 }
 
 fn parse_flex_basis(input: &mut Parser<'_>) -> ParseResult<FlexBasis> {
@@ -1705,7 +1886,7 @@ fn parse_transform(input: &mut Parser<'_>) -> ParseResult<Transform> {
         translate: None,
         rotate: None,
         scale: None,
-        origin: Default::default(),
+        origin: Transform::default().origin,
         style: TransformStyle::Flat,
         perspective: None,
         perspective_origin: None,
@@ -1836,11 +2017,54 @@ fn parse_scale(input: &mut Parser<'_>) -> ParseResult<(f32, Option<f32>)> {
     Ok((x, y))
 }
 
-/// `transform-origin`: two lengths/percentages.
+/// `transform-origin`: one or two lengths, percentages or keywords, and
+/// an optional z length this slice ignores (spec 0010, AC-19).
 fn parse_transform_origin(input: &mut Parser<'_>) -> ParseResult<(Length, Length)> {
-    let x = parse_transform_length(input)?;
-    let y = parse_transform_length(input)?;
-    Ok((x, y))
+    let origin = parse_origin(input)?;
+    let _z = input.try_parse(parse_transform_length);
+    Ok(origin)
+}
+
+/// A `<position>` style origin: one or two of a length, a percentage or
+/// `left`, `center`, `right`, `top`, `bottom`. A missing value is
+/// `center`; `top` or `bottom` first names the vertical one.
+fn parse_origin(input: &mut Parser<'_>) -> ParseResult<(Length, Length)> {
+    #[derive(PartialEq)]
+    enum Axis {
+        X,
+        Y,
+        Either,
+    }
+    let one = |input: &mut Parser<'_>| -> ParseResult<(Length, Axis)> {
+        if let Ok(length) = input.try_parse(parse_transform_length) {
+            return Ok((length, Axis::Either));
+        }
+        let ident = input.expect_ident()?.to_ascii_lowercase();
+        Ok(match ident.as_str() {
+            "left" => (Length::Percent(0.0), Axis::X),
+            "right" => (Length::Percent(100.0), Axis::X),
+            "top" => (Length::Percent(0.0), Axis::Y),
+            "bottom" => (Length::Percent(100.0), Axis::Y),
+            "center" => (Length::Percent(50.0), Axis::Either),
+            _ => return invalid(),
+        })
+    };
+    let center = Length::Percent(50.0);
+    let (first, first_axis) = one(input)?;
+    let Ok((second, second_axis)) = input.try_parse(one) else {
+        return Ok(if first_axis == Axis::Y {
+            (center, first)
+        } else {
+            (first, center)
+        });
+    };
+    if first_axis == Axis::Y || second_axis == Axis::X {
+        if first_axis == Axis::X || second_axis == Axis::Y {
+            return invalid();
+        }
+        return Ok((second, first));
+    }
+    Ok((first, second))
 }
 
 /// `transform-style`: `flat` or `preserve-3d` (both accepted, flat
@@ -1866,11 +2090,9 @@ fn parse_perspective(input: &mut Parser<'_>) -> ParseResult<Length> {
     parse_transform_length(input)
 }
 
-/// `perspective-origin`: two lengths/percentages.
+/// `perspective-origin`: like `transform-origin`, without a z.
 fn parse_perspective_origin(input: &mut Parser<'_>) -> ParseResult<(Length, Length)> {
-    let x = parse_transform_length(input)?;
-    let y = parse_transform_length(input)?;
-    Ok((x, y))
+    parse_origin(input)
 }
 
 /// `grid-template-columns` / `grid-template-rows`: `none`, or a list of
@@ -2592,7 +2814,227 @@ fn parse_shorthand(
         Shorthand::GridArea => parse_grid_area(input)?,
         Shorthand::GridTemplate => parse_grid_template(input)?,
         Shorthand::Grid => parse_grid(input)?,
+        Shorthand::Transition => parse_transition(input, context)?,
+        Shorthand::Animation => parse_animation(input, context)?,
     })
+}
+
+/// A `<time>` value: `<number>s` or `<number>ms`, in seconds. CSS tokenizes
+/// the number and unit together as one dimension token, so `2s` is a
+/// `Dimension`, not a number then an ident.
+fn parse_css_time(input: &mut Parser<'_>) -> ParseResult<f64> {
+    let number = match input.next()? {
+        Token::Dimension { value, unit, .. } => {
+            let seconds: f64 = if unit.eq_ignore_ascii_case("s") {
+                1.0
+            } else if unit.eq_ignore_ascii_case("ms") {
+                0.001
+            } else {
+                return invalid();
+            };
+            // Through the shortest decimal text, so `0.2s` is 0.2 and not
+            // the nearest `f32` widened (`elapsedTime` shows it).
+            let value: f64 = value.to_string().parse().unwrap_or(f64::from(*value));
+            value * seconds
+        }
+        _ => return invalid(),
+    };
+    Ok(number)
+}
+
+/// Keywords that are values, not property names, in a `transition` shorthand.
+fn is_transition_value_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "all"
+            | "none"
+            | "always"
+            | "avoid"
+            | "auto"
+            | "initial"
+            | "inherit"
+            | "unset"
+            | "revert"
+            | "linear"
+            | "ease"
+            | "ease-in"
+            | "ease-out"
+            | "ease-in-out"
+            | "step-start"
+            | "step-end"
+            | "steps"
+            | "cubic-bezier"
+            | "running"
+            | "paused"
+    )
+}
+
+/// `transition: <property> <duration> <timing-function> <delay>` (spec 0010,
+/// AC-23). One or more comma separated. The first time is the duration and
+/// the second is the delay.
+fn parse_transition(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+) -> ParseResult<Vec<(Longhand, Value)>> {
+    let mut out = Vec::new();
+    loop {
+        // `all` (also the default) is `None`; `none` names no property.
+        let property = input
+            .try_parse(|i| {
+                let ident = i.expect_ident()?;
+                let name = ident.as_ref();
+                if name.eq_ignore_ascii_case("all") {
+                    return Ok(None);
+                }
+                if name.eq_ignore_ascii_case("none") {
+                    return Ok(Some(Atom::from("none")));
+                }
+                if is_transition_value_keyword(name) {
+                    return invalid();
+                }
+                Ok(Some(Atom::from(name.to_ascii_lowercase())))
+            })
+            .unwrap_or(None);
+        let duration = input.try_parse(parse_css_time).ok();
+        let timing = input
+            .try_parse(|i| parse_timing_function(i, context, Longhand::TransitionTimingFunction))
+            .ok();
+        let delay = input.try_parse(parse_css_time).ok();
+        out.push((
+            Longhand::TransitionProperty,
+            Value::TransitionProperty(property),
+        ));
+        out.push((
+            Longhand::TransitionDuration,
+            Value::TransitionDuration(duration.unwrap_or(0.0)),
+        ));
+        out.push((
+            Longhand::TransitionDelay,
+            Value::TransitionDelay(delay.unwrap_or(0.0)),
+        ));
+        out.push((
+            Longhand::TransitionTimingFunction,
+            Value::TransitionTimingFunction(timing.unwrap_or(TimingFunction::Ease)),
+        ));
+        if input.try_parse(|i| i.expect_delim(',')).is_err() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// One part of an `animation` shorthand value.
+/// `animation: <name> <duration> <timing-function> ...` (spec 0010, AC-24).
+/// One or more comma separated. Parts may appear in any order; the name is
+/// the final non-keyword ident.
+fn parse_animation(
+    input: &mut Parser<'_>,
+    context: &ParseContext,
+) -> ParseResult<Vec<(Longhand, Value)>> {
+    let mut out = Vec::new();
+    loop {
+        let mut name: Option<Atom> = None;
+        let mut duration: Option<f64> = None;
+        let mut delay: Option<f64> = None;
+        let mut timing: Option<TimingFunction> = None;
+        let mut iteration: Option<f64> = None;
+        let mut direction: Option<AnimationDirection> = None;
+        let mut fill_mode: Option<FillMode> = None;
+        let mut play_state: Option<PlayState> = None;
+        loop {
+            // A time.
+            if let Ok(t) = input.try_parse(parse_css_time) {
+                if duration.is_none() {
+                    duration = Some(t);
+                } else {
+                    delay = Some(t);
+                }
+                continue;
+            }
+            // A timing function.
+            if let Ok(t) = input
+                .try_parse(|i| parse_timing_function(i, context, Longhand::AnimationTimingFunction))
+            {
+                timing = Some(t);
+                continue;
+            }
+            // An iteration count: a number or `infinite`.
+            if input
+                .try_parse(|i| i.expect_ident_matching("infinite"))
+                .is_ok()
+            {
+                iteration = None;
+                continue;
+            }
+            if let Ok(n) = input.try_parse(|i| i.expect_number()) {
+                iteration = Some(n as f64);
+                continue;
+            }
+            // A direction, fill mode or play state keyword.
+            if let Ok(d) = input
+                .try_parse(|i| parse_animation_direction(i, context, Longhand::AnimationDirection))
+            {
+                direction = Some(d);
+                continue;
+            }
+            if let Ok(f) = input
+                .try_parse(|i| parse_animation_fill_mode(i, context, Longhand::AnimationFillMode))
+            {
+                fill_mode = Some(f);
+                continue;
+            }
+            if let Ok(p) = input
+                .try_parse(|i| parse_animation_play_state(i, context, Longhand::AnimationPlayState))
+            {
+                play_state = Some(p);
+                continue;
+            }
+            // Anything left is the animation name (an ident). The name may
+            // come before or after the other parts, so keep going until the
+            // next part fails to parse (spec 0010, AC-24).
+            if let Ok(ident) = input.expect_ident() {
+                name = Some(Atom::from(ident.as_ref()));
+                continue;
+            }
+            break;
+        }
+        out.push((
+            Longhand::AnimationName,
+            Value::AnimationName(name.unwrap_or(Atom::from("none"))),
+        ));
+        out.push((
+            Longhand::AnimationDuration,
+            Value::AnimationDuration(duration.unwrap_or(0.0)),
+        ));
+        out.push((
+            Longhand::AnimationDelay,
+            Value::AnimationDelay(delay.unwrap_or(0.0)),
+        ));
+        out.push((
+            Longhand::AnimationTimingFunction,
+            Value::AnimationTimingFunction(timing.unwrap_or(TimingFunction::Ease)),
+        ));
+        out.push((
+            Longhand::AnimationIterationCount,
+            Value::AnimationIterationCount(iteration),
+        ));
+        out.push((
+            Longhand::AnimationDirection,
+            Value::AnimationDirection(direction.unwrap_or(AnimationDirection::Normal)),
+        ));
+        out.push((
+            Longhand::AnimationFillMode,
+            Value::AnimationFillMode(fill_mode.unwrap_or(FillMode::None)),
+        ));
+        out.push((
+            Longhand::AnimationPlayState,
+            Value::AnimationPlayState(play_state.unwrap_or(PlayState::Running)),
+        ));
+        if input.try_parse(|i| i.expect_delim(',')).is_err() {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 /// The alignment keywords shared by `place-*`: the second value defaults to
@@ -3552,6 +3994,54 @@ mod tests {
             "unknown keyword acts as baseline"
         );
         assert!(!Longhand::VerticalAlign.is_inherited());
+    }
+
+    #[test]
+    fn animation_shorthand_expands_every_longhand() {
+        // Spec 0010, AC-24: `animation: <name> <duration> ...` sets every
+        // longhand, whether the parts come in the usual order or not.
+        let declarations = parse("animation: kf-slide 2s infinite alternate");
+        let names: Vec<_> = declarations.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "animation-name",
+                "animation-duration",
+                "animation-delay",
+                "animation-timing-function",
+                "animation-iteration-count",
+                "animation-direction",
+                "animation-fill-mode",
+                "animation-play-state",
+            ],
+            "the shorthand expands to the eight animation longhands"
+        );
+        let values: Vec<_> = declarations
+            .iter()
+            .map(|(_, value, _)| value.clone())
+            .collect();
+        assert_eq!(
+            values[0],
+            DeclaredValue::Value(Value::AnimationName(Atom::from("kf-slide")))
+        );
+        assert_eq!(
+            values[1],
+            DeclaredValue::Value(Value::AnimationDuration(2.0))
+        );
+        assert_eq!(values[2], DeclaredValue::Value(Value::AnimationDelay(0.0)));
+        assert_eq!(
+            values[3],
+            DeclaredValue::Value(Value::AnimationTimingFunction(TimingFunction::Ease))
+        );
+        assert_eq!(
+            values[4],
+            DeclaredValue::Value(Value::AnimationIterationCount(None)),
+            "infinite is an endless iteration count"
+        );
+        assert_eq!(
+            values[5],
+            DeclaredValue::Value(Value::AnimationDirection(AnimationDirection::Alternate))
+        );
     }
 
     #[test]

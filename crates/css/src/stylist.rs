@@ -272,6 +272,28 @@ impl Stylist {
         (style, has_subject)
     }
 
+    /// Computes one `@keyframes` keyframe's `declarations` for an element
+    /// whose parent has `parent`'s style, as the animation origin sees them
+    /// (spec 0010, AC-24). Only the longhands the keyframe declares are read
+    /// from the result.
+    pub fn keyframe_style(
+        &self,
+        declarations: &[Declaration],
+        parent: Option<&ComputedStyle>,
+        root_font_size: Au,
+    ) -> ComputedStyle {
+        compute(
+            declarations,
+            &CascadeInputs {
+                parent,
+                root_font_size,
+                device: &self.device,
+                container_size: None,
+                properties: &self.properties,
+            },
+        )
+    }
+
     /// Computes the `::placeholder` style of the `<input>` `element`, which
     /// inherits from `input_style`, the input's own (spec 0006, AC-2,
     /// AC-17). Only rules whose selector ends in `::placeholder` apply.

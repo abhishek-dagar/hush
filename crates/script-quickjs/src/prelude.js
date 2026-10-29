@@ -75,22 +75,48 @@
     const text = error && error.stack ? `${error}\n${error.stack}` : String(error);
     native.console('error', `Uncaught ${text}`);
   };
-  // Calls every listener on each target of `path` in turn; one that
-  // throws is reported and the rest still run.
-  const dispatch = (path, type, bubbles) => {
-    const event = {
-      type,
-      target: path[0],
-      currentTarget: null,
-      bubbles,
-      defaultPrevented: false,
-      preventDefault() {
-        this.defaultPrevented = true;
-      },
-    };
+  // Events (AC-33; spec 0010, AC-29). Only `addEventListener` listens;
+  // there are no `on*` handler attributes yet.
+  class Event {
+    constructor(type, init = {}) {
+      this.type = String(type);
+      this.bubbles = Boolean(init.bubbles);
+      this.cancelable = Boolean(init.cancelable);
+      this.target = null;
+      this.currentTarget = null;
+      this.defaultPrevented = false;
+    }
+    preventDefault() {
+      if (this.cancelable) this.defaultPrevented = true;
+    }
+  }
+  class TransitionEvent extends Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.propertyName = String(init.propertyName ?? '');
+      this.elapsedTime = Number(init.elapsedTime ?? 0);
+      this.pseudoElement = String(init.pseudoElement ?? '');
+    }
+  }
+  class AnimationEvent extends Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.animationName = String(init.animationName ?? '');
+      this.elapsedTime = Number(init.elapsedTime ?? 0);
+      this.pseudoElement = String(init.pseudoElement ?? '');
+    }
+  }
+  global.Event = Event;
+  global.TransitionEvent = TransitionEvent;
+  global.AnimationEvent = AnimationEvent;
+
+  // Calls every listener on each target of `path` in turn, the first
+  // being the target; one that throws is reported and the rest still run.
+  const dispatchOn = (path, event) => {
+    event.target = path[0];
     for (const current of path) {
       event.currentTarget = current;
-      const list = listeners.get(current)?.get(type);
+      const list = listeners.get(current)?.get(event.type);
       for (const callback of list ? [...list] : []) {
         try {
           if (typeof callback === 'function') callback.call(current, event);
@@ -100,7 +126,9 @@
         }
       }
     }
+    event.currentTarget = null;
   };
+  const dispatch = (path, type, bubbles) => dispatchOn(path, new Event(type, { bubbles }));
 
   const illegal = function () {
     throw new TypeError('Illegal constructor');
@@ -329,6 +357,18 @@
   global.location = location;
   global.history = history;
 
+  // `window.getComputedStyle(element)` (spec 0010, AC-31): resolves the
+  // computed value of a property. Only `transform` and `opacity` are
+  // computed yet; anything else resolves to the empty string.
+  global.getComputedStyle = (element) => {
+    return {
+      getPropertyValue: (name) => {
+        const result = native.getComputedStyle(element, String(name));
+        return result === null || result === undefined ? "" : result;
+      },
+    };
+  };
+
   const log = (level) => (...args) => native.console(level, args.map(String).join(' '));
   global.console = {
     log: log('log'),
@@ -361,6 +401,18 @@
     fire(target, type) {
       if (target === 'document') dispatch([document, global], type, true);
       else dispatch([global], type, false);
+    },
+    fireMotion(key, type, transition, name, elapsedTime, pseudoElement) {
+      const target = wrap(key);
+      if (target === null) return;
+      const init = { bubbles: true, cancelable: false, elapsedTime, pseudoElement };
+      const event = transition
+        ? new TransitionEvent(type, { ...init, propertyName: name })
+        : new AnimationEvent(type, { ...init, animationName: name });
+      const path = [];
+      for (let node = target; node !== null; node = node.parentNode) path.push(node);
+      path.push(global);
+      dispatchOn(path, event);
     },
     sweep() {
       for (const [key, ref] of cache) {

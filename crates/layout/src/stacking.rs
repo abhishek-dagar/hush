@@ -21,6 +21,7 @@
 use std::rc::Rc;
 
 use base::{Au, Point};
+use display_list::Binding;
 
 use crate::fragment::{BoxFragment, Fragment, TextFragment};
 use crate::{BoxKind, BoxTree};
@@ -97,6 +98,19 @@ pub trait Walker<'a> {
         origin: Point,
         state: &Self::State,
     ) -> Option<(Point, Self::State)>;
+
+    /// The origin and state `fragment` itself paints in, given the box at
+    /// `origin` with `state`: a new space when the box makes one for
+    /// itself and its content, as a transform does (spec 0010, AC-20).
+    /// Asked once per box, before its own steps and its children.
+    fn own_space(
+        &mut self,
+        _fragment: &'a BoxFragment,
+        origin: Point,
+        state: Self::State,
+    ) -> (Point, Self::State) {
+        (origin, state)
+    }
 }
 
 /// The paint order of everything below and including `root`, the root of
@@ -142,8 +156,12 @@ fn stacking(boxes: &BoxTree, fragment: &BoxFragment, in_line: bool) -> Stacking 
     // `z-index` applies to positioned boxes and flex items only.
     let z_index = style.effects.z_index.filter(|_| positioned || flex_item);
     // A transform other than `none` creates a stacking context (spec 0010,
-    // AC-20), as do `z-index` and opacity below 1.
-    if style.transform.has_transform() || z_index.is_some() || style.effects.opacity < 1.0 {
+    // AC-20), as do `z-index` and opacity below 1. Animated opacity travels
+    // as a `Binding::Bound`; read the underlying value (spec 0010, AC-28).
+    let opacity = match style.effects.opacity {
+        Binding::Static(v) | Binding::Bound { value: v, .. } => v,
+    };
+    if style.transform.has_transform() || z_index.is_some() || opacity < 1.0 {
         Stacking::Context(z_index.unwrap_or(0))
     } else if positioned {
         Stacking::Positioned
@@ -271,6 +289,18 @@ fn gather<'a, W: Walker<'a>>(
                 continue;
             }
         };
+        let kind = if !root {
+            stacking(boxes, fragment_box, in_line)
+        } else {
+            Stacking::Normal
+        };
+        // The box paints in its own space on the visit that paints it; a
+        // box that starts a group is visited again for that.
+        let (origin, state) = if matches!(kind, Stacking::Normal) {
+            walker.own_space(fragment_box, origin, state)
+        } else {
+            (origin, state)
+        };
         if root && layers == context && groups[layers].enter.is_none() {
             groups[layers].enter = Some(Step::Enter {
                 fragment: fragment_box,
@@ -278,11 +308,6 @@ fn gather<'a, W: Walker<'a>>(
                 state: state.clone(),
             });
         }
-        let kind = if !root {
-            stacking(boxes, fragment_box, in_line)
-        } else {
-            Stacking::Normal
-        };
         match kind {
             Stacking::Float => {
                 // A float paints as its own layer after block backgrounds and

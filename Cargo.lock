@@ -588,6 +588,7 @@ version = "0.1.0"
 dependencies = [
  "base",
  "cssparser",
+ "display-list",
  "encoding_rs",
  "serde",
  "tracing",
@@ -1655,6 +1656,7 @@ version = "0.1.0"
 dependencies = [
  "base",
  "css",
+ "display-list",
  "dom",
  "text",
  "tracing",

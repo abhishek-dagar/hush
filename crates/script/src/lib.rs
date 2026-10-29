@@ -46,6 +46,22 @@ pub enum EventTarget {
     Document,
 }
 
+/// A `TransitionEvent` or `AnimationEvent` to fire at an element; it
+/// bubbles and is not cancelable (spec 0010, AC-29).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotionEvent<'a> {
+    /// The event type, such as `transitionend`.
+    pub kind: &'a str,
+    /// A `TransitionEvent` when set, else an `AnimationEvent`.
+    pub transition: bool,
+    /// `propertyName` or `animationName`.
+    pub name: &'a str,
+    /// `elapsedTime`, in seconds.
+    pub elapsed_time: f64,
+    /// `pseudoElement`; empty for the element itself.
+    pub pseudo_element: &'a str,
+}
+
 /// A `console` method's level, mapped onto `tracing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleLevel {
@@ -272,6 +288,13 @@ pub trait ScriptHost {
     fn history_go(&mut self, delta: i32);
     /// `history.length`.
     fn history_length(&self) -> u32;
+
+    /// `window.getComputedStyle(element).getPropertyValue(name)` (spec
+    /// 0010, AC-31). Returns the resolved value for `property`, or `None`
+    /// when the engine does not compute it yet.
+    fn computed_style(&self, _element: NodeRef, _property: &str) -> Option<String> {
+        None
+    }
 }
 
 /// What a `location` call does to the session history (spec 0008, AC-27).
@@ -293,6 +316,14 @@ pub trait ScriptEngine {
     fn eval_classic(&mut self, source: &str, url: &str) -> Result<(), ScriptError>;
     /// Fires a lifecycle event (AC-33).
     fn fire_event(&mut self, target: EventTarget, event: &str) -> Result<(), ScriptError>;
+    /// Fires a transition or animation event at `target`, which bubbles up
+    /// through its ancestors, the document and the window (spec 0010,
+    /// AC-29).
+    fn fire_motion_event(
+        &mut self,
+        target: NodeRef,
+        event: &MotionEvent<'_>,
+    ) -> Result<(), ScriptError>;
     /// Runs a due timer's callback, which is then forgotten.
     fn run_timer(&mut self, id: TimerId) -> Result<(), ScriptError>;
     /// Runs promise jobs until none are left.
@@ -323,6 +354,14 @@ impl ScriptEngine for Box<dyn ScriptEngine> {
 
     fn fire_event(&mut self, target: EventTarget, event: &str) -> Result<(), ScriptError> {
         (**self).fire_event(target, event)
+    }
+
+    fn fire_motion_event(
+        &mut self,
+        target: NodeRef,
+        event: &MotionEvent<'_>,
+    ) -> Result<(), ScriptError> {
+        (**self).fire_motion_event(target, event)
     }
 
     fn run_timer(&mut self, id: TimerId) -> Result<(), ScriptError> {

@@ -335,6 +335,17 @@ impl page::ScriptEngine for TimedEngine {
         result
     }
 
+    fn fire_motion_event(
+        &mut self,
+        target: page::NodeRef,
+        event: &page::MotionEvent<'_>,
+    ) -> Result<(), page::ScriptError> {
+        let started = std::time::Instant::now();
+        let result = self.engine.fire_motion_event(target, event);
+        self.timer.add(started);
+        result
+    }
+
     fn run_timer(&mut self, id: page::TimerId) -> Result<(), page::ScriptError> {
         let started = std::time::Instant::now();
         let result = self.engine.run_timer(id);
