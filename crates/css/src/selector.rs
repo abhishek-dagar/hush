@@ -100,7 +100,21 @@ pub(crate) enum Simple {
     /// `:where(<selector list>)` (spec 0010, AC-14).
     Where(Vec<Selector>),
     /// `:has(<relative selector list>)` (spec 0010, AC-15).
-    Has(Vec<Selector>),
+    Has(Vec<RelativeSelector>),
+}
+
+/// A relative selector used inside `:has()`: an optional leading combinator
+/// (`>`, `+`, `~`, or nothing for descendant) followed by a complex selector
+/// whose subject compound is matched against the related element (spec 0010,
+/// AC-15).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RelativeSelector {
+    /// `None` means descendant; otherwise the combinator that relates the
+    /// matched element back to the `:has()` subject.
+    pub(crate) combinator: Option<Combinator>,
+    /// The selector matched against the related element, walking up through
+    /// its own combinators toward (but not past) the subject.
+    pub(crate) selector: Selector,
 }
 
 /// Simple selectors that must all match one element. Empty is `*`.
@@ -163,6 +177,109 @@ pub(crate) fn parse_selector_list(
     in_has: bool,
 ) -> ParseResult<Vec<Selector>> {
     input.parse_comma_separated(|input| parse_selector(input, in_not, in_has))
+}
+
+/// Parses a comma separated selector list forgivingly (spec 0010, AC-14):
+/// each argument that fails to parse is dropped instead of failing the whole
+/// list, used by `:is()` and `:where()`. An empty result matches nothing.
+pub(crate) fn parse_selector_list_forgiving(
+    input: &mut Parser<'_>,
+    in_not: bool,
+    in_has: bool,
+) -> ParseResult<Vec<Selector>> {
+    let list =
+        input.parse_comma_separated_ignoring_errors(|input| parse_selector(input, in_not, in_has));
+    Ok(list)
+}
+
+/// Parses a comma separated list of relative selectors, each an optional
+/// leading combinator (`>`, `+`, `~`, or nothing for descendant) followed by
+/// a complex selector (spec 0010, AC-15).
+///
+/// Parsed manually rather than with `parse_comma_separated` because the
+/// closing `)` of the `:has()` block must be left for `parse_nested_block` to
+/// consume; `parse_comma_separated` would reject it as trailing input.
+pub(crate) fn parse_relative_selector_list(
+    input: &mut Parser<'_>,
+) -> ParseResult<Vec<RelativeSelector>> {
+    let mut list = Vec::new();
+    loop {
+        input.skip_whitespace();
+        let relative = parse_relative_selector(input)?;
+        list.push(relative);
+        input.skip_whitespace();
+        let state = input.state();
+        if matches!(input.next_including_whitespace(), Ok(Token::Comma)) {
+            continue;
+        }
+        input.reset(&state);
+        break;
+    }
+    Ok(list)
+}
+
+/// Parses one relative selector: an optional leading combinator then a
+/// complex selector (spec 0010, AC-15).
+fn parse_relative_selector(input: &mut Parser<'_>) -> ParseResult<RelativeSelector> {
+    let state = input.state();
+    let combinator = match input.next() {
+        Ok(Token::Delim('>')) => Some(Combinator::Child),
+        Ok(Token::Delim('+')) => Some(Combinator::NextSibling),
+        Ok(Token::Delim('~')) => Some(Combinator::LaterSibling),
+        Ok(_) => {
+            input.reset(&state);
+            None
+        }
+        Err(_) => return invalid(),
+    };
+    input.skip_whitespace();
+    // Parse the complex selector: a subject compound, then zero or more
+    // (combinator, compound) pairs. Pseudo elements are not allowed inside
+    // `:has()` (spec 0010, AC-15).
+    let mut compounds = Vec::new();
+    let mut inner_combinators = Vec::new();
+    loop {
+        let (compound, pseudo_element) = parse_compound(input, false, true)?;
+        if pseudo_element.is_some() {
+            return invalid();
+        }
+        compounds.push(compound);
+        let state = input.state();
+        let next_combinator = match input.next_including_whitespace() {
+            Ok(Token::WhiteSpace(_)) => Some(Combinator::Descendant),
+            Ok(Token::Delim('>')) => Some(Combinator::Child),
+            Ok(Token::Delim('+')) => Some(Combinator::NextSibling),
+            Ok(Token::Delim('~')) => Some(Combinator::LaterSibling),
+            Ok(_) => {
+                input.reset(&state);
+                None
+            }
+            Err(_) => None,
+        };
+        match next_combinator {
+            Some(combinator) => {
+                input.skip_whitespace();
+                inner_combinators.push(combinator);
+            }
+            None => break,
+        }
+    }
+    compounds.reverse();
+    inner_combinators.reverse();
+    let specificity = compounds
+        .iter()
+        .map(Compound::specificity)
+        .fold(0, pack_add);
+    let selector = Selector {
+        compounds,
+        combinators: inner_combinators,
+        specificity,
+        pseudo_element: None,
+    };
+    Ok(RelativeSelector {
+        combinator,
+        selector,
+    })
 }
 
 fn parse_selector(input: &mut Parser<'_>, in_not: bool, in_has: bool) -> ParseResult<Selector> {
@@ -312,7 +429,7 @@ fn parse_compound(
                             // `:is()`/`:where()` are forgiving: an invalid argument is
                             // dropped instead of failing the whole list (AC-14).
                             let list = input.parse_nested_block(|input| {
-                                parse_selector_list(input, false, false)
+                                parse_selector_list_forgiving(input, false, false)
                             })?;
                             match name.to_ascii_lowercase().as_str() {
                                 "is" => Simple::Is(list),
@@ -323,9 +440,8 @@ fn parse_compound(
                         "has" if !in_has => {
                             // `:has()` is strict: an invalid argument fails the whole
                             // selector, and nested `:has()` is invalid (AC-15).
-                            let list = input.parse_nested_block(|input| {
-                                parse_selector_list(input, false, true)
-                            })?;
+                            let list = input
+                                .parse_nested_block(|input| parse_relative_selector_list(input))?;
                             Simple::Has(list)
                         }
                         _ => return invalid(),
@@ -389,9 +505,13 @@ impl Compound {
             .map(|simple| match simple {
                 Simple::Id(_) => 1 << 20,
                 Simple::Type { .. } => 1,
-                Simple::Not(list) | Simple::Is(list) | Simple::Has(list) => {
+                Simple::Not(list) | Simple::Is(list) => {
                     list.iter().map(Selector::specificity).fold(0, u32::max)
                 }
+                Simple::Has(list) => list
+                    .iter()
+                    .map(|relative| relative.selector.specificity())
+                    .fold(0, u32::max),
                 Simple::Where(_) => 0,
                 _ => 1 << 10,
             })
@@ -402,9 +522,13 @@ impl Compound {
     fn reads_siblings(&self) -> bool {
         self.0.iter().any(|simple| match simple {
             Simple::FirstChild | Simple::LastChild => true,
-            Simple::Not(list) | Simple::Is(list) | Simple::Where(list) | Simple::Has(list) => {
+            Simple::Not(list) | Simple::Is(list) | Simple::Where(list) => {
                 list.iter().any(Selector::reads_siblings)
             }
+            Simple::Has(list) => list.iter().any(|relative| {
+                relative.selector.reads_siblings()
+                    || relative.combinator.is_some_and(Combinator::is_sibling)
+            }),
             _ => false,
         })
     }
@@ -415,7 +539,7 @@ impl Compound {
 }
 
 impl Simple {
-    fn matches<E: MatchElement + Clone>(&self, element: &E) -> bool {
+    pub(crate) fn matches<E: MatchElement + Clone>(&self, element: &E) -> bool {
         let html = ns!("http://www.w3.org/1999/xhtml");
         match self {
             Self::Type { lower, exact } => {
@@ -464,9 +588,9 @@ impl Simple {
             Self::Where(list) => list
                 .iter()
                 .any(|s| s.compounds.iter().all(|c| c.matches(element))),
-            Self::Has(list) => list.iter().any(|sel| {
+            Self::Has(list) => list.iter().any(|relative| {
                 let mut context = MatchContext::default();
-                sel.has_descendant_matching(element, &mut context)
+                relative.matches_subject(element, &mut context)
             }),
         }
     }
@@ -585,41 +709,59 @@ impl Selector {
         }
         false
     }
-
-    /// Whether any descendant of `root` matches this selector, used for
-    /// `:has()` (spec 0010, AC-15). The subject compound (rightmost) is
-    /// matched against each descendant; combinators then walk up through
-    /// parents and earlier siblings, staying within `root`'s subtree.
-    pub(crate) fn has_descendant_matching<E: MatchElement + Clone>(
-        &self,
-        root: &E,
-        context: &mut MatchContext<E>,
-    ) -> bool {
-        let mut candidate = root.first_child_element();
-        while let Some(descendant) = candidate {
-            if self.matches_compounds(&descendant, context) {
-                return true;
-            }
-            candidate = next_descendant(&descendant);
-        }
-        false
-    }
 }
 
-/// The next element in tree order after `element`: its first child, else its
-/// next sibling, else the next sibling of the nearest ancestor that has one.
-fn next_descendant<E: MatchElement + Clone>(element: &E) -> Option<E> {
-    if let Some(child) = element.first_child_element() {
-        return Some(child);
+impl RelativeSelector {
+    /// Whether the element related to `subject` by this relative selector
+    /// exists (descendant, child, next sibling, or later siblings), matching
+    /// the inner selector against it per spec 0010, AC-15.
+    fn matches_subject<E: MatchElement + Clone>(
+        &self,
+        subject: &E,
+        context: &mut MatchContext<E>,
+    ) -> bool {
+        let candidates: Vec<E> = match self.combinator {
+            None | Some(Combinator::Descendant) => {
+                // Descendant: every element in subject's subtree, in tree order.
+                // The walk stays inside subject's subtree: it only follows
+                // first-child / next-sibling links downward, so a following
+                // sibling of the subject (or of an ancestor) is never seen.
+                let mut out = Vec::new();
+                let mut stack: Vec<E> = Vec::new();
+                if let Some(child) = subject.first_child_element() {
+                    stack.push(child);
+                }
+                while let Some(node) = stack.pop() {
+                    out.push(node.clone());
+                    // Collect children so they are visited in tree order.
+                    let mut children: Vec<E> = Vec::new();
+                    let mut child = node.first_child_element();
+                    while let Some(ch) = child {
+                        children.push(ch.clone());
+                        child = ch.next_sibling_element();
+                    }
+                    for ch in children.into_iter().rev() {
+                        stack.push(ch);
+                    }
+                }
+                out
+            }
+            Some(Combinator::Child) => subject.first_child_element().into_iter().collect(),
+            Some(Combinator::NextSibling) => subject.next_sibling_element().into_iter().collect(),
+            Some(Combinator::LaterSibling) => {
+                let mut out = Vec::new();
+                let mut candidate = subject.next_sibling_element();
+                while let Some(sibling) = candidate {
+                    out.push(sibling.clone());
+                    candidate = sibling.next_sibling_element();
+                }
+                out
+            }
+        };
+        candidates
+            .into_iter()
+            .any(|candidate| self.selector.matches_compounds(&candidate, context))
     }
-    let mut current = element.clone();
-    while let Some(parent) = current.parent_element() {
-        if let Some(sibling) = parent.next_sibling_element() {
-            return Some(sibling);
-        }
-        current = parent;
-    }
-    None
 }
 
 #[cfg(test)]
@@ -671,6 +813,15 @@ pub(crate) mod tests {
         assert!(parse("div:is(:not(.foo))").is_some());
         // Combinators are not allowed inside `:not()`.
         assert!(parse("div:not(.foo .bar)").is_none());
+    }
+
+    #[test]
+    fn is_where_are_forgiving() {
+        // AC-14: an invalid argument inside :is()/:where() is dropped, not the whole list.
+        assert!(parse("div:is(#t, :bogus())").is_some());
+        let kept = parse("div:is(#t, :bogus())").unwrap();
+        assert_eq!(kept[0].specificity(), (1 << 20) + 1);
+        assert!(parse("div:where(.foo, :not-a-real-pseudo)").is_some());
     }
 
     #[test]
@@ -762,5 +913,134 @@ pub(crate) mod tests {
         assert!(parse("div:has(:not(.foo))").is_some());
         // `:has(.foo .bar)` is valid — descendant combinator inside `:has()`.
         assert!(parse("div:has(.foo .bar)").is_some());
+    }
+
+    #[test]
+    fn has_relative_combinators_match_subject() {
+        // AC-15: :has() with child, next-sibling and later-sibling combinators.
+        use std::rc::Rc;
+
+        use base::atoms::{Atom, QualName};
+        use base::local_name;
+
+        use super::{MatchElement, PseudoState};
+
+        #[derive(Clone, Default)]
+        struct Node {
+            id: Option<Atom>,
+            classes: Vec<Atom>,
+            first_child: Option<Rc<Node>>,
+            next_sibling: Option<Rc<Node>>,
+        }
+
+        impl Node {
+            fn elem(id: &str) -> Rc<Self> {
+                Rc::new(Self {
+                    id: Some(Atom::from(id)),
+                    ..Self::default()
+                })
+            }
+            fn with_class(mut self: Rc<Self>, class: &str) -> Rc<Self> {
+                Rc::get_mut(&mut self)
+                    .unwrap()
+                    .classes
+                    .push(Atom::from(class));
+                self
+            }
+        }
+
+        impl MatchElement for Rc<Node> {
+            fn name(&self) -> &QualName {
+                static DIV: std::sync::LazyLock<QualName> =
+                    std::sync::LazyLock::new(|| QualName::html(local_name!("div")));
+                &DIV
+            }
+            fn id(&self) -> Option<&Atom> {
+                self.id.as_ref()
+            }
+            fn classes(&self) -> &[Atom] {
+                &self.classes
+            }
+            fn attribute(&self, _name: &QualName) -> Option<&str> {
+                None
+            }
+            fn parent_element(&self) -> Option<Self> {
+                None
+            }
+            fn first_child_element(&self) -> Option<Self> {
+                self.first_child.as_ref().map(Rc::clone)
+            }
+            fn prev_sibling_element(&self) -> Option<Self> {
+                None
+            }
+            fn next_sibling_element(&self) -> Option<Self> {
+                self.next_sibling.as_ref().map(Rc::clone)
+            }
+            fn is_root(&self) -> bool {
+                false
+            }
+            fn same_attributes(&self, _other: &Self) -> bool {
+                true
+            }
+            fn same_state(&self, _other: &Self) -> bool {
+                true
+            }
+            fn is_in_state(&self, _state: PseudoState) -> bool {
+                false
+            }
+            fn has_shadow_root(&self) -> bool {
+                false
+            }
+            fn is_affected_by_sibling_selectors(&self) -> bool {
+                false
+            }
+        }
+
+        // deep is a child of t; t is a child of h. Set child links while each
+        // node is still unique, so no Rc is cloned before its own mutation.
+        let deep = Node::with_class(Node::elem("deep"), "deep");
+        let mut t = Node::elem("t");
+        Rc::get_mut(&mut t).unwrap().first_child = Some(Rc::clone(&deep));
+        let mut h = Node::elem("h");
+        Rc::get_mut(&mut h).unwrap().first_child = Some(Rc::clone(&t));
+        // div#g followed by span.sib
+        let mut g = Node::elem("g");
+        let sib = Node::with_class(Node::elem("sib"), "sib");
+        Rc::get_mut(&mut g).unwrap().next_sibling = Some(Rc::clone(&sib));
+        // div#a followed by span.far
+        let mut a = Node::elem("a");
+        let far = Node::with_class(Node::elem("far"), "far");
+        Rc::get_mut(&mut a).unwrap().next_sibling = Some(Rc::clone(&far));
+
+        // #h:has(> #t) matches #h because #h has a child #t.
+        let sel = &parse("#h:has(> #t)").unwrap()[0];
+        assert!(
+            sel.matches_compounds(&h, &mut Default::default()),
+            "child combinator :has(> #t)"
+        );
+        // #g:has(+ .sib) matches #g because #g's next sibling is .sib.
+        let sel = &parse("#g:has(+ .sib)").unwrap()[0];
+        assert!(
+            sel.matches_compounds(&g, &mut Default::default()),
+            "next sibling :has(+ .sib)"
+        );
+        // #a:has(~ .far) matches #a because #a has a later sibling .far.
+        let sel = &parse("#a:has(~ .far)").unwrap()[0];
+        assert!(
+            sel.matches_compounds(&a, &mut Default::default()),
+            "later sibling :has(~ .far)"
+        );
+        // A non-subject must not match.
+        let sel = &parse("#h:has(> #t)").unwrap()[0];
+        assert!(
+            !sel.matches_compounds(&g, &mut Default::default()),
+            "#g is not a :has(> #t) subject"
+        );
+        // Descendant form still works: #h:has(.deep) where #t has a child .deep.
+        let sel = &parse("#h:has(.deep)").unwrap()[0];
+        assert!(
+            sel.matches_compounds(&h, &mut Default::default()),
+            "descendant :has(.deep)"
+        );
     }
 }

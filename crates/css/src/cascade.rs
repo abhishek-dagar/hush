@@ -387,58 +387,77 @@ fn compute_custom(
     parent: &Rc<CustomProperties>,
     properties: &HashMap<Atom, PropertyRule>,
 ) -> Rc<CustomProperties> {
+    let mut map = parent.as_ref().clone();
     if declared.is_empty() {
-        return Rc::clone(parent);
-    }
-    let mut map = (**parent).clone();
-    let mut raw: HashMap<Atom, Rc<str>> = HashMap::new();
-    for (&name, value) in declared {
-        match value {
-            DeclaredValue::Wide(CssWide::Initial) => {
-                map.remove(name);
-            }
-            DeclaredValue::Custom(text) => {
-                raw.insert(name.clone(), Rc::clone(text));
-            }
-            _ => {}
+        // Nothing declared: only seeded initial values can change the map.
+        // Skip the allocation when there are no registered non-inherited
+        // properties, which is the common case (no `@property` at all).
+        if !properties.values().any(|rule| !rule.inherits) {
+            return Rc::clone(parent);
         }
-    }
-    let mut resolver = Resolver {
-        raw: &raw,
-        parent,
-        done: HashMap::new(),
-        stack: Vec::new(),
-        cyclic: HashSet::new(),
-    };
-    for name in raw.keys() {
-        resolver.resolve(name);
-    }
-    let done = resolver.done;
-    for (name, value) in &done {
-        if let Some(value) = value {
-            map.insert(name.clone(), value.clone());
+    } else {
+        let mut raw: HashMap<Atom, Rc<str>> = HashMap::new();
+        for (&name, value) in declared {
+            match value {
+                DeclaredValue::Wide(CssWide::Initial) => {
+                    map.remove(name);
+                }
+                DeclaredValue::Custom(text) => {
+                    raw.insert(name.clone(), Rc::clone(text));
+                }
+                _ => {}
+            }
         }
-    }
-    // Validate custom properties declared on this element that are
-    // registered with `@property`. A value that does not match the registered
-    // syntax falls back to the initial value when the property does not
-    // inherit, and to the inherited value (already in `map`) when it does
-    // (spec 0010, AC-10).
-    for name in declared.keys() {
-        let Some(rule) = properties.get(name) else {
-            continue;
+        let mut resolver = Resolver {
+            raw: &raw,
+            parent,
+            done: HashMap::new(),
+            stack: Vec::new(),
+            cyclic: HashSet::new(),
         };
+        for name in raw.keys() {
+            resolver.resolve(name);
+        }
+        let done = resolver.done;
+        for (name, value) in &done {
+            if let Some(value) = value {
+                map.insert(name.clone(), value.clone());
+            }
+        }
+        // Validate custom properties declared on this element that are
+        // registered with `@property`. A value that does not match the registered
+        // syntax falls back to the initial value when the property does not
+        // inherit, and to the inherited value (already in `map`) when it does
+        // (spec 0010, AC-10).
+        for name in declared.keys() {
+            let Some(rule) = properties.get(name) else {
+                continue;
+            };
+            if rule.inherits {
+                continue;
+            }
+            let valid = done
+                .get(name)
+                .and_then(|v| v.as_deref())
+                .is_some_and(|text| syntax_matches(text, &rule.syntax));
+            if !valid {
+                // A custom value that fails validation lands as the initial value.
+                map.insert((*name).clone(), Rc::clone(&rule.initial));
+            }
+        }
+    }
+    // A registered custom property that is never declared on this element
+    // (and does not inherit) computes to its `@property initial-value`.
+    // Seeding it here makes `var(--name)` resolve to that value
+    // (spec 0010, AC-10).
+    for (name, rule) in properties {
+        if declared.contains_key(name) {
+            continue;
+        }
         if rule.inherits {
             continue;
         }
-        let valid = done
-            .get(name)
-            .and_then(|v| v.as_deref())
-            .is_some_and(|text| syntax_matches(text, &rule.syntax));
-        if !valid {
-            // A custom value that fails validation lands as the initial value.
-            map.insert((*name).clone(), Rc::clone(&rule.initial));
-        }
+        map.insert(name.clone(), Rc::clone(&rule.initial));
     }
     Rc::new(map)
 }
@@ -1425,6 +1444,66 @@ fn lighter(parent: u16) -> u16 {
 mod tests {
     use super::*;
 
+    use std::rc::Rc;
+
+    use crate::parse_stylesheet;
+    use crate::{ContainerContext, MatchContext, MatchElement, Origin, Stylist};
+    use base::atoms::{Atom, QualName};
+
+    /// A minimal element that matches only by its `id`, enough to exercise the
+    /// cascade's layer ordering.
+    #[derive(Clone)]
+    struct MockElement {
+        id: Option<Atom>,
+        name: QualName,
+        classes: Vec<Atom>,
+    }
+
+    impl MatchElement for MockElement {
+        fn name(&self) -> &QualName {
+            &self.name
+        }
+        fn id(&self) -> Option<&Atom> {
+            self.id.as_ref()
+        }
+        fn classes(&self) -> &[Atom] {
+            &self.classes
+        }
+        fn attribute(&self, _: &QualName) -> Option<&str> {
+            None
+        }
+        fn parent_element(&self) -> Option<Self> {
+            None
+        }
+        fn first_child_element(&self) -> Option<Self> {
+            None
+        }
+        fn prev_sibling_element(&self) -> Option<Self> {
+            None
+        }
+        fn next_sibling_element(&self) -> Option<Self> {
+            None
+        }
+        fn is_root(&self) -> bool {
+            false
+        }
+        fn same_attributes(&self, _: &Self) -> bool {
+            true
+        }
+        fn same_state(&self, _: &Self) -> bool {
+            true
+        }
+        fn is_in_state(&self, _: crate::PseudoState) -> bool {
+            false
+        }
+        fn has_shadow_root(&self) -> bool {
+            false
+        }
+        fn is_affected_by_sibling_selectors(&self) -> bool {
+            false
+        }
+    }
+
     fn resolve(text: &str, vars: &[(&str, &str)]) -> Option<String> {
         let mut lookup = |name: &str| {
             vars.iter()
@@ -1546,6 +1625,74 @@ mod tests {
             bad.custom.get(&Atom::from("foo")).map(|v| v.as_ref()),
             Some("8px")
         );
+    }
+
+    #[test]
+    fn a_registered_custom_property_seeds_its_initial_value() {
+        // AC-10a: a property that is never declared and does not inherit
+        // computes to its `@property initial-value`, so `var(--w)` resolves
+        // to 50px instead of being dropped.
+        let mut properties = HashMap::new();
+        properties.insert(
+            Atom::from("w"),
+            PropertyRule {
+                name: Atom::from("w"),
+                syntax: crate::properties::PropertySyntax::Length,
+                inherits: false,
+                initial: Rc::from("50px"),
+            },
+        );
+        let ok = computed_with_properties("width: var(--w);", &properties);
+        assert_eq!(
+            ok.custom.get(&Atom::from("w")).map(|v| v.as_ref()),
+            Some("50px")
+        );
+        assert_eq!(ok.size.width, Some(Length::Au(Au::from_px(50.0))));
+    }
+
+    #[test]
+    fn a_non_inherited_custom_property_does_not_leak_from_the_parent() {
+        // AC-10b: `inherits: false` blocks a parent's value; the child
+        // computes to its own initial-value (50px), not the parent's 80px.
+        let mut properties = HashMap::new();
+        properties.insert(
+            Atom::from("w"),
+            PropertyRule {
+                name: Atom::from("w"),
+                syntax: crate::properties::PropertySyntax::Length,
+                inherits: false,
+                initial: Rc::from("50px"),
+            },
+        );
+        // Parent declares --w: 80px.
+        let parent = computed_with_properties("--w: 80px;", &properties);
+        assert_eq!(
+            parent.custom.get(&Atom::from("w")).map(|v| v.as_ref()),
+            Some("80px")
+        );
+        // Child references var(--w) without declaring --w.
+        let device = Device {
+            width: 800.0,
+            height: 600.0,
+            color_scheme: crate::media::ColorScheme::Light,
+            reduced_motion: false,
+        };
+        let decls = crate::parse_declarations("width: var(--w);", None);
+        let child = compute(
+            &decls,
+            &CascadeInputs {
+                parent: Some(&parent),
+                root_font_size: Au::from_px(16.0),
+                device: &device,
+                container_size: None,
+                properties: &properties,
+            },
+        );
+        assert_eq!(
+            child.custom.get(&Atom::from("w")).map(|v| v.as_ref()),
+            Some("50px")
+        );
+        assert_eq!(child.size.width, Some(Length::Au(Au::from_px(50.0))));
     }
 
     #[test]
@@ -1709,5 +1856,43 @@ mod tests {
         );
         assert_eq!(without.size.width, Some(Length::Au(Au::from_px(400.0))));
         assert_eq!(without.size.height, Some(Length::Au(Au::from_px(150.0))));
+    }
+
+    #[test]
+    fn layer_statement_fixes_cascade_order() {
+        // AC-9: `@layer a, b;` declares the order a then b across sheets, so
+        // the later layer `b` wins even though its rule comes after `a`'s.
+        // Without the statement form registering the layers, `a` (id 1) wins
+        // over `b` (id 0) and the width is 10px instead of 20px.
+        let sheet = Rc::new(parse_stylesheet(
+            "@layer a, b; @layer b { #t { width: 20px; } } @layer a { #t { width: 10px; } }",
+            Origin::Author,
+            None,
+        ));
+        let device = Device {
+            width: 800.0,
+            height: 600.0,
+            color_scheme: crate::media::ColorScheme::Light,
+            reduced_motion: false,
+        };
+        let stylist = Stylist::new(&[sheet], device);
+        let element = MockElement {
+            id: Some(Atom::from("t")),
+            name: QualName::html(base::local_name!("div")),
+            classes: vec![],
+        };
+        let mut context = MatchContext::default();
+        let (style, _) = stylist.cascade(
+            &element,
+            None,
+            &[],
+            Au::from_px(16.0),
+            &ContainerContext {
+                size: None,
+                names: &[],
+            },
+            &mut context,
+        );
+        assert_eq!(style.size.width, Some(Length::Au(Au::from_px(20.0))));
     }
 }

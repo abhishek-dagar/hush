@@ -201,21 +201,24 @@ fn parse_calc(input: &mut Parser<'_>, name: &str, depth: u32) -> ParseResult<Spe
         return invalid();
     }
     input.parse_nested_block(|input| match name {
-        "calc" => parse_calc_sum(input, depth + 1),
-        "min" => parse_comma(input, depth + 1).and_then(|terms| {
+        // Depth counts calc-nesting levels, incremented once per level in
+        // `parse_calc_value` when it recurses into a nested function. The
+        // sum/product/value parsing inside one function does not add a level.
+        "calc" => parse_calc_sum(input, depth),
+        "min" => parse_comma(input, depth).and_then(|terms| {
             if terms.is_empty() {
                 return invalid();
             }
             Ok(SpecifiedCalcExpr::Min(terms))
         }),
-        "max" => parse_comma(input, depth + 1).and_then(|terms| {
+        "max" => parse_comma(input, depth).and_then(|terms| {
             if terms.is_empty() {
                 return invalid();
             }
             Ok(SpecifiedCalcExpr::Max(terms))
         }),
         "clamp" => {
-            let mut terms = parse_comma(input, depth + 1)?;
+            let mut terms = parse_comma(input, depth)?;
             if terms.len() != 3 {
                 return invalid();
             }
@@ -294,6 +297,12 @@ fn parse_calc_value(input: &mut Parser<'_>, depth: u32) -> ParseResult<Specified
         return Ok(inner);
     }
     match *input.next()? {
+        Token::ParenthesisBlock => {
+            // A parenthesised sum: `(50% - 10px)`. cssparser delivers this as a
+            // ParenthesisBlock; parse_nested_block consumes it and parses the
+            // inner as a calc sum without adding a calc-nesting level.
+            input.parse_nested_block(|input| parse_calc_sum(input, depth))
+        }
         Token::Dimension {
             value, ref unit, ..
         } => length_from_unit(value, unit)
@@ -755,6 +764,37 @@ mod tests {
         ));
         // Non-math functions still fail.
         assert_eq!(length("foo(1px)", any), None);
+    }
+
+    #[test]
+    fn calc_parens_and_depth_limit() {
+        // AC-8: parentheses parse, and depth counts once per nesting level.
+        let any = LengthRules::ANY;
+        assert!(matches!(
+            length("calc((50% - 10px) / 2)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("calc((calc(10px + 2px) * 3))", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        // `value * number` and `number * value` both work; `/` scales by the
+        // reciprocal.
+        assert!(matches!(
+            length("calc(2 * 10px)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        assert!(matches!(
+            length("calc(100px / 2)", any),
+            Some(SpecifiedLength::Calc(_))
+        ));
+        // 17 to 32 nested calc() levels are valid; 33 is not.
+        for n in 17..=32 {
+            let deep = "calc(".repeat(n) + "0px" + &")".repeat(n);
+            assert!(length(&deep, any).is_some(), "depth {n} should be valid");
+        }
+        let too_deep = "calc(".repeat(33) + "0px" + &")".repeat(33);
+        assert_eq!(length(&too_deep, any), None);
     }
 
     #[test]
