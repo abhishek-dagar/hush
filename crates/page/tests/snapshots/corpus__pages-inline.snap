@@ -32,7 +32,7 @@ expression: "dumps(&page, &list)"
       p
         "Before "
         span class="ib"
-        " an inline block sits on the baseline."
+        " an inline block is centered by vertical-align: middle."
       "\n"
       p class="pre"
         "pre  keeps   spaces\nand newlines"
@@ -93,8 +93,8 @@ html>body>p[9]>sup: font-family: serif; font-size: 13.33px
 
 == fragments ==
 fragments viewport=800x600
-  box html at=0,0 size=800x554.95
-    box html>body at=8,16 size=300x522.95 overflow=(0,0 560.18x522.95)
+  box html at=0,0 size=800x556.3
+    box html>body at=8,16 size=300x524.3 overflow=(0,0 560.18x524.3)
       box html>body>p[1] at=0,0 size=300x80.65
         line at=0,0 size=300x37.62 baseline=29.62
           text html>body>p[1]>#text[1] at=0,12.68 size=215.97x21.52 baseline=16.93 "Words wrap at spaces across "
@@ -119,35 +119,35 @@ fragments viewport=800x600
           text html>body>p[2]>#text[2] at=165.37,0 size=119.23x21.52 baseline=16.93 " keeps its edges "
         line at=0,43.03 size=300x21.52 baseline=16.93
           text html>body>p[2]>#text[2] at=0,0 size=213.23x21.52 baseline=16.93 "on the first and last fragment."
-      box html>body>p[3] at=0,177.2 size=300x56.1 overflow=(0,0 300.02x56.1)
-        line at=0,0 size=300.02x34.58 baseline=30
-          text html>body>p[3]>#text[1] at=0,13.07 size=52.52x21.52 baseline=16.93 "Before "
-          box html>body>p[3]>span at=52.52,0 size=60x30
-          text html>body>p[3]>#text[2] at=112.52,13.07 size=187.5x21.52 baseline=16.93 " an inline block sits on the "
-        line at=0,34.58 size=300x21.52 baseline=16.93
-          text html>body>p[3]>#text[2] at=0,0 size=62.03x21.52 baseline=16.93 "baseline."
-      box html>body>p[4] at=0,249.3 size=300x43.03
+      box html>body>p[3] at=0,177.2 size=300x57.45 overflow=(0,0 303.75x57.45)
+        line at=0,0 size=303.75x35.93 baseline=16.93
+          text html>body>p[3]>#text[1] at=0,0 size=52.52x21.52 baseline=16.93 "Before "
+          box html>body>p[3]>span at=52.52,5.93 size=60x30
+          text html>body>p[3]>#text[2] at=112.52,0 size=191.23x21.52 baseline=16.93 " an inline block is centered "
+        line at=0,35.93 size=300x21.52 baseline=16.93
+          text html>body>p[3]>#text[2] at=0,0 size=171.92x21.52 baseline=16.93 "by vertical-align: middle."
+      box html>body>p[4] at=0,250.65 size=300x43.03
         line at=0,0 size=300x21.52 baseline=16.93
           text html>body>p[4]>#text at=0,0 size=136.02x21.52 baseline=16.93 "pre  keeps   spaces"
         line at=0,21.52 size=300x21.52 baseline=16.93
           text html>body>p[4]>#text at=0,0 size=92.92x21.52 baseline=16.93 "and newlines"
-      box html>body>p[5] at=0,308.33 size=300x21.52 overflow=(0,0 560.18x21.52)
+      box html>body>p[5] at=0,309.68 size=300x21.52 overflow=(0,0 560.18x21.52)
         line at=0,0 size=560.18x21.52 baseline=16.93
           text html>body>p[5]>#text at=0,0 size=560.18x21.52 baseline=16.93 "nowrap text runs past the edge of its narrow container without wrapping at all"
-      box html>body>p[6] at=0,345.85 size=300x21.52
+      box html>body>p[6] at=0,347.2 size=300x21.52
         line at=0,0 size=300x21.52 baseline=16.93
           text html>body>p[6]>#text at=104.03,0 size=91.93x21.52 baseline=16.93 "centered line"
-      box html>body>p[7] at=0,383.37 size=300x21.52
+      box html>body>p[7] at=0,384.72 size=300x21.52
         line at=0,0 size=300x21.52 baseline=16.93
           text html>body>p[7]>#text at=212.67,0 size=87.33x21.52 baseline=16.93 "right aligned"
-      box html>body>p[8] at=0,420.88 size=300x64.55
+      box html>body>p[8] at=0,422.23 size=300x64.55
         line at=0,0 size=300x21.52 baseline=16.93
           text html>body>p[8]>#text at=0,0 size=299.9x21.52 baseline=16.93 "The first line is indented, the rest are not, "
         line at=0,21.52 size=300x21.52 baseline=16.93
           text html>body>p[8]>#text at=0,0 size=272.42x21.52 baseline=16.93 "when the paragraph wraps onto more "
         line at=0,43.03 size=300x21.52 baseline=16.93
           text html>body>p[8]>#text at=0,0 size=36.97x21.52 baseline=16.93 "lines."
-      box html>body>p[9] at=0,501.43 size=300x21.52
+      box html>body>p[9] at=0,502.78 size=300x21.52
         line at=0,0 size=300x21.52 baseline=16.93
           box html>body>p[9]>u at=0,0 size=74.72x21.52 inline
             text html>body>p[9]>u>#text at=0,0 size=74.72x21.52 baseline=16.93 "underlined"
@@ -188,9 +188,9 @@ items
   s1 clip=- text font=0 size=16 #000000ff glyphs=17
   s1 clip=- text font=0 size=16 #000000ff glyphs=31
   s1 clip=- text font=0 size=16 #000000ff glyphs=7
-  s1 clip=- rect (60.52,193.2 60x30) #88ccffff
+  s1 clip=- rect (60.52,199.13 60x30) #88ccffff
   s1 clip=- text font=0 size=16 #000000ff glyphs=29
-  s1 clip=- text font=0 size=16 #000000ff glyphs=9
+  s1 clip=- text font=0 size=16 #000000ff glyphs=26
   s1 clip=- text font=0 size=16 #000000ff glyphs=19
   s1 clip=- text font=0 size=16 #000000ff glyphs=12
   s1 clip=- text font=0 size=16 #000000ff glyphs=78
@@ -200,7 +200,7 @@ items
   s1 clip=- text font=0 size=16 #000000ff glyphs=35
   s1 clip=- text font=0 size=16 #000000ff glyphs=6
   s1 clip=- text font=0 size=16 #000000ff glyphs=10
-  s1 clip=- rect (8,536.62 74.72x1) #000000ff
+  s1 clip=- rect (8,537.97 74.72x1) #000000ff
   s1 clip=- text font=0 size=16 #000000ff glyphs=2
   s1 clip=- text font=0 size=16 #000000ff glyphs=4
   s1 clip=- text font=0 size=16 #000000ff glyphs=2

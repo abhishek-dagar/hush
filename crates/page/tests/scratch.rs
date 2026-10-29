@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use display_list::{PageId, SizeF};
-use ipc::{DocumentKind, FetchId, NavigationId, ToBrowser};
+use ipc::{Destination, DocumentKind, FetchId, NavigationId, ToBrowser};
 use page::{FontContext, Page};
 
 const NAV: NavigationId = NavigationId(1);
@@ -21,12 +21,20 @@ const VIEWPORT: SizeF = SizeF {
 
 fn root() -> PathBuf {
     PathBuf::from(std::env::var("SCRATCH_PAGE").expect("SCRATCH_PAGE"))
+        .parent()
+        .expect("parent")
+        .to_path_buf()
 }
 
-fn serve(page: &mut Page, fetch: FetchId, url: &str) {
+fn serve(page: &mut Page, fetch: FetchId, url: &str, destination: Destination) {
     let path = url.strip_prefix(ORIGIN).map(|rest| root().join(rest));
     let body = path.and_then(|path| std::fs::read(path).ok());
-    let headers = [("content-type".to_owned(), "text/plain".to_owned())];
+    let content_type = match destination {
+        Destination::Style => "text/css",
+        Destination::Script => "text/javascript",
+        Destination::Image | Destination::Favicon | Destination::Font => "application/octet-stream",
+    };
+    let headers = [("content-type".to_owned(), content_type.to_owned())];
     match body {
         Some(body) => {
             page.fetch_response(NAV, fetch, 200, &headers, url);
@@ -44,7 +52,12 @@ fn settle(page: &mut Page) {
             .take_fetch_messages()
             .into_iter()
             .filter_map(|message| match message {
-                ToBrowser::Fetch { fetch, url, .. } => Some((fetch, url)),
+                ToBrowser::Fetch {
+                    fetch,
+                    url,
+                    destination,
+                    ..
+                } => Some((fetch, url, destination)),
                 _ => None,
             })
             .collect();
@@ -59,8 +72,8 @@ fn settle(page: &mut Page) {
             }
             continue;
         }
-        for (fetch, url) in fetches {
-            serve(page, fetch, &url);
+        for (fetch, url, destination) in fetches {
+            serve(page, fetch, &url, destination);
         }
     }
     panic!("the page never settled");
@@ -68,8 +81,12 @@ fn settle(page: &mut Page) {
 
 #[test]
 fn dump_one_page() {
-    let path = root();
-    let name = path.file_name().expect("name").to_string_lossy();
+    let path = PathBuf::from(std::env::var("SCRATCH_PAGE").expect("SCRATCH_PAGE"));
+    let name = path
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .into_owned();
     let bytes = std::fs::read(&path).expect("read");
     let mut page = Page::blank(PageId(1), VIEWPORT, 1.0, page::ua_stylesheet());
     let font = std::fs::read(
@@ -89,6 +106,7 @@ fn dump_one_page() {
     page.end_task();
     settle(&mut page);
     let frame = page.main_frame();
+    println!("{}", frame.document.dump_styles());
     println!(
         "{}",
         frame

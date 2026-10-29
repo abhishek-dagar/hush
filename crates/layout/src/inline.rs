@@ -15,7 +15,8 @@ use std::rc::Rc;
 
 use base::{Au, BoxId, Point, Rect, SideOffsets, Size};
 use css::{
-    ComputedStyle, FontStyle, LineHeight, OverflowWrap, TextAlign, TextOverflow, WhiteSpace,
+    ComputedStyle, FontStyle, LineHeight, OverflowWrap, TextAlign, TextOverflow, VerticalAlign,
+    WhiteSpace,
 };
 use dom::NodeId;
 use text::{FontDescriptor, LineMetrics, ShapedRun, Slant};
@@ -497,6 +498,41 @@ fn atomic_width(fragment: &Fragment) -> Option<Au> {
     Some(fragment.margins.left + fragment.size.width + fragment.margins.right)
 }
 
+/// An atomic inline's `vertical-align` (spec 0009, child 0004, AC-16).
+fn atomic_align(tree: &BoxTree, id: BoxId) -> VerticalAlign {
+    tree.get(id).map_or(VerticalAlign::Baseline, |layout_box| {
+        layout_box.style.vertical_align
+    })
+}
+
+/// Where an atomic inline's border box starts, from the line's top, for its
+/// `vertical-align`: `baseline` sits its margin box on the line's baseline,
+/// `top` and `bottom` align that margin box with the line box, and `middle`
+/// centers it on the baseline plus half the x-height (CSS 2.2 section
+/// 10.8.1).
+fn atomic_offset(
+    fragment: &BoxFragment,
+    align: VerticalAlign,
+    ascent: Au,
+    line_height: Au,
+    x_height: Au,
+) -> Au {
+    let margin_top = fragment.margins.top.resolve();
+    let margin_bottom = fragment.margins.bottom.resolve();
+    match align {
+        VerticalAlign::Baseline => {
+            let (atomic_ascent, _) = atomic_extents(fragment);
+            ascent - atomic_ascent + margin_top
+        }
+        VerticalAlign::Top => margin_top,
+        VerticalAlign::Bottom => line_height - fragment.size.height - margin_bottom,
+        VerticalAlign::Middle => {
+            let total = margin_top + fragment.size.height + margin_bottom;
+            ascent + Au(x_height.0 / 2) - Au(total.0 / 2) + margin_top
+        }
+    }
+}
+
 /// Lays out `items` in lines `available` wide. `style` is the block's, for
 /// the strut every line starts from, the alignment, and the ellipsis an
 /// overflowing line ends in when it clips with `text-overflow: ellipsis`.
@@ -602,7 +638,12 @@ pub(crate) fn lay_out_lines(
                 }
                 PieceKind::Start(id) => grow(cx.box_metrics(*id).1),
                 PieceKind::Atomic(id) => {
-                    if let Some(fragment) = cx.atomics.get(id).and_then(|f| f.as_box()) {
+                    // `top`, `bottom` and `middle` align to the line box, not
+                    // its baseline, so only baseline atomics grow it here
+                    // (CSS 2.2 section 10.8.1).
+                    if let Some(fragment) = cx.atomics.get(id).and_then(|f| f.as_box())
+                        && atomic_align(cx.tree, *id) == VerticalAlign::Baseline
+                    {
                         grow(atomic_extents(fragment));
                     }
                 }
@@ -618,6 +659,33 @@ pub(crate) fn lay_out_lines(
             for run in &ellipsis.runs {
                 grow(extents(run.metrics, style));
             }
+        }
+        // A box aligned to the line's top, bottom or middle grows the line
+        // downward so it fits, without moving the baseline (CSS 2.2 section
+        // 10.8.1).
+        let x_height = Au(style.font.size.0 / 2);
+        for piece in line {
+            let PieceKind::Atomic(id) = &piece.kind else {
+                continue;
+            };
+            let align = atomic_align(cx.tree, *id);
+            if align == VerticalAlign::Baseline {
+                continue;
+            }
+            let Some(fragment) = cx.atomics.get(id).and_then(|f| f.as_box()) else {
+                continue;
+            };
+            let total = fragment.margins.top.resolve()
+                + fragment.size.height
+                + fragment.margins.bottom.resolve();
+            // The margin box's midpoint sits at the baseline plus half the
+            // x-height, so it can reach below the line by half its height
+            // plus that half x-height (CSS 2.2 section 10.8.1).
+            let bottom = match align {
+                VerticalAlign::Middle => ascent.0 + total.0 / 2 + x_height.0 / 2,
+                _ => total.0,
+            };
+            descent = descent.max(Au(bottom - ascent.0));
         }
 
         let used = used_width(line) + shown.map_or(Au::ZERO, |(e, _)| e.width);
@@ -638,8 +706,11 @@ pub(crate) fn lay_out_lines(
             line,
             &mut open,
             x0,
-            ascent,
-            descent,
+            LineExtent {
+                ascent,
+                descent,
+                x_height,
+            },
             &mut absolutes,
         );
         if let Some((ellipsis, node)) = shown {
@@ -818,6 +889,19 @@ struct OpenBox {
     children: Vec<(Point, Rc<Fragment>)>,
 }
 
+/// One line box's vertical extent: how far its content reaches above and
+/// below the baseline, and the x-height `vertical-align: middle` measures
+/// from (CSS 2.2 section 10.8.1).
+#[derive(Debug, Clone, Copy)]
+struct LineExtent {
+    /// From the top of the line box down to its baseline.
+    ascent: Au,
+    /// From the baseline down to the bottom of the line box.
+    descent: Au,
+    /// The font's x-height, approximated as half its size.
+    x_height: Au,
+}
+
 /// Builds one line box. `open` holds the inline boxes open at its start and
 /// is left holding those open at its end. Absolute boxes on the line, and
 /// those its atomic inlines hand on, go to `absolutes`, from the line's top
@@ -827,10 +911,14 @@ fn build_line(
     line: &[Piece],
     open: &mut Vec<BoxId>,
     x0: Au,
-    ascent: Au,
-    descent: Au,
+    extent: LineExtent,
     absolutes: &mut Vec<PendingAbsolute>,
 ) -> LineFragment {
+    let LineExtent {
+        ascent,
+        descent,
+        x_height,
+    } = extent;
     let baseline = ascent;
     let mut stack: Vec<OpenBox> = open
         .iter()
@@ -910,12 +998,15 @@ fn build_line(
                 if let Some(fragment) = cx.atomics.get(id)
                     && let Some(atomic) = fragment.as_box()
                 {
-                    let (atomic_ascent, _) = atomic_extents(atomic);
-                    let at = Point::new(
-                        x + atomic.margins.left,
-                        baseline - atomic_ascent + atomic.margins.top.resolve(),
-                    )
-                    .offset_by(atomic.relative_offset);
+                    let top = atomic_offset(
+                        atomic,
+                        atomic_align(cx.tree, *id),
+                        ascent,
+                        ascent + descent,
+                        x_height,
+                    );
+                    let at =
+                        Point::new(x + atomic.margins.left, top).offset_by(atomic.relative_offset);
                     absolutes.extend(atomic.absolutes.iter().map(|a| a.offset_by(at)));
                     let target = match stack.last_mut() {
                         Some(top) => &mut top.children,
