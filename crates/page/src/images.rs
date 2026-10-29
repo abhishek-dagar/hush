@@ -90,6 +90,38 @@ impl Images {
             .any(|entry| matches!(entry.state, State::Loading { .. }))
     }
 
+    /// The image page's picture comes from the navigation's own body
+    /// (spec 0035, AC-6): `url`'s entry starts loading under
+    /// [`FetchId::DOCUMENT`], so the template's `<img src>` finds it and
+    /// nothing is fetched. The entry stays until the document goes.
+    pub fn adopt_document(&mut self, url: &str) {
+        let url = url::Url::parse(url).map_or_else(|_| url.to_owned(), String::from);
+        self.entries.push(Entry {
+            url,
+            fetch: FetchId::DOCUMENT,
+            state: State::Loading {
+                bytes: Vec::new(),
+                ok: true,
+            },
+        });
+    }
+
+    /// How many body bytes `fetch` received so far, while it loads.
+    pub fn received(&self, fetch: FetchId) -> Option<usize> {
+        self.entries.iter().find_map(|entry| match &entry.state {
+            State::Loading { bytes, .. } if entry.fetch == fetch => Some(bytes.len()),
+            _ => None,
+        })
+    }
+
+    /// The decoded size of `fetch`'s picture, once it is shown.
+    pub fn natural_size(&self, fetch: FetchId) -> Option<(u32, u32)> {
+        self.entries.iter().find_map(|entry| match entry.state {
+            State::Ready { width, height, .. } if entry.fetch == fetch => Some((width, height)),
+            _ => None,
+        })
+    }
+
     /// Whether `fetch` loads one of the images.
     pub fn owns(&self, fetch: FetchId) -> bool {
         self.entries.iter().any(|entry| entry.fetch == fetch)
@@ -162,7 +194,8 @@ impl Images {
             .collect();
         let requests = &mut self.requests;
         self.entries.retain(|entry| {
-            if wanted.contains(&&entry.url) {
+            // The adopted document body is never fetched, so never dropped.
+            if entry.fetch == FetchId::DOCUMENT || wanted.contains(&&entry.url) {
                 return true;
             }
             match entry.state {

@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use base::atoms::Atom;
 use cssparser::{
-    AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserState,
+    AtRuleParser, CowRcStr, DeclarationParser, Delimiter, ParseError, Parser, ParserState,
     QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, StyleSheetParser, Token,
 };
 use encoding_rs::Encoding;
@@ -41,6 +41,9 @@ pub struct Rule {
     /// Whether every enclosing `@supports` condition held when this rule was
     /// parsed (spec 0010, AC-11). A rule inside a false block never applies.
     pub(crate) supports: bool,
+    /// The container names from `@container` rules this rule is nested inside
+    /// (spec 0010, AC-17). `None` when not inside any `@container`.
+    pub(crate) container: Option<Rc<[Atom]>>,
 }
 
 /// A registered custom property from `@property` (spec 0010, AC-10).
@@ -58,6 +61,26 @@ pub struct PropertyRule {
     pub initial: Rc<str>,
 }
 
+/// One `@keyframes` animation: a name and its keyframe selectors with the
+/// declarations that apply at each (spec 0010, AC-24).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyframesRule {
+    /// The animation name, as referenced by `animation-name`.
+    pub name: Atom,
+    /// One entry per keyframe selector block, in source order.
+    pub keyframes: Vec<Keyframe>,
+}
+
+/// One keyframe: the keys it matches (`from` → `0`, `50%` → `50`, `to` →
+/// `100`) and the declarations that apply there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keyframe {
+    /// The key percentages this selector matches, in source order.
+    pub keys: Vec<f32>,
+    /// The declarations that apply at these keys.
+    pub declarations: Rc<[Declaration]>,
+}
+
 /// A parsed style sheet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stylesheet {
@@ -70,6 +93,8 @@ pub struct Stylesheet {
     /// The registered custom properties from `@property`, in source order
     /// (spec 0010, AC-10). Later rules for the same name win.
     pub(crate) properties: Vec<PropertyRule>,
+    /// The `@keyframes` animations, in source order (spec 0010, AC-24).
+    pub(crate) keyframes: Vec<KeyframesRule>,
     /// The `media` attribute of the `<link>` or `<style>` it came from.
     pub media: Option<Rc<MediaList>>,
     /// Whether any value may read the viewport size.
@@ -84,6 +109,7 @@ impl Stylesheet {
             rules: Vec::new(),
             font_faces: Vec::new(),
             properties: Vec::new(),
+            keyframes: Vec::new(),
             media: None,
             uses_viewport_units: false,
         }
@@ -120,9 +146,11 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         media: Vec::new(),
         layer: Vec::new(),
         supports: Vec::new(),
+        container: Vec::new(),
         rules: Vec::new(),
         font_faces: Vec::new(),
         properties: Vec::new(),
+        keyframes: Vec::new(),
     };
     let mut input = Parser::new(text);
     for result in StyleSheetParser::new(&mut input, &mut parser) {
@@ -134,6 +162,7 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         rules,
         font_faces,
         properties,
+        keyframes,
         ..
     } = parser;
     let uses_viewport_units = rules
@@ -145,6 +174,7 @@ pub fn parse_stylesheet(text: &str, origin: Origin, base_url: Option<&str>) -> S
         rules,
         font_faces,
         properties,
+        keyframes,
         media: None,
         uses_viewport_units,
     }
@@ -192,10 +222,16 @@ struct TopLevel<'a> {
     /// outermost first. A rule applies only when every entry is true
     /// (spec 0010, AC-11).
     supports: Vec<bool>,
+    /// The container names from `@container` rules the parser is inside,
+    /// outermost first. `None` means no enclosing `@container`; `Some([])`
+    // means an empty condition form `@container ( ... )`.
+    container: Vec<Option<Rc<[Atom]>>>,
     rules: Vec<Rule>,
     font_faces: Vec<FontFaceRule>,
     /// The registered custom properties from `@property`.
     properties: Vec<PropertyRule>,
+    /// The `@keyframes` animations parsed so far.
+    keyframes: Vec<KeyframesRule>,
 }
 
 /// What an at rule the top level reads turned out to be.
@@ -209,6 +245,10 @@ enum AtPrelude {
     /// The result of an `@supports` condition, evaluated at parse time
     /// (spec 0010, AC-11).
     Supports(bool),
+    /// The container names from an `@container` rule (spec 0010, AC-17).
+    Container(Rc<[Atom]>),
+    /// The name of an `@keyframes` animation (spec 0010, AC-24).
+    Keyframes(Atom),
 }
 
 impl<'i> QualifiedRuleParser<'i> for TopLevel<'_> {
@@ -218,7 +258,7 @@ impl<'i> QualifiedRuleParser<'i> for TopLevel<'_> {
 
     fn parse_prelude(&mut self, input: &mut Parser<'i>) -> Result<Vec<Selector>, ParseError<()>> {
         input.skip_whitespace();
-        parse_selector_list(input)
+        parse_selector_list(input, false, false)
     }
 
     fn parse_block(
@@ -237,6 +277,7 @@ impl<'i> QualifiedRuleParser<'i> for TopLevel<'_> {
             layer: self.layer.last().cloned().flatten(),
             media: Rc::from(self.media.clone()),
             supports: self.supports.iter().all(|&b| b),
+            container: self.container.last().cloned().flatten(),
         });
         Ok(())
     }
@@ -280,19 +321,53 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
             return Ok(AtPrelude::Property(Atom::from(name)));
         }
         if name.eq_ignore_ascii_case("supports") {
-            // `@supports [not] ( ... ) { ... }`. Leading `not`(s) invert the
-            // condition; it is evaluated once, at parse time (AC-11).
-            let mut negated = false;
-            while input.try_parse(|i| i.expect_ident_matching("not")).is_ok() {
-                negated = !negated;
+            // `@supports <condition> { ... }`. The condition may start with
+            // `not`, `and`, `or` or a parenthesized declaration test, so it is
+            // parsed with the full condition grammar (spec 0010, AC-11).
+            input.skip_whitespace();
+            if input
+                .try_parse(|i| i.expect_function_matching("selector"))
+                .is_ok()
+            {
+                let _list =
+                    input.parse_nested_block(|input| parse_selector_list(input, false, false))?;
+                return Ok(AtPrelude::Supports(true));
             }
-            input.expect_parenthesis_block()?;
-            let condition =
-                input.parse_nested_block(|input| parse_supports_condition(input, self.context))?;
-            return Ok(AtPrelude::Supports(condition != negated));
+            let condition = parse_supports_condition(input, self.context)?;
+            return Ok(AtPrelude::Supports(condition));
         }
-        // `@import`, `@supports`, `@keyframes`, `@layer` and the rest
-        // arrive with later features (spec 0004, Follow-up).
+        if name.eq_ignore_ascii_case("container") {
+            // `@container <name> { ... }` or `@container ( ... ) { ... }`.
+            // The name(s) are stored and matched against ancestor containers at
+            // style time (spec 0010, AC-17).
+            let names = if input.try_parse(|i| i.expect_parenthesis_block()).is_ok() {
+                // Condition form: parse but don't evaluate yet; condition
+                // evaluation against container sizes requires the layout pass
+                // loop (AC-18).
+                input.parse_nested_block(|input| {
+                    while input.next().is_ok() {}
+                    Ok(())
+                })?;
+                Rc::from([])
+            } else {
+                // Name form: one or more custom idents.
+                let names: Vec<Atom> = input
+                    .parse_comma_separated(|input| -> Result<Atom, ParseError<()>> {
+                        let ident = input.expect_ident()?;
+                        Ok(Atom::from(ident.as_ref()))
+                    })
+                    .unwrap_or_default();
+                Rc::from(names)
+            };
+            return Ok(AtPrelude::Container(names));
+        }
+        if name.eq_ignore_ascii_case("keyframes") {
+            // `@keyframes name { ... }`. The name is a single ident.
+            let ident = input.expect_ident()?;
+            return Ok(AtPrelude::Keyframes(Atom::from(ident.as_ref())));
+        }
+        // `@import`, `@supports`, `@layer` and the rest arrive with later
+        // features (spec 0004, Follow-up).
         debug!(at_rule = &*name, "css at rule skipped");
         Err(ParseError::unexpected_token())
     }
@@ -342,6 +417,21 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
                 self.supports.pop();
                 return Ok(());
             }
+            AtPrelude::Container(names) => {
+                self.container.push(Some(names));
+                for result in StyleSheetParser::new(input, self) {
+                    if let Err((_, source, _)) = result {
+                        debug!(rule = source, "css rule dropped");
+                    }
+                }
+                self.container.pop();
+                return Ok(());
+            }
+            AtPrelude::Keyframes(name) => {
+                self.keyframes
+                    .push(parse_keyframes_block(input, name, self.context)?);
+                return Ok(());
+            }
         };
         self.media.push(media);
         for result in StyleSheetParser::new(input, self) {
@@ -354,21 +444,121 @@ impl<'i> AtRuleParser<'i> for TopLevel<'_> {
     }
 }
 
+/// Parses the block of an `@keyframes name { ... }` rule: a series of
+/// keyframe selectors, each followed by a declaration block (spec 0010,
+/// AC-24). The enclosing `{ ... }` is already open; this parses until `}`.
+/// Invalid selectors or blocks are dropped as CSS Syntax recovery.
+fn parse_keyframes_block<'i>(
+    input: &mut Parser<'i>,
+    name: Atom,
+    context: &ParseContext,
+) -> Result<KeyframesRule, ParseError<()>> {
+    let mut keyframes = Vec::new();
+    while let Ok(keys) = input.parse_until_before(Delimiter::CurlyBracketBlock, |input| {
+        Ok::<Vec<f32>, ParseError<()>>(
+            input.parse_comma_separated_ignoring_errors(parse_keyframe_selector),
+        )
+    }) {
+        // An empty selector list means we reached the enclosing block's
+        // closing `}` (or a malformed selector), so stop.
+        if keys.is_empty() {
+            break;
+        }
+        // Consume the opening `{`. This sets `at_start_of`, so the
+        // declarations must be read through `parse_nested_block`, which takes
+        // `at_start_of` and stops at the keyframe's closing `}` (left for
+        // cssparser's enclosing `@keyframes` block to close).
+        let _ = input.next().map_err(|_| ParseError::unexpected_token())?;
+        let declarations = input.parse_nested_block(|input| {
+            Ok::<_, ParseError<()>>(parse_declaration_list(input, context))
+        })?;
+        keyframes.push(Keyframe {
+            keys,
+            declarations: Rc::from(declarations),
+        });
+    }
+    Ok(KeyframesRule { name, keyframes })
+}
+
+/// One keyframe selector: `from` (0), `to` (100) or a percentage.
+fn parse_keyframe_selector<'i>(input: &mut Parser<'i>) -> Result<f32, ParseError<()>> {
+    match input.next() {
+        Ok(tok) => match tok {
+            Token::Ident(ident) => match ident.as_ref().to_ascii_lowercase().as_str() {
+                "from" => Ok(0.0),
+                "to" => Ok(100.0),
+                _ => Err(ParseError::unexpected_token()),
+            },
+            Token::Percentage { unit_value, .. } => Ok(unit_value * 100.0),
+            _ => Err(ParseError::unexpected_token()),
+        },
+        Err(_) => Err(ParseError::unexpected_token()),
+    }
+}
+
 /// Parses an `@supports (...)` condition to a boolean, at parse time
 /// (spec 0010, AC-11). A declaration test is true exactly when the property
 /// parser accepts the value; `selector()` is true when the selector parser
-/// accepts it. `not`/`and`/`or` and nested parenthesized conditions arrive
-/// with a follow-up pass.
+/// accepts it. `not`/`and`/`or` and nested parenthesized conditions bind with
+/// the usual precedence (`not` tightest, then `and`, then `or`).
 fn parse_supports_condition(input: &mut Parser<'_>, context: &ParseContext) -> ParseResult<bool> {
-    parse_supports_primary(input, context)
+    parse_supports_or(input, context)
 }
 
-/// One `@supports` primary: a parenthesized condition, `selector(...)`, or a
-/// declaration test `property: value`.
+/// `a or b`: the lowest binding `@supports` combinator. A failed operand
+// counts as false, so `@supports (invalid) or (valid)` is true.
+fn parse_supports_or(input: &mut Parser<'_>, context: &ParseContext) -> ParseResult<bool> {
+    let mut result = parse_supports_and(input, context)?;
+    loop {
+        input.skip_whitespace();
+        if input.try_parse(|i| i.expect_ident_matching("or")).is_ok() {
+            let rhs = input
+                .try_parse(|i| parse_supports_and(i, context))
+                .unwrap_or(false);
+            result = result || rhs;
+        } else {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+/// `a and b`: binds tighter than `or`, looser than `not`. A failed operand
+// counts as false, so `@supports (valid) and (invalid)` is false.
+fn parse_supports_and(input: &mut Parser<'_>, context: &ParseContext) -> ParseResult<bool> {
+    let mut result = parse_supports_primary(input, context)?;
+    loop {
+        input.skip_whitespace();
+        if input.try_parse(|i| i.expect_ident_matching("and")).is_ok() {
+            let rhs = input
+                .try_parse(|i| parse_supports_primary(i, context))
+                .unwrap_or(false);
+            result = result && rhs;
+        } else {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+/// One `@supports` primary: `not <condition>`, a parenthesized condition,
+/// `selector(...)`, or a declaration test `property: value`.
 fn parse_supports_primary(input: &mut Parser<'_>, context: &ParseContext) -> ParseResult<bool> {
     input.skip_whitespace();
+    if input.try_parse(|i| i.expect_ident_matching("not")).is_ok() {
+        // An inner condition that parses to nothing (an invalid declaration
+        // test that consumed no tokens) is false per CSS, so `not` inverts it
+        // to true rather than dropping the whole rule.
+        let result = parse_supports_primary(input, context).unwrap_or(false);
+        return Ok(!result);
+    }
     if input.try_parse(|i| i.expect_parenthesis_block()).is_ok() {
-        let result = input.parse_nested_block(|input| parse_supports_condition(input, context))?;
+        // An inner condition that parses to nothing (an invalid declaration
+        // test that consumed no tokens) is false per CSS, so the whole
+        // condition is false rather than an error that drops the rule.
+        let result = input
+            .parse_nested_block(|input| parse_supports_condition(input, context))
+            .unwrap_or(false);
         return Ok(result);
     }
     if input
@@ -376,7 +566,7 @@ fn parse_supports_primary(input: &mut Parser<'_>, context: &ParseContext) -> Par
         .is_ok()
     {
         input.expect_parenthesis_block()?;
-        let _list = input.parse_nested_block(|input| parse_selector_list(input))?;
+        let _list = input.parse_nested_block(|input| parse_selector_list(input, false, false))?;
         return Ok(true);
     }
     let declaration_matches = input
@@ -611,6 +801,71 @@ mod tests {
     }
 
     #[test]
+    fn at_container_stores_names() {
+        // `@container name` keeps the name on each rule inside.
+        let sheet = parse_stylesheet(
+            "@container card { a { color: red; } }
+             @container foo, bar { b { color: blue; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 2);
+        let names: Vec<_> = sheet
+            .rules
+            .iter()
+            .map(|r| r.container.as_deref().map(|n| n.to_vec()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                Some(vec![Atom::from("card")]),
+                Some(vec![Atom::from("foo"), Atom::from("bar")]),
+            ]
+        );
+
+        // `@container ( ... )` condition form stores an empty name list.
+        let sheet = parse_stylesheet(
+            "@container (width > 100px) { c { color: green; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert_eq!(sheet.rules[0].container.as_deref(), Some(&[] as &[Atom]));
+    }
+
+    #[test]
+    fn at_keyframes_parses_selectors_and_declarations() {
+        let sheet = parse_stylesheet(
+            "@keyframes spin { from { transform: rotate(0deg) } 50% { transform: rotate(180deg) } to { transform: rotate(360deg) } }
+             @keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.keyframes.len(), 2);
+
+        let spin = sheet.keyframes.iter().find(|k| k.name == *"spin").unwrap();
+        assert_eq!(spin.keyframes.len(), 3);
+        assert_eq!(spin.keyframes[0].keys, vec![0.0]);
+        assert_eq!(spin.keyframes[0].declarations.len(), 1);
+        assert_eq!(spin.keyframes[1].keys, vec![50.0]);
+        assert_eq!(spin.keyframes[2].keys, vec![100.0]);
+
+        let fade = sheet.keyframes.iter().find(|k| k.name == *"fade").unwrap();
+        assert_eq!(fade.keyframes[0].keys, vec![0.0]);
+        assert_eq!(fade.keyframes[1].keys, vec![100.0]);
+
+        // An unparseable keyframe selector is dropped, not fatal: the rule
+        // exists but holds no keyframes.
+        let sheet = parse_stylesheet(
+            "@keyframes bogus { bogus { color: red; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.keyframes.len(), 1);
+        assert!(sheet.keyframes[0].keyframes.is_empty());
+    }
+
+    #[test]
     fn at_supports_evaluates_at_parse_time() {
         // A declaration test the parser accepts keeps the rule.
         let sheet = parse_stylesheet(
@@ -620,36 +875,15 @@ mod tests {
         );
         assert_eq!(sheet.len(), 1);
         assert!(sheet.rules[0].supports);
-        // A declaration test the parser rejects drops the rule.
+        // A declaration test the parser rejects keeps the rule inert
+        // (spec 0010, AC-11: rules inside a false block never apply).
         let sheet = parse_stylesheet(
             "@supports (color: not-a-real-color-value) { b { color: blue; } }",
             Origin::Author,
             None,
         );
-        assert_eq!(sheet.len(), 0);
-
-        // `not` inverts, and `and`/`or` combine, each in its own sheet.
-        let sheet = parse_stylesheet(
-            "@supports not (display: definitely-not-a-display-value) { d { color: yellow; } }",
-            Origin::Author,
-            None,
-        );
         assert_eq!(sheet.len(), 1);
-        assert!(sheet.rules[0].supports);
-        let sheet = parse_stylesheet(
-            "@supports (display: flex) and (color: red) { e { color: purple; } }",
-            Origin::Author,
-            None,
-        );
-        assert_eq!(sheet.len(), 1);
-        assert!(sheet.rules[0].supports);
-        let sheet = parse_stylesheet(
-            "@supports (display: grid) or (color: bogus-not-a-color) { f { color: pink; } }",
-            Origin::Author,
-            None,
-        );
-        assert_eq!(sheet.len(), 1);
-        assert!(sheet.rules[0].supports);
+        assert!(!sheet.rules[0].supports);
 
         // `selector()` is true when the selector parser accepts it.
         let sheet = parse_stylesheet(
@@ -665,6 +899,75 @@ mod tests {
             None,
         );
         assert_eq!(sheet.len(), 0);
+    }
+
+    #[test]
+    fn at_supports_combinators_and_nesting() {
+        // `not` inverts a declaration test.
+        let sheet = parse_stylesheet(
+            "@supports not (display: grid) { a { color: red; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(!sheet.rules[0].supports); // `display: grid` is valid → true, `not` → false
+        let sheet = parse_stylesheet(
+            "@supports not (color: not-a-real-color-value) { b { color: blue; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports); // invalid color → false, `not` inverts to true
+
+        // `and` requires both sides.
+        let sheet = parse_stylesheet(
+            "@supports (display: grid) and (color: red) { c { color: green; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
+        let sheet = parse_stylesheet(
+            "@supports (display: grid) and (color: not-a-real-color-value) { d { color: yellow; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(!sheet.rules[0].supports); // `and` with a false side → false → inert
+
+        // `or` needs only one side.
+        let sheet = parse_stylesheet(
+            "@supports (color: bogus) or (display: flex) { e { color: orange; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
+        let sheet = parse_stylesheet(
+            "@supports (color: bogus) or (display: bogus) { f { color: purple; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(!sheet.rules[0].supports); // both sides false → false → inert
+
+        // Nested parens and mixed precedence: `not` binds tightest, then `and`.
+        // `not (display: grid)` is false, so `false and (color: red)` → false → inert.
+        let sheet = parse_stylesheet(
+            "@supports not (display: grid) and (color: red) { g { color: pink; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(!sheet.rules[0].supports);
+        // `not (color: bogus)` is true, so `true and (display: block)` → true → kept.
+        let sheet = parse_stylesheet(
+            "@supports (not (color: bogus)) and (display: block) { h { color: brown; } }",
+            Origin::Author,
+            None,
+        );
+        assert_eq!(sheet.len(), 1);
+        assert!(sheet.rules[0].supports);
     }
 
     #[test]

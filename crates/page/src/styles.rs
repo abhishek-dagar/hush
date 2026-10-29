@@ -5,13 +5,17 @@
 //! kept in tree order whatever order they load in. Linked sheets are
 //! fetched through the browser like every other load; the page only asks.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use base::Au;
 use base::atoms::{LocalName, QualName};
+use base::{Au, Size};
 use base::{local_name, ns};
-use css::{ComputedStyle, Device, MatchContext, MediaList, Origin, Stylesheet, Stylist};
+use css::{
+    ColorScheme, ComputedStyle, ContainerType, Device, MatchContext, MediaList, Origin, Stylesheet,
+    Stylist,
+};
 use dom::{Document, NodeData, NodeId};
 use ipc::FetchId;
 use tracing::{debug, warn};
@@ -98,9 +102,17 @@ impl Source {
     }
 }
 
+/// Container border box sizes from the previous layout pass, keyed by the
+/// element that is a query container (spec 0010, AC-17, AC-18). The next
+/// style pass resolves `cq*` units and `@container` conditions against it.
+pub type ContainerSizes = HashMap<NodeId, Size>;
+
 /// The main document's sheets, its `Stylist`, and the fetches for them.
 pub struct Styles {
     ua: Rc<Stylesheet>,
+    /// A built in document's own user agent rules, after the UA sheet
+    /// (spec 0035, `text.css`).
+    builtin: Option<Rc<Stylesheet>>,
     sources: Vec<Source>,
     stylist: Stylist,
     requests: Vec<StyleRequest>,
@@ -114,11 +126,20 @@ impl Styles {
         let stylist = Stylist::new(std::slice::from_ref(&ua), device);
         Self {
             ua,
+            builtin: None,
             sources: Vec::new(),
             stylist,
             requests: Vec::new(),
             committed_at,
         }
+    }
+
+    /// Adds a built in document's rules after the UA sheet (spec 0035,
+    /// `text.css`). Called once, before the document has any nodes.
+    pub fn with_builtin(mut self, sheet: Rc<Stylesheet>) -> Self {
+        self.builtin = Some(sheet);
+        self.stylist = Stylist::new(&self.sheets(), self.stylist.device());
+        self
     }
 
     /// The rules in use.
@@ -227,10 +248,11 @@ impl Styles {
         }
     }
 
-    /// Every sheet in cascade order: the UA sheet, then the document's in
-    /// tree order.
+    /// Every sheet in cascade order: the UA sheet, a built in document's
+    /// rules, then the document's in tree order.
     fn sheets(&self) -> Vec<Rc<Stylesheet>> {
         std::iter::once(Rc::clone(&self.ua))
+            .chain(self.builtin.clone())
             .chain(self.sources.iter().filter_map(Source::sheet))
             .collect()
     }
@@ -360,7 +382,25 @@ impl Styles {
         let device = Device {
             width: width.to_f32_px(),
             height: height.to_f32_px(),
+            color_scheme: self.stylist.device().color_scheme,
+            reduced_motion: self.stylist.device().reduced_motion,
         };
+        if self.stylist.set_device(device) {
+            doc.restyle_all();
+        }
+    }
+
+    /// The OS color scheme or reduced motion setting changed. Restyles the
+    /// document when a media query result flipped (spec 0010, AC-13).
+    pub fn set_preferences(
+        &mut self,
+        doc: &mut Document,
+        color_scheme: ColorScheme,
+        reduced_motion: bool,
+    ) {
+        let mut device = self.stylist.device();
+        device.color_scheme = color_scheme;
+        device.reduced_motion = reduced_motion;
         if self.stylist.set_device(device) {
             doc.restyle_all();
         }
@@ -370,7 +410,7 @@ impl Styles {
     /// recomputed takes it from the sharing cache, else from the cascade
     /// (AC-18, AC-21). An element whose style did not change keeps its old
     /// `Rc`, and its children are only restyled when it did change.
-    pub fn style_pass(&self, doc: &mut Document) -> StyleStats {
+    pub fn style_pass(&self, doc: &mut Document, container_sizes: &ContainerSizes) -> StyleStats {
         let mut stats = StyleStats::default();
         let base = doc.url().to_owned();
         let style_name = QualName::attribute(LocalName::from("style"));
@@ -393,8 +433,33 @@ impl Styles {
             let parent_style = doc
                 .flat_parent(node)
                 .and_then(|parent| element_style(doc, parent));
+            // The nearest ancestor container's size, and the container names
+            // in effect, for `cq*` units and `@container name` gating
+            // (spec 0010, AC-17). Ancestors are styled before this element,
+            // so their sizes from the previous layout pass are available.
+            let (container_size, container_names) = {
+                let mut size = None;
+                let mut names = Vec::new();
+                let mut current = doc.flat_parent(node);
+                while let Some(ancestor) = current {
+                    if let Some(ancestor_style) = element_style(&*doc, ancestor)
+                        && ancestor_style.size.container_type != ContainerType::Normal
+                    {
+                        if size.is_none() {
+                            size = container_sizes.get(&ancestor).copied();
+                        }
+                        names.extend(ancestor_style.size.container_name.0.iter().cloned());
+                    }
+                    current = doc.flat_parent(ancestor);
+                }
+                (size, names)
+            };
+            let container_context = css::ContainerContext {
+                size: container_size,
+                names: &container_names,
+            };
             // Matching borrows the document; the results come out as ids.
-            let (style, affected) = {
+            let (style, affected, has_subject) = {
                 let Some(element) = doc.element_ref(node) else {
                     return false;
                 };
@@ -402,21 +467,23 @@ impl Styles {
                     .map(|text| css::parse_declarations(text, Some(&base)))
                     .unwrap_or_default();
                 let mut context = MatchContext::default();
-                let style = self.stylist.cascade(
+                let (style, subject) = self.stylist.cascade(
                     &element,
                     parent_style.as_deref(),
                     &style_attribute,
                     root_font_size,
+                    &container_context,
                     &mut context,
                 );
                 let affected: Vec<NodeId> =
                     context.sibling_dependent.iter().map(|e| e.id()).collect();
-                (style, affected)
+                (style, affected, subject)
             };
             for id in affected {
                 let _ = doc.mark_affected_by_sibling_selectors(id);
             }
             let changed = set_style(doc, node, Rc::new(style));
+            let _ = doc.set_has_subject(node, has_subject);
             doc.remember_style(node);
             self.placeholder_pass(doc, node, root_font_size);
             changed

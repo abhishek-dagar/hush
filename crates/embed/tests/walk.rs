@@ -434,3 +434,52 @@ fn the_keyboard_only_walk() {
 
     browser.net.shutdown();
 }
+
+/// Spec 0035, AC-9: the image, JSON and "can't show" pages are normal
+/// history entries at their real URLs. Back and forward reach each, and
+/// reload fetches the current one again.
+#[test]
+fn back_forward_and_reload_across_built_in_pages() {
+    let png = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../image/tests/images/two.png"
+    ))
+    .unwrap();
+    let server = serve(Tls::Cert("localhost", H2_AND_H1), move |seen| {
+        match seen.path.as_str() {
+            "/cat.png" => Reply::ok("image/png", png.clone()),
+            "/data.json" => Reply::ok("application/json", r#"{"a":1}"#),
+            _ => Reply::ok("application/pdf", "%PDF-1.7"),
+        }
+    });
+    let mut browser = Browser::new();
+    for path in ["/cat.png", "/data.json", "/report.pdf"] {
+        let navigation = browser.type_address(&server.url("https", path));
+        browser.finish(navigation);
+        assert_eq!(browser.path(), path);
+    }
+    assert_eq!(browser.entries(), (3, 2));
+    assert_eq!(browser.title, "report.pdf");
+
+    browser.go(-1);
+    assert_eq!(
+        (browser.path().as_str(), browser.entries()),
+        ("/data.json", (3, 1))
+    );
+    let doc = &browser.page.main_frame().document;
+    assert!(doc.dump().contains("pretty-print"), "the JSON page again");
+
+    browser.go(-1);
+    assert_eq!(browser.path(), "/cat.png");
+    assert_eq!(browser.title, "cat.png (4 \u{d7} 2)");
+
+    browser.go(1);
+    assert_eq!(browser.path(), "/data.json");
+
+    let before = server.seen().len();
+    browser.go(0);
+    assert_eq!(browser.path(), "/data.json");
+    assert_eq!(browser.entries(), (3, 1), "reload keeps the entry");
+    assert_eq!(server.seen().len(), before + 1, "reload fetches it again");
+    browser.net.shutdown();
+}

@@ -792,6 +792,20 @@ impl Document {
                 }
             }
         }
+        // A `:has()` subject must be restyled when a descendant or a
+        // following sibling changes (spec 0010, AC-15). Walk the ancestors
+        // and restyle any that are a `:has()` subject.
+        let mut current = self.nodes.get(element).and_then(|node| node.parent());
+        while let Some(ancestor) = current {
+            let has_subject = self
+                .nodes
+                .get(ancestor)
+                .is_some_and(|node| node.flags.contains(NodeFlags::HAS_SUBJECT));
+            if has_subject {
+                self.mark_subtree_dirty(ancestor);
+            }
+            current = self.nodes.get(ancestor).and_then(|node| node.parent());
+        }
     }
 
     /// After children were inserted or removed, restyles every child of
@@ -839,6 +853,12 @@ impl Document {
         }
         node.flags.insert(flags);
         self.mark_ancestors(id, NodeFlags::DESCENDANT_NEEDS_STYLE);
+    }
+
+    /// Marks `id` and its subtree for restyle: used by container query
+    /// passes when a container's laid out size changes (spec 0010, AC-18).
+    pub fn mark_subtree_dirty(&mut self, id: NodeId) {
+        self.mark_style(id, NodeFlags::NEEDS_STYLE | NodeFlags::RESTYLE_SUBTREE);
     }
 
     /// Sets `NEEDS_BOX_REBUILD` on a connected node (a shadow root's host for

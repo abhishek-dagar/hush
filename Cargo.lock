@@ -589,6 +589,7 @@ dependencies = [
  "base",
  "cssparser",
  "encoding_rs",
+ "serde",
  "tracing",
  "url",
 ]
@@ -1527,6 +1528,7 @@ dependencies = [
 name = "ipc"
 version = "0.1.0"
 dependencies = [
+ "css",
  "display-list",
  "ipc-channel",
  "serde",

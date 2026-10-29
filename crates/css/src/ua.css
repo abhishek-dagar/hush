@@ -31,7 +31,7 @@ colgroup { display: table-column-group; }
 col { display: table-column; }
 thead, tbody, tfoot { display: table-row-group; }
 tr { display: table-row; }
-td, th { display: table-cell; padding: 1px; }
+td, th { display: table-cell; padding: 1px; vertical-align: inherit; }
 thead, tbody, tfoot, tr { vertical-align: middle; }
 th { font-weight: bold; }
 

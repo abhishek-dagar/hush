@@ -35,7 +35,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use base::{Au, BoxId, Point, SideOffsets, Size};
-use css::{ComputedStyle, WritingMode};
+use css::{ComputedStyle, ContainerType, WritingMode};
+use dom::NodeId;
 use text::{FontContext, FontDescriptor, LineMetrics, ShapedRun, WebFontLayer};
 
 use exclusion::ExclusionSpace;
@@ -417,6 +418,36 @@ pub fn layout(
         }
     }
     (FragmentTree { viewport, root }, cx.stats)
+}
+
+/// The border box sizes of this document's query containers, keyed by their
+/// element, for the next style pass to resolve `cq*` units and `@container`
+/// conditions against (spec 0010, AC-17).
+pub fn container_sizes(tree: &BoxTree, fragments: &FragmentTree) -> HashMap<NodeId, Size> {
+    let mut out = HashMap::new();
+    let mut stack: Vec<&Fragment> = match &fragments.root {
+        Some((_, fragment)) => vec![fragment],
+        None => return out,
+    };
+    while let Some(fragment) = stack.pop() {
+        if let Fragment::Box(box_fragment) = fragment {
+            if let Some(node) = box_fragment.node
+                && let Some(layout_box) = tree.get(box_fragment.box_id)
+                && layout_box.style.size.container_type != ContainerType::Normal
+            {
+                out.insert(node, box_fragment.size);
+            }
+            stack.extend(
+                box_fragment
+                    .children
+                    .iter()
+                    .map(|(_, child)| child.as_ref()),
+            );
+        } else {
+            stack.extend(fragment.children().iter().map(|(_, child)| child.as_ref()));
+        }
+    }
+    out
 }
 
 /// Lays out box `id` and everything below it in `space`, with a heap

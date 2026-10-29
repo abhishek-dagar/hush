@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use base::Au;
 use base::atoms::{Atom, LocalName};
+use base::{Au, Size};
 
 use crate::cascade::{CascadeInputs, compute};
 use crate::hints::presentational_hints;
@@ -61,6 +61,16 @@ impl StylistRule {
 struct StylistFontFace {
     rule: FontFaceRule,
     sheet_media: Option<Rc<crate::MediaList>>,
+}
+
+/// The container context an element sits in: its nearest ancestor container's
+/// border box size (for `cq*` units) and the names of its ancestor containers
+/// (for `@container name` gating) (spec 0010, AC-17).
+pub struct ContainerContext<'a> {
+    /// The nearest ancestor container's border box size, if any.
+    pub size: Option<Size>,
+    /// The names of the ancestor containers.
+    pub names: &'a [Atom],
 }
 
 /// A document's rules, ready to match and cascade.
@@ -246,17 +256,20 @@ impl Stylist {
         parent: Option<&ComputedStyle>,
         style_attribute: &[Declaration],
         root_font_size: Au,
+        container_context: &ContainerContext<'_>,
         context: &mut MatchContext<E>,
-    ) -> ComputedStyle {
-        let matched = self.matching(element, None, context);
+    ) -> (ComputedStyle, bool) {
+        let (matched, has_subject) = self.matching(element, None, container_context.names, context);
         let presentational = presentational_hints(element);
-        self.cascade_matched(
+        let style = self.cascade_matched(
             matched,
             parent,
             style_attribute,
             root_font_size,
+            container_context.size,
             &presentational,
-        )
+        );
+        (style, has_subject)
     }
 
     /// Computes the `::placeholder` style of the `<input>` `element`, which
@@ -269,8 +282,9 @@ impl Stylist {
         root_font_size: Au,
     ) -> Rc<ComputedStyle> {
         let mut context = MatchContext::default();
-        let matched = self.matching(element, Some(PseudoElement::Placeholder), &mut context);
-        Rc::new(self.cascade_matched(matched, Some(input_style), &[], root_font_size, &[]))
+        let (matched, _has_subject) =
+            self.matching(element, Some(PseudoElement::Placeholder), &[], &mut context);
+        Rc::new(self.cascade_matched(matched, Some(input_style), &[], root_font_size, None, &[]))
     }
 
     fn cascade_matched(
@@ -279,6 +293,7 @@ impl Stylist {
         parent: Option<&ComputedStyle>,
         style_attribute: &[Declaration],
         root_font_size: Au,
+        container_size: Option<base::Size>,
         presentational: &[Declaration],
     ) -> ComputedStyle {
         matched.sort_by_key(|entry| {
@@ -336,19 +351,25 @@ impl Stylist {
                 parent,
                 root_font_size,
                 device: &self.device,
+                container_size,
                 properties: &self.properties,
             },
         )
     }
 
     /// Every selector from the element's buckets that matches it and styles
-    /// `pseudo` (the element itself when `None`).
+    /// `pseudo` (the element itself when `None`). Returns the matches plus
+    /// whether any matched rule's subject is a `:has()` for which this
+    /// element is the subject (spec 0010, AC-15). `container_names` are the
+    /// names of the element's ancestor containers, for `@container name`
+    /// gating (spec 0010, AC-17).
     fn matching<E: MatchElement + Clone>(
         &self,
         element: &E,
         pseudo: Option<PseudoElement>,
+        container_names: &[Atom],
         context: &mut MatchContext<E>,
-    ) -> Vec<Entry> {
+    ) -> (Vec<Entry>, bool) {
         let buckets = &self.buckets;
         let mut candidates: Vec<&Entry> = Vec::new();
         if let Some(entries) = element.id().and_then(|id| buckets.ids.get(id)) {
@@ -370,14 +391,36 @@ impl Stylist {
         candidates.extend(tag.into_iter().flatten());
         candidates.extend(&buckets.universal);
 
-        candidates
+        let mut has_subject = false;
+        let matched: Vec<Entry> = candidates
             .into_iter()
             .filter(|entry| {
                 let selector =
                     &self.rules[entry.rule as usize].rule.selectors[entry.selector as usize];
-                selector.pseudo_element() == pseudo && selector.matches_compounds(element, context)
+                let rule = &self.rules[entry.rule as usize].rule;
+                // `@container name` rules apply only within an ancestor
+                // container carrying one of their names (spec 0010, AC-17).
+                if let Some(names) = &rule.container
+                    && !names.is_empty()
+                    && !names.iter().any(|name| container_names.contains(name))
+                {
+                    return false;
+                }
+                let matches = selector.pseudo_element() == pseudo
+                    && selector.matches_compounds(element, context);
+                if matches
+                    && selector
+                        .subject()
+                        .0
+                        .iter()
+                        .any(|simple| matches!(simple, Simple::Has(_)))
+                {
+                    has_subject = true;
+                }
+                matches
             })
             .copied()
-            .collect()
+            .collect();
+        (matched, has_subject)
     }
 }

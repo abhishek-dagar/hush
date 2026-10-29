@@ -55,6 +55,39 @@ paths = ["css/css-flexbox"]
 # until then because WPT cannot be run in this environment (no snapshot/GPU).
 
 [[area]]
+name = "css-transforms"
+paths = ["css/css-transforms"]
+# Bar: 70% per spec 0010 conformance areas (AC-19 to AC-22). min_pass_rate
+# floor is set on the first full conformance run and only raised after that;
+# deferred until then because WPT cannot be run in this environment (no
+# snapshot/GPU).
+
+[[area]]
+name = "mediaqueries"
+paths = ["css/mediaqueries"]
+# Bar: 70% per spec 0010 conformance areas (AC-12). min_pass_rate floor is
+# set on the first full conformance run and only raised after that.
+
+[[area]]
+name = "css-container"
+paths = ["css/css-conditional/container-queries"]
+# Listed first so it wins over css-conditional (spec 0010 conformance
+# areas). Bar: 70% per spec 0010 conformance areas (AC-17). min_pass_rate
+# floor is set on the first full conformance run and only raised after that.
+
+[[area]]
+name = "css-conditional"
+paths = ["css/css-conditional"]
+# Bar: 70% per spec 0010 conformance areas (AC-11). min_pass_rate floor is
+# set on the first full conformance run and only raised after that.
+
+[[area]]
+name = "selectors"
+paths = ["css/selectors"]
+# Bar: 70% per spec 0010 conformance areas (AC-14, AC-15). min_pass_rate
+# floor is set on the first full conformance run and only raised after that.
+
+[[area]]
 name = "tables"
 paths = ["css/CSS2/tables"]
 # Measured on the first full run of the area, after the tables slice:

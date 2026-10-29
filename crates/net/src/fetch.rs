@@ -5,7 +5,9 @@
 use std::path::Path;
 
 use display_list::PageId;
-use hyper::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue};
+use hyper::header::{
+    CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue,
+};
 use ipc::{
     CommitParams, Destination, DocumentKind, FetchError, FetchId, IpcBytes, NavigationId, ToContent,
 };
@@ -16,7 +18,7 @@ use url::Url;
 use crate::body::{self, Body, Encoding};
 use crate::client::{Client, Response};
 use crate::limits::{CHUNK_COALESCE, MAX_DOCUMENT_BYTES, MAX_FONT_BYTES, MAX_SUBRESOURCE_BYTES};
-use crate::policy::{self, Document, Plan, SNIFF_BYTES};
+use crate::policy::{self, Classified, Document, Kind, Plan, SNIFF_BYTES};
 use crate::{ContentSink, Served, Target, about};
 
 /// What a document request accepts (spec 0004, Value sourcing).
@@ -118,6 +120,32 @@ impl Load {
         });
     }
 
+    /// Commits the "can't show" page (spec 0035, AC-8): no body follows,
+    /// so the load is done at once. An attachment with no type shows as
+    /// `application/octet-stream`.
+    fn commit_unviewable(
+        &self,
+        params: CommitParams,
+        url: &Url,
+        file_name: String,
+        mime: &str,
+        size: Option<u64>,
+    ) {
+        let mime = if mime.is_empty() {
+            "application/octet-stream"
+        } else {
+            mime
+        };
+        info!(mime, ?size, "showing the can't show page");
+        let kind = DocumentKind::Unviewable {
+            file_name,
+            mime: mime.to_owned(),
+            size,
+        };
+        self.commit(params, url.as_str(), mime, None, kind);
+        self.done();
+    }
+
     /// Commits a whole body that is already in memory.
     fn commit_body(&self, params: CommitParams, url: &str, body: &str) {
         self.commit(params, url, "text/html", None, DocumentKind::Document);
@@ -206,25 +234,42 @@ impl Client {
             .await?;
         info!(status, "response");
         let encoding = Encoding::from_header(header(&headers, CONTENT_ENCODING));
-        check_length(&headers, encoding, MAX_DOCUMENT_BYTES)?;
         // Any status renders its body: a server's 404 page is a page.
         let (mime, charset) = parse_content_type(headers.get(CONTENT_TYPE));
-        let declared = policy::kind_for_mime(&mime)?;
+        let disposition = header(&headers, CONTENT_DISPOSITION);
+        let classified = policy::classify(&mime, disposition);
+        // A file that is not shown is never read, so it has no size limit
+        // (spec 0035, AC-8).
+        if classified != Classified::Known(Kind::Unviewable) {
+            check_length(&headers, encoding, MAX_DOCUMENT_BYTES)?;
+        }
+        let file_name = policy::file_name(disposition, &url);
+        let length = (encoding == Encoding::Identity)
+            .then(|| header(&headers, CONTENT_LENGTH)?.trim().parse::<u64>().ok())
+            .flatten();
         let mut body = Body::http(body, encoding, MAX_DOCUMENT_BYTES);
-        let (kind, mime, first) = match declared {
-            Some(kind) => (kind, mime, Vec::new()),
-            None => {
+        let (kind, mime, first) = match classified {
+            Classified::Known(kind) => (kind, mime, Vec::new()),
+            Classified::Sniff => {
                 let first = body.read_at_least(SNIFF_BYTES).await?;
                 let (kind, mime) = policy::sniff(&first);
                 (kind, mime.to_owned(), first)
             }
         };
-        load.commit(params, url.as_str(), &mime, charset, kind);
-        committed(Document {
+        let document = Document {
             url,
             folder: None,
             file: None,
-        });
+        };
+        if kind == Kind::Unviewable {
+            drop(body);
+            load.commit_unviewable(params, &document.url, file_name, &mime, length);
+            committed(document);
+            return Ok(());
+        }
+        let kind = document_kind(kind, file_name, &mime);
+        load.commit(params, document.url.as_str(), &mime, charset, kind);
+        committed(document);
         after_commit(body::stream(load, body, first).await)
     }
 
@@ -312,7 +357,8 @@ impl Client {
     }
 }
 
-/// Reads a `file://` document, typed by its extension or sniffed (AC-7).
+/// Reads a `file://` document, typed by its extension or sniffed (spec
+/// 0035, AC-11).
 async fn load_file_document(
     load: &Load,
     url: &Url,
@@ -320,7 +366,7 @@ async fn load_file_document(
     committed: &impl Fn(Document),
 ) -> Result<(), FetchError> {
     let path = url.to_file_path().map_err(|()| FetchError::InvalidUrl)?;
-    let file = open(&path, MAX_DOCUMENT_BYTES).await?;
+    let (file, length) = open_file(&path).await?;
     let mut body = Body::file(file, MAX_DOCUMENT_BYTES);
     let (kind, mime, first) = match policy::kind_for_extension(&path) {
         Some((kind, mime)) => (kind, mime, Vec::new()),
@@ -330,19 +376,58 @@ async fn load_file_document(
             (kind, mime, first)
         }
     };
-    load.commit(params, url.as_str(), mime, None, kind);
+    // A file that is not shown is never read, so it has no size limit
+    // (AC-8).
+    if kind != Kind::Unviewable && length > MAX_DOCUMENT_BYTES as u64 {
+        return Err(FetchError::TooLarge);
+    }
     // Its subresources may read only below this folder (AC-8). Without a
     // canonical folder they may read no file at all.
     let file = tokio::fs::canonicalize(&path).await.ok();
     let folder = file
         .as_deref()
         .and_then(|path| path.parent().map(Path::to_path_buf));
-    committed(Document {
+    let document = Document {
         url: url.clone(),
         folder,
         file,
-    });
+    };
+    let file_name = policy::file_name(None, url);
+    if kind == Kind::Unviewable {
+        drop(body);
+        load.commit_unviewable(params, url, file_name, mime, Some(length));
+        committed(document);
+        return Ok(());
+    }
+    load.commit(
+        params,
+        url.as_str(),
+        mime,
+        None,
+        document_kind(kind, file_name, mime),
+    );
+    committed(document);
     after_commit(body::stream(load, body, first).await)
+}
+
+/// The kind the page gets for a response that is shown.
+fn document_kind(kind: Kind, file_name: String, mime: &str) -> DocumentKind {
+    match kind {
+        Kind::Document => DocumentKind::Document,
+        Kind::PlainText => DocumentKind::PlainText,
+        Kind::Json => DocumentKind::Json,
+        Kind::Image => DocumentKind::Image {
+            file_name,
+            mime: mime.to_owned(),
+        },
+        // Callers commit it with `commit_unviewable`; this keeps the
+        // match total.
+        Kind::Unviewable => DocumentKind::Unviewable {
+            file_name,
+            mime: mime.to_owned(),
+            size: None,
+        },
+    }
 }
 
 /// Reads a file subresource after the folder rule allows it (AC-8): the
@@ -373,6 +458,15 @@ async fn fetch_file(
 
 /// Opens a file to read, refusing directories and files over `limit`.
 async fn open(path: &Path, limit: usize) -> Result<File, FetchError> {
+    let (file, length) = open_file(path).await?;
+    if length > limit as u64 {
+        return Err(FetchError::TooLarge);
+    }
+    Ok(file)
+}
+
+/// Opens a file to read, refusing directories, and gives its length.
+async fn open_file(path: &Path) -> Result<(File, u64), FetchError> {
     let file = File::open(path)
         .await
         .map_err(|_| FetchError::FileNotFound)?;
@@ -383,10 +477,7 @@ async fn open(path: &Path, limit: usize) -> Result<File, FetchError> {
     if metadata.is_dir() {
         return Err(FetchError::UnsupportedContentType("inode/directory".into()));
     }
-    if metadata.len() > limit as u64 {
-        return Err(FetchError::TooLarge);
-    }
-    Ok(file)
+    Ok((file, metadata.len()))
 }
 
 /// What the document's stream ending means for the page: over the size

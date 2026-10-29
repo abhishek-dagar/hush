@@ -11,6 +11,7 @@ use std::rc::Rc;
 use base::atoms::Atom;
 use base::{Au, Point};
 
+use crate::sheet::KeyframesRule;
 use crate::{Color, Length};
 
 /// `font-style`.
@@ -104,6 +105,18 @@ pub enum WhiteSpace {
     PreLine,
 }
 
+/// `overflow-wrap` (spec 0035, AC-1): whether a word wider than its line
+/// may break anywhere.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OverflowWrap {
+    /// `normal`, the initial value: words break only at opportunities.
+    #[default]
+    Normal,
+    /// `break-word`, and `anywhere` for now: a word too wide for its line
+    /// breaks between any two clusters.
+    BreakWord,
+}
+
 /// `direction`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Direction {
@@ -147,6 +160,8 @@ pub struct InheritedText {
     pub text_align: TextAlign,
     /// `white-space`.
     pub white_space: WhiteSpace,
+    /// `overflow-wrap`.
+    pub overflow_wrap: OverflowWrap,
     /// `direction`.
     pub direction: Direction,
     /// `writing-mode`.
@@ -164,6 +179,7 @@ impl InheritedText {
         self.line_height == other.line_height
             && self.text_align == other.text_align
             && self.white_space == other.white_space
+            && self.overflow_wrap == other.overflow_wrap
             && self.direction == other.direction
             && self.writing_mode == other.writing_mode
     }
@@ -176,6 +192,7 @@ impl Default for InheritedText {
             line_height: LineHeight::default(),
             text_align: TextAlign::default(),
             white_space: WhiteSpace::default(),
+            overflow_wrap: OverflowWrap::default(),
             direction: Direction::default(),
             writing_mode: WritingMode::default(),
             text_decoration_line: TextDecorationLine::default(),
@@ -224,6 +241,10 @@ pub enum Cursor {
     Pointer,
     /// `text`.
     Text,
+    /// `zoom-in`: the image page's fit view (spec 0035, AC-5).
+    ZoomIn,
+    /// `zoom-out`: the image page's actual size view (spec 0035, AC-5).
+    ZoomOut,
 }
 
 /// `user-select`. It inherits here because the used value of `auto`
@@ -247,9 +268,6 @@ pub struct InheritedBox {
     pub cursor: Cursor,
     /// `user-select`.
     pub user_select: UserSelect,
-    /// `vertical-align` on table cells. Does not inherit, but stored here
-    /// for compactness (spec 0009, child 0004, AC-16).
-    pub vertical_align: VerticalAlign,
 }
 
 /// `list-style-type`.
@@ -481,6 +499,10 @@ pub struct Sizes {
     pub box_sizing: BoxSizing,
     /// `aspect-ratio`: the preferred width-to-height ratio (spec 0010, AC-7).
     pub aspect_ratio: AspectRatio,
+    /// `container-type`: `normal`, `inline-size` or `size` (spec 0010, AC-16).
+    pub container_type: ContainerType,
+    /// `container-name`: custom-ident names (spec 0010, AC-16).
+    pub container_name: ContainerName,
 }
 
 /// `aspect-ratio`: the preferred width-to-height ratio of a box (spec 0010,
@@ -496,6 +518,22 @@ pub struct AspectRatio {
     /// width over 1.
     pub ratio: Option<(f32, f32)>,
 }
+
+/// `container-type`: `normal`, `inline-size` or `size` (spec 0010, AC-16).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContainerType {
+    /// The element is not a query container (the initial value).
+    #[default]
+    Normal,
+    /// The element is a query container, contained on its inline axis.
+    InlineSize,
+    /// The element is a query container, contained on both axes.
+    Size,
+}
+
+/// `container-name`: a list of custom-ident names (spec 0010, AC-16).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContainerName(pub Vec<Atom>);
 
 /// One length per side. `None` is `auto` (margins only).
 #[derive(Debug, Clone, PartialEq)]
@@ -1094,37 +1132,140 @@ impl Default for Outline {
     }
 }
 
-/// `transform` and the separate `scale` property (spec 0010, AC-19). Only
-/// `scale` is computed in this slice; every other function computes to
-/// `none` and draws as the identity.
+/// One transform function, in declaration order (spec 0010, AC-19).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransformFn {
-    /// `scale(s)`: a uniform 2D scale.
-    Scale(f32),
+    /// `translate(tx, ty?)`.
+    Translate(Length, Option<Length>),
+    /// `translateX(tx)`.
+    TranslateX(Length),
+    /// `translateY(ty)`.
+    TranslateY(Length),
+    /// `scale(sx, sy?)`: unitless scale factors.
+    Scale(f32, Option<f32>),
+    /// `scaleX(sx)`.
+    ScaleX(f32),
+    /// `scaleY(sy)`.
+    ScaleY(f32),
+    /// `rotate(a)`.
+    Rotate(Angle),
+    /// `skew(ax, ay?)`.
+    Skew(Angle, Option<Angle>),
+    /// `skewX(ax)`.
+    SkewX(Angle),
+    /// `skewY(ay)`.
+    SkewY(Angle),
+    /// `translate3d(tx, ty, tz)`.
+    Translate3d(Length, Length, Length),
+    /// `translateZ(tz)`.
+    TranslateZ(Length),
+    /// `scale3d(sx, sy, sz)`.
+    Scale3d(f32, f32, f32),
+    /// `scaleZ(sz)`.
+    ScaleZ(f32),
+    /// `rotateX(ax)`.
+    RotateX(Angle),
+    /// `rotateY(ay)`.
+    RotateY(Angle),
+    /// `rotateZ(az)`.
+    RotateZ(Angle),
+    /// `rotate3d(x, y, z, angle)`.
+    Rotate3d(f32, f32, f32, Angle),
+    /// `matrix(a, b, c, d, tx, ty)`.
+    Matrix(f32, f32, f32, f32, f32, f32),
+    /// `matrix3d(...)` 16 values.
+    Matrix3d([f32; 16]),
+    /// `perspective(d)`.
+    Perspective(Length),
 }
 
-/// `transform` plus the separate `scale` property, and `transform-origin`.
-/// Computes to the identity when nothing is set.
+/// `transform` plus the separate `scale`, `translate` and `rotate`
+/// properties, and `transform-origin`. Computes to the identity when
+/// nothing is set (spec 0010, AC-19, AC-20).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Transform {
     /// `transform`: the functions, in order. Empty means no transform.
     pub transform: Rc<[TransformFn]>,
+    /// `translate`; `None` means `auto`, i.e. take `transform`.
+    pub translate: Option<(Length, Option<Length>)>,
+    /// `rotate`; `None` means `auto`, i.e. take `transform`.
+    pub rotate: Option<Angle>,
     /// `scale`; `None` means `auto`, i.e. take `transform`.
-    pub scale: Option<f32>,
+    pub scale: Option<(f32, Option<f32>)>,
     /// `transform-origin`, in border box coordinates.
     pub origin: Point,
+    /// `transform-style`: `flat` in this slice (`preserve-3d` parses but
+    /// renders flat, spec 0010, AC-19).
+    pub style: TransformStyle,
+    /// `perspective` and `perspective-origin` on the parent (spec 0010,
+    /// AC-19). Stored on the box that sets them; read by paint for its
+    /// children.
+    pub perspective: Option<Length>,
+    /// `perspective-origin`: origin of the perspective view (spec 0010,
+    /// AC-19).
+    pub perspective_origin: Option<(Length, Length)>,
     /// The display-list binding id when this transform is animated, `None`
     /// when it is static (spec 0010, AC-28).
     pub binding_id: Option<u64>,
+}
+
+impl Transform {
+    /// Whether this box has any transform at all: a `transform` list, one of
+    /// the separate `translate`/`rotate`/`scale` properties, or a
+    /// `perspective` (spec 0010, AC-19, AC-20).
+    pub fn has_transform(&self) -> bool {
+        !self.transform.is_empty()
+            || self.translate.is_some()
+            || self.rotate.is_some()
+            || self.scale.is_some()
+    }
 }
 
 impl Default for Transform {
     fn default() -> Self {
         Self {
             transform: Rc::new([]),
+            translate: None,
+            rotate: None,
             scale: None,
             origin: Point::default(),
+            style: TransformStyle::Flat,
+            perspective: None,
+            perspective_origin: None,
             binding_id: None,
+        }
+    }
+}
+
+/// `transform-style`: `preserve-3d` parses but renders `flat` in this
+/// slice (spec 0010, AC-19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransformStyle {
+    /// Flatten 3D: this slice's behavior.
+    #[default]
+    Flat,
+    /// `preserve-3d`: accepted but ignored for painting (later feature).
+    Preserve3d,
+}
+
+/// An angle as written, resolved to degrees at computed value time
+/// (spec 0010, AC-19).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Angle {
+    Deg(f32),
+    Rad(f32),
+    Grad(f32),
+    Turn(f32),
+}
+
+impl Angle {
+    /// Degrees as an f32.
+    pub fn degrees(&self) -> f32 {
+        match self {
+            Self::Deg(d) => *d,
+            Self::Rad(r) => *r * 180.0 / std::f32::consts::PI,
+            Self::Grad(g) => *g * 0.9,
+            Self::Turn(t) => *t * 360.0,
         }
     }
 }
@@ -1177,6 +1318,8 @@ pub struct Motion {
 pub struct AnimationSpec {
     /// The animation name.
     pub name: Atom,
+    /// The `@keyframes` rule this animation plays, resolved at style time.
+    pub keyframes: Option<Rc<KeyframesRule>>,
     /// Duration in seconds.
     pub duration: f64,
     /// Delay in seconds.
@@ -1284,6 +1427,9 @@ pub struct ComputedStyle {
     pub transform: Rc<Transform>,
     /// Reset: `transition-*` and `animation-*` (spec 0010, AC-23, AC-24).
     pub motion: Rc<Motion>,
+    /// Reset: `vertical-align`. It does not inherit (spec 0009, child 0004),
+    /// so every element starts from its own value, defaulting to `baseline`.
+    pub vertical_align: VerticalAlign,
     /// Inherited: custom properties, for `var()`.
     pub custom: Rc<CustomProperties>,
     /// Inherited: `border-collapse`, `border-spacing`, `caption-side`,
@@ -1316,6 +1462,7 @@ thread_local! {
         outline: Rc::default(),
         transform: Rc::default(),
         motion: Rc::default(),
+        vertical_align: VerticalAlign::default(),
         custom: Rc::default(),
         inherited_table: Rc::default(),
     });

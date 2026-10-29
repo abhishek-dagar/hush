@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use base::atoms::{LocalName, QualName};
 use base::{Au, Point, Size};
-use css::{ComputedStyle, Device, MatchContext, Stylist};
+use css::{ColorScheme, ComputedStyle, ContainerContext, Device, MatchContext, Stylist};
 use dom::{Document, NodeId};
 use layout::{BoxTree, Fragment, FragmentTree, LayoutStats, layout};
 use text::{FontContext, WebFontLayer};
@@ -43,13 +43,19 @@ pub fn add_with_attributes(
     let declarations = css::parse_declarations(style, None);
     let computed = {
         let element = doc.element_ref(id).unwrap();
-        stylist.cascade(
+        let container_context = ContainerContext {
+            size: None,
+            names: &[],
+        };
+        let (computed, _has_subject) = stylist.cascade(
             &element,
             parent_style.as_deref(),
             &declarations,
             Au::from_px(16.0),
+            &container_context,
             &mut MatchContext::default(),
-        )
+        );
+        computed
     };
     doc.set_style(id, Some(Rc::new(computed))).unwrap();
     id
@@ -77,7 +83,15 @@ pub struct Built {
 /// that text to its parent instead of an element.
 pub fn build(tree: &str) -> Built {
     let (width, height) = VIEWPORT;
-    let stylist = Stylist::new(&[css::ua_stylesheet()], Device { width, height });
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width,
+            height,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
     let mut doc = Document::new("about:blank");
     let root = doc.root();
     let html = add(&mut doc, &stylist, root, "html", "margin:0");

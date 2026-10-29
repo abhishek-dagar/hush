@@ -21,6 +21,7 @@ mod sharing;
 mod sheet;
 mod style;
 mod stylist;
+mod transform;
 mod ua;
 mod values;
 
@@ -33,25 +34,27 @@ use base::atoms::{Atom, QualName};
 pub use damage::StyleDamage;
 pub use font_face::{FontFaceRule, FontSource};
 pub use invalidation::{ElementChange, InvalidationMap, restyle_hint};
-pub use media::{Device, MediaList};
+pub use media::{ColorScheme, Device, MediaList};
 pub use properties::Declaration;
 pub use selector::{MatchContext, PseudoElement, Selector, parse_selectors};
 pub use sharing::{SHARING_CACHE_SIZE, SharingCache};
 pub use sheet::{
-    Origin, PropertyRule, Rule, Stylesheet, decode_stylesheet, parse_declarations, parse_stylesheet,
+    Keyframe, KeyframesRule, Origin, PropertyRule, Rule, Stylesheet, decode_stylesheet,
+    parse_declarations, parse_stylesheet,
 };
 pub use style::{
     AlignItems, AspectRatio, Background, Border, BorderCollapse, BorderRadius, BorderSide,
-    BorderStyle, BoxSizing, Breadth, CaptionSide, Clear, ClipRect, ComputedStyle, Cursor,
-    CustomProperties, Direction, Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis,
+    BorderStyle, BoxSizing, Breadth, CaptionSide, Clear, ClipRect, ComputedStyle, ContainerType,
+    Cursor, CustomProperties, Direction, Display, DisplayBox, Effects, EmptyCells, Flex, FlexBasis,
     FlexDirection, FlexWrap, Float, Font, FontStyle, Grid, GridArea, GridAutoFlow, GridLine,
     InheritedBox, InheritedTable, InheritedText, JustifyContent, LineHeight, List,
-    ListStylePosition, ListStyleType, Margin, Motion, Outline, OutlineStyle, Overflow, Padding,
-    Position, PositionOffsets, RepeatCount, Sizes, Table, TableLayout, TextAlign,
-    TextDecorationLine, TextOverflow, TimingFunction, TrackEntry, TrackList, TrackSize, Transform,
-    TransformFn, UserSelect, VerticalAlign, Visibility, WhiteSpace, WritingMode,
+    ListStylePosition, ListStyleType, Margin, Motion, Outline, OutlineStyle, Overflow,
+    OverflowWrap, Padding, Position, PositionOffsets, RepeatCount, Sizes, Table, TableLayout,
+    TextAlign, TextDecorationLine, TextOverflow, TimingFunction, TrackEntry, TrackList, TrackSize,
+    Transform, TransformFn, TransformStyle, UserSelect, VerticalAlign, Visibility, WhiteSpace,
+    WritingMode,
 };
-pub use stylist::Stylist;
+pub use stylist::{ContainerContext, Stylist};
 pub use ua::ua_stylesheet;
 
 /// A color resolved to RGBA, each channel from 0 to 1, in sRGB.
@@ -190,6 +193,11 @@ pub trait MatchElement {
 
     /// The parent, if it is an element.
     fn parent_element(&self) -> Option<Self>
+    where
+        Self: Sized;
+
+    /// The first child that is an element, if any.
+    fn first_child_element(&self) -> Option<Self>
     where
         Self: Sized;
 

@@ -1,0 +1,42 @@
+/* Text and JSON documents (spec 0035, AC-1, AC-3): their own canvas and
+ * text color, so they read in both themes, wrapped at the window edge, a
+ * word too long for a line broken anywhere. */
+html {
+  background-color: #ffffff;
+  color: #1f1f1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  html {
+    background-color: #121212;
+    color: #e3e3e3;
+  }
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* The JSON page's "Pretty print" checkbox (AC-2). */
+label.pretty-print {
+  display: block;
+  margin-bottom: 8px;
+  font-family: sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+
+label.pretty-print input {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+  cursor: default;
+}
+
+label.pretty-print input:checked {
+  background-color: #0b57d0;
+  border-color: #0b57d0;
+}

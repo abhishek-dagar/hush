@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+css.workspace = true
 display-list.workspace = true
 ipc-channel.workspace = true
 serde.workspace = true

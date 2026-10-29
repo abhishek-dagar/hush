@@ -306,6 +306,10 @@ mod tests {
             self.parent.as_ref().map(|p| (**p).clone())
         }
 
+        fn first_child_element(&self) -> Option<Self> {
+            None
+        }
+
         fn is_root(&self) -> bool {
             false
         }

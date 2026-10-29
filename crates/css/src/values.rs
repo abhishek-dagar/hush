@@ -35,6 +35,19 @@ pub(crate) enum SpecifiedLength {
     Vmin(f32),
     /// Percent of the larger viewport side.
     Vmax(f32),
+    /// Percent of the nearest ancestor container's inline size (spec 0010,
+    /// AC-17).
+    Cqw(f32),
+    /// Percent of the nearest ancestor container's block size.
+    Cqh(f32),
+    /// Percent of the nearest ancestor container's inline size.
+    Cqi(f32),
+    /// Percent of the nearest ancestor container's block size.
+    Cqb(f32),
+    /// Percent of the smaller of the container's inline and block size.
+    Cqmin(f32),
+    /// Percent of the larger of the container's inline and block size.
+    Cqmax(f32),
     /// A percentage, 0 to 100, resolved by whoever owns its basis.
     Percent(f32),
     /// A `calc()`, `min()`, `max()` or `clamp()` expression: its leaves stay
@@ -57,6 +70,12 @@ impl SpecifiedLength {
             | Self::Vh(v)
             | Self::Vmin(v)
             | Self::Vmax(v)
+            | Self::Cqw(v)
+            | Self::Cqh(v)
+            | Self::Cqi(v)
+            | Self::Cqb(v)
+            | Self::Cqmin(v)
+            | Self::Cqmax(v)
             | Self::Percent(v) => *v < 0.0,
             Self::Calc(_) => false,
         }
@@ -294,6 +313,12 @@ fn length_from_unit(value: f32, unit: &str) -> Option<SpecifiedLength> {
         "vh" => L::Vh(value),
         "vmin" => L::Vmin(value),
         "vmax" => L::Vmax(value),
+        "cqw" => L::Cqw(value),
+        "cqh" => L::Cqh(value),
+        "cqi" => L::Cqi(value),
+        "cqb" => L::Cqb(value),
+        "cqmin" => L::Cqmin(value),
+        "cqmax" => L::Cqmax(value),
         "in" => L::Px(value * 96.0),
         "cm" => L::Px(value * 96.0 / 2.54),
         "mm" => L::Px(value * 96.0 / 25.4),
@@ -655,6 +680,12 @@ mod tests {
         assert_eq!(length("2rem", any), Some(L::Rem(2.0)));
         assert_eq!(length("50%", any), Some(L::Percent(50.0)));
         assert_eq!(length("10vw", any), Some(L::Vw(10.0)));
+        assert_eq!(length("10cqw", any), Some(L::Cqw(10.0)));
+        assert_eq!(length("10cqh", any), Some(L::Cqh(10.0)));
+        assert_eq!(length("10cqi", any), Some(L::Cqi(10.0)));
+        assert_eq!(length("10cqb", any), Some(L::Cqb(10.0)));
+        assert_eq!(length("10cqmin", any), Some(L::Cqmin(10.0)));
+        assert_eq!(length("10cqmax", any), Some(L::Cqmax(10.0)));
         assert_eq!(length("1in", any), Some(L::Px(96.0)));
         assert_eq!(length("12pt", any), Some(L::Px(16.0)));
         assert_eq!(length("0", any), Some(L::ZERO));

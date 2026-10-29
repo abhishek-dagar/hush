@@ -20,9 +20,11 @@ mod support;
 
 use std::collections::HashMap;
 
-use css::{Device, Stylist};
+use base::Point;
+use css::{ColorScheme, Device, Stylist, VerticalAlign};
 use dom::{Document, NodeId};
-use layout::{BoxTree, FragmentTree};
+use layout::{BoxTree, Fragment, FragmentTree};
+use std::rc::Rc;
 use support::{VIEWPORT, add, add_with_attributes, rects, run};
 
 /// A built case: its document and each labeled element's node.
@@ -34,7 +36,15 @@ struct Built {
 /// Builds the case `tree` with real table elements.
 fn build(tree: &str) -> Built {
     let (width, height) = VIEWPORT;
-    let stylist = Stylist::new(&[css::ua_stylesheet()], Device { width, height });
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width,
+            height,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
     let mut doc = Document::new("about:blank");
     let root = doc.root();
     let html = add(&mut doc, &stylist, root, "html", "margin:0");
@@ -508,4 +518,207 @@ fn table_border_and_padding_hold_the_grid() {
         ",
         &[("t", 0.0, 0.0, 86.0, 56.0), ("a", 18.0, 18.0, 50.0, 20.0)],
     );
+}
+
+#[test]
+fn cell_margins_do_not_leak_out_of_a_table_cell() {
+    // Chrome parity: a table cell starts a new block formatting context
+    // (CSS 2.2 section 9.4.1), so a child's margins stay inside the cell.
+    // A `div height:10px; margin:5px 0` makes the cell 20 px tall and the
+    // div sit at y = 5. Without the fix the margins collapse through, the
+    // cell stays 10 px tall and the div sits at y = 0.
+    check(
+        "
+        t:table width:100px; border-spacing:0
+          r:tr
+            a:td padding:0
+              d:div height:10px; margin:5px 0
+        ",
+        &[("a", 0.0, 0.0, 100.0, 20.0), ("d", 0.0, 5.0, 100.0, 10.0)],
+    );
+}
+
+#[test]
+fn caption_margins_do_not_leak_out_of_a_caption() {
+    // Chrome parity: a table caption also starts a new block formatting
+    // context, so its child's margins stay inside the caption.
+    check(
+        "
+        t:table width:100px; border-spacing:0
+          c:caption padding:0
+            d:div height:10px; margin:5px 0
+          r:tr
+            a:td height:10px; padding:0
+        ",
+        &[("c", 0.0, 0.0, 100.0, 20.0), ("d", 0.0, 5.0, 100.0, 10.0)],
+    );
+}
+
+#[test]
+fn vertical_align_does_not_inherit() {
+    // Chrome parity: `vertical-align` does not inherit (CSS 2.2 section
+    // 9.4.1). A plain `td` in a `tbody` computes `middle` via the UA rule
+    // chain (`tr { vertical-align: middle }` then `td { vertical-align:
+    // inherit }`). A `div` inside a `vertical-align: top` cell computes
+    // `baseline` (it does not inherit the cell's `top`). A nested table's
+    // cell inside a `vertical-align: top` cell still computes `middle`
+    // (inherits from its own `tr`, not the outer cell).
+    let Built { doc, labels } = build(
+        "
+        t:table
+          g:tbody
+            r:tr
+              a:td
+            r2:tr style:vertical-align:top
+              b:td
+                d:div
+              c:table
+                r3:tr
+                  e:td
+        ",
+    );
+    let style = |label: &str| -> VerticalAlign {
+        let node = labels
+            .iter()
+            .find(|(_, l)| l.as_str() == label)
+            .map(|(node, _)| *node)
+            .unwrap_or_else(|| panic!("no node labeled {label}"));
+        doc.node(node)
+            .and_then(|n| n.as_element())
+            .and_then(|e| e.style().map(|s| s.vertical_align))
+            .unwrap_or_else(|| panic!("no style for {label}"))
+    };
+    assert_eq!(
+        style("a"),
+        VerticalAlign::Middle,
+        "a plain td in a tbody computes middle"
+    );
+    assert_eq!(
+        style("d"),
+        VerticalAlign::Baseline,
+        "a div in a vertical-align: top cell computes baseline"
+    );
+    assert_eq!(
+        style("e"),
+        VerticalAlign::Middle,
+        "a nested table cell computes middle, not the outer cell's top"
+    );
+}
+
+#[test]
+fn collapsed_auto_width_table_counts_half_of_each_outer_border() {
+    // Chrome parity: with `border-collapse: collapse`, padding is ignored and
+    // the width counts half of each outer border (CSS 2.2 section 17.6.2).
+    // One 100 px cell, a 1 px border and `padding:10px` on the table gives
+    // 100 + 0.5 + 0.5 = 101 px. Today the intrinsic contribution counts the
+    // full border and padding, stretching the grid into that extra room,
+    // so the table comes out about 2 px too wide.
+    let found = lay_out(
+        "
+        t:table border:1px solid; padding:10px; border-collapse:collapse
+          r:tr
+            a:td width:100px; padding:0
+        ",
+    );
+    assert!(
+        (found["t"].2 - 101.0).abs() <= 1.0,
+        "table width: {:?}",
+        found["t"]
+    );
+}
+
+#[test]
+fn collapsed_edges_lie_inside_the_table_border_box() {
+    // Chrome parity: with `border-collapse: collapse` the table's border box
+    // includes half of each outer collapsed border, so the grid sits inset by
+    // those halves and every edge rect paints inside the box
+    // (CSS 2.2 section 17.6.2). Today the outer edges are centred on the
+    // grid line at the box's edge, so half of each falls outside.
+    let mut doc = Document::new("about:blank");
+    let stylist = Stylist::new(
+        &[css::ua_stylesheet()],
+        Device {
+            width: 800.0,
+            height: 600.0,
+            color_scheme: ColorScheme::Light,
+            reduced_motion: false,
+        },
+    );
+    let root = doc.root();
+    let html = add(&mut doc, &stylist, root, "html", "margin:0");
+    let body = add(&mut doc, &stylist, html, "body", "margin:0");
+    let table = add_with_attributes(
+        &mut doc,
+        &stylist,
+        body,
+        "table",
+        &[("border", "2px solid"), ("border-collapse", "collapse")],
+        "border:2px solid; border-collapse:collapse",
+    );
+    let row = add_with_attributes(&mut doc, &stylist, table, "tr", &[], "");
+    let cell = add_with_attributes(
+        &mut doc,
+        &stylist,
+        row,
+        "td",
+        &[("width", "100px"), ("height", "100px"), ("padding", "0")],
+        "width:100px; height:100px; padding:0",
+    );
+    let _ = cell;
+    let mut boxes = BoxTree::build(&mut doc);
+    let (fragments, _) = run(&mut boxes);
+    let Some(table) = find_table_fragment(&fragments.root) else {
+        panic!("no table fragment with collapsed borders");
+    };
+    let table = table.as_box().expect("the table fragment is a box");
+    let size = table.size;
+    let edges = table
+        .collapsed_borders
+        .as_deref()
+        .expect("collapsed borders");
+    for edge in edges.iter() {
+        let r = edge.rect;
+        let right = r.origin.x.to_f32_px() + r.size.width.to_f32_px();
+        let bottom = r.origin.y.to_f32_px() + r.size.height.to_f32_px();
+        assert!(
+            r.origin.x.to_f32_px() >= 0.0,
+            "left edge starts inside: {:?}",
+            r
+        );
+        assert!(
+            right <= size.width.to_f32_px() + 1.0,
+            "right edge ends inside: {:?} size={:?}",
+            r,
+            size
+        );
+        assert!(
+            r.origin.y.to_f32_px() >= 0.0,
+            "top edge starts inside: {:?}",
+            r
+        );
+        assert!(
+            bottom <= size.height.to_f32_px() + 1.0,
+            "bottom edge ends inside: {:?} size={:?}",
+            r,
+            size
+        );
+    }
+}
+
+/// Walks the fragment tree to find the table fragment that holds
+/// `collapsed_borders`.
+fn find_table_fragment(root: &Option<(Point, Rc<Fragment>)>) -> Option<Rc<Fragment>> {
+    let mut stack: Vec<Rc<Fragment>> = root.iter().map(|(_, f)| Rc::clone(f)).collect();
+    while let Some(fragment) = stack.pop() {
+        if fragment
+            .as_box()
+            .is_some_and(|b| b.collapsed_borders.is_some())
+        {
+            return Some(fragment);
+        }
+        for (_, child) in fragment.children() {
+            stack.push(Rc::clone(child));
+        }
+    }
+    None
 }

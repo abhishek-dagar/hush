@@ -9,7 +9,7 @@
 //! paints the edge; each cell's border box takes half of each winning edge
 //! (layout sizes cells with those half borders).
 
-use base::{Au, BoxId, Point, Rect, Size};
+use base::{Au, BoxId, Point, Rect, SideOffsets, Size};
 use css::{BorderStyle, Color, ComputedStyle};
 
 use crate::box_tree::{BoxKind, BoxTree};
@@ -168,6 +168,7 @@ pub(crate) fn collapsed_edges(
     table: BoxId,
     table_width: Au,
     table_height: Au,
+    inset: SideOffsets,
     column_left: &[Au],
     widths: &[Au],
     row_top: &[Au],
@@ -177,6 +178,8 @@ pub(crate) fn collapsed_edges(
     let nrows = grid.rows.len();
     let table_style = tree.get(table).map(|b| b.style.clone());
     let mut edges = Vec::new();
+    let grid_width = table_width - inset.horizontal();
+    let grid_height = table_height - inset.vertical();
 
     // Vertical edges: one per boundary per visible row.
     for row in 0..nrows {
@@ -234,12 +237,12 @@ pub(crate) fn collapsed_edges(
                 continue;
             };
             let x = if boundary == ncols {
-                table_width
+                grid_width + inset.left
             } else {
-                column_left[boundary]
+                column_left[boundary] + inset.left
             };
             let rect = Rect::new(
-                Point::new(x - Au(winner.width.0 / 2), row_top[row]),
+                Point::new(x - Au(winner.width.0 / 2), row_top[row] + inset.top),
                 Size::new(winner.width, heights[row]),
             );
             edges.push(CollapsedEdge {
@@ -301,12 +304,12 @@ pub(crate) fn collapsed_edges(
                 continue;
             };
             let y = if boundary == nrows {
-                table_height
+                grid_height + inset.top
             } else {
-                row_top[boundary]
+                row_top[boundary] + inset.top
             };
             let rect = Rect::new(
-                Point::new(column_left[col], y - Au(winner.width.0 / 2)),
+                Point::new(column_left[col] + inset.left, y - Au(winner.width.0 / 2)),
                 Size::new(widths[col], winner.width),
             );
             edges.push(CollapsedEdge {

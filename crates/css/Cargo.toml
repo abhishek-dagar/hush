@@ -16,6 +16,9 @@ tracing.workspace = true
 # Resolving `url()` against the sheet's URL; already in the binary
 # through `net` and `embed`.
 url.workspace = true
+# Serde for IPC message types that cross the process boundary
+# (spec 0010, AC-13).
+serde.workspace = true
 
 [lints]
 workspace = true

@@ -4,11 +4,23 @@
 
 use std::rc::Rc;
 
-use base::{Au, Point, Rect, Size};
+use base::{Au, Point, Rect, Size, mat4_identity, mat4_inverse, mat4_mul, mat4_translate};
 use dom::NodeId;
 
 use crate::stacking::{self, Placed, Step, Walker};
 use crate::{BoxFragment, BoxTree, FragmentTree, border_widths, corner_radii, inner_radii};
+
+/// Applies matrix `m` to `point` (with perspective divide), or `None` when
+/// `w` is zero (the point is behind the viewer or the matrix is singular).
+fn transform_point(m: &[f32; 16], point: Point) -> Option<Point> {
+    let w = m[3] * point.x.to_f32_px() + m[7] * point.y.to_f32_px() + m[15];
+    if w == 0.0 {
+        return None;
+    }
+    let x = (m[0] * point.x.to_f32_px() + m[4] * point.y.to_f32_px() + m[12]) / w;
+    let y = (m[1] * point.x.to_f32_px() + m[5] * point.y.to_f32_px() + m[13]) / w;
+    Some(Point::new(Au::from_px(x), Au::from_px(y)))
+}
 
 /// The node under a point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +69,7 @@ pub fn hit_test(
     let root = Placed {
         origin,
         fragment: root,
-        state: None,
+        state: (None, None),
     };
     let steps = stacking::paint_order(boxes, root, &mut walker);
     // The last box in paint order that contains the point is on top. Text
@@ -70,12 +82,33 @@ pub fn hit_test(
             state,
         } => {
             let node = fragment.node?;
-            let border_box = Rect::new(*origin, fragment.size);
+            let style = boxes.get(fragment.box_id).map(|b| &b.style);
+            let (clip, _forward) = state;
+            // `origin` is this box's border box corner in page space (layout
+            // already applied scroll offsets). `m` maps box-local to
+            // border-box-local (transformed about the origin); `tm` maps
+            // box-local to page space. Undo it to test the page point against
+            // the border box in box-local space. A box whose matrix cannot be
+            // inverted (for example `scale(0)`) is never hit (spec 0010,
+            // AC-21).
+            let m = style
+                .and_then(|s| s.transform.matrix())
+                .unwrap_or(mat4_identity());
+            let tm = mat4_mul(
+                &m,
+                &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
+            );
+            // A box whose matrix cannot be inverted (for example `scale(0)`)
+            // is never hit (spec 0010, AC-21).
+            let local = mat4_inverse(&tm).and_then(|inv| transform_point(&inv, point))?;
+            let border_box = Rect::new(Point::default(), fragment.size);
+            // Keep the page-space clip check (the pre-transform behavior) so
+            // scrolling and overflow clips keep working (spec 0009, AC-7).
             let inside =
-                contains(border_box, point) && state.as_ref().is_none_or(|c| c.contains(point));
+                contains(border_box, local) && clip.as_ref().is_none_or(|c| c.contains(point));
             inside.then(|| HitTestResult {
                 node,
-                point: Point::new(point.x - origin.x, point.y - origin.y),
+                point: local,
                 selectable_text: selectable_text.unwrap_or(false),
             })
         }
@@ -84,8 +117,26 @@ pub fn hit_test(
             origin,
             state,
         } if selectable_text.is_none() => {
-            let run = Rect::new(*origin, fragment.size);
-            if contains(run, point) && state.as_ref().is_none_or(|c| c.contains(point)) {
+            let (clip, forward) = state;
+            // The text run sits at `origin` in parent space; measure the page
+            // point from it in box-local space (spec 0010, AC-21).
+            let m = fragment.style.transform.matrix().unwrap_or(mat4_identity());
+            let tm = mat4_mul(
+                &m,
+                &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
+            );
+            let local_box = forward
+                .as_ref()
+                .and_then(mat4_inverse)
+                .and_then(|inv| transform_point(&inv, point))
+                .unwrap_or(point);
+            let text_box = mat4_inverse(&tm)
+                .and_then(|inv| transform_point(&inv, *origin))
+                .unwrap_or_default();
+            let local = Point::new(local_box.x - text_box.x, local_box.y - text_box.y);
+            let run = Rect::new(Point::default(), fragment.size);
+            let p_in_parent = transform_point(&tm, local_box).unwrap_or(point);
+            if contains(run, local) && clip.as_ref().is_none_or(|c| c.contains(p_in_parent)) {
                 let user_select = fragment.style.inherited_box.user_select;
                 selectable_text = Some(user_select != css::UserSelect::None);
             }
@@ -127,15 +178,19 @@ struct HitWalker<'b, F> {
 }
 
 impl<'a, F: Fn(NodeId) -> Point> Walker<'a> for HitWalker<'_, F> {
-    type State = Option<Rc<Clip>>;
+    /// The clip in force for the subtree, and the matrix mapping the space
+    /// that children origins are expressed in back to page space (`None` is
+    /// the identity).
+    type State = (Option<Rc<Clip>>, Option<[f32; 16]>);
 
     fn children(
         &mut self,
         fragment: &'a BoxFragment,
         origin: Point,
-        clip: &Self::State,
+        state: &Self::State,
     ) -> Option<(Point, Self::State)> {
         let style = self.boxes.get(fragment.box_id).map(|b| &b.style);
+        let (clip, forward) = state;
         let mut child_clip = clip.clone();
         let mut child_origin = origin;
         // `overflow` does not apply to an inline box's pieces, and the root
@@ -170,11 +225,28 @@ impl<'a, F: Fn(NodeId) -> Point> Walker<'a> for HitWalker<'_, F> {
             let offset = (self.scroll_offset)(node);
             child_origin = Point::new(origin.x - offset.x, origin.y - offset.y);
         }
-        // Content outside the clip cannot be hit, so skip it entirely.
+        // Content outside the clip cannot be hit, so skip it entirely. The
+        // clip rect lives in the same page space as `origin` (layout already
+        // applied scroll offsets), so compare the page point directly.
         if child_clip.as_ref().is_some_and(|c| !c.contains(self.point)) {
             return None;
         }
-        Some((child_origin, child_clip))
+        // A transformed box maps its children's space through its matrix,
+        // about its border box (spec 0010, AC-20, AC-21). `child_forward`
+        // maps box-local space to page space: apply this box's matrix, then
+        // the ancestor chain.
+        let m = style
+            .and_then(|s| s.transform.matrix())
+            .unwrap_or(mat4_identity());
+        // `m` maps box-local to border-box-local; translate by `origin` to
+        // place it in parent space (`tm`), then the ancestor chain (`forward`)
+        // reaches page space: `forward ∘ tm`.
+        let tm = mat4_mul(
+            &m,
+            &mat4_translate(origin.x.to_f32_px(), origin.y.to_f32_px(), 0.0),
+        );
+        let child_forward = forward.map(|f| mat4_mul(&f, &tm)).or(Some(tm));
+        Some((child_origin, (child_clip, child_forward)))
     }
 }
 

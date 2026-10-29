@@ -148,6 +148,15 @@ pub(crate) fn run(server_name: &str, perf: bool) -> Result<(), EmbedError> {
                 channel.send(ToBrowser::MemoryReport { counters })?;
                 continue;
             }
+            ToContent::Preferences {
+                color_scheme,
+                reduced_motion,
+            } => {
+                for page in pages.values_mut() {
+                    page.set_preferences(color_scheme, reduced_motion);
+                }
+                continue;
+            }
             ToContent::CreatePage {
                 page,
                 viewport,

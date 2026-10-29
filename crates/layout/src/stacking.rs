@@ -141,7 +141,9 @@ fn stacking(boxes: &BoxTree, fragment: &BoxFragment, in_line: bool) -> Stacking 
             .is_some_and(|parent| parent.kind == BoxKind::FlexContainer);
     // `z-index` applies to positioned boxes and flex items only.
     let z_index = style.effects.z_index.filter(|_| positioned || flex_item);
-    if z_index.is_some() || style.effects.opacity < 1.0 {
+    // A transform other than `none` creates a stacking context (spec 0010,
+    // AC-20), as do `z-index` and opacity below 1.
+    if style.transform.has_transform() || z_index.is_some() || style.effects.opacity < 1.0 {
         Stacking::Context(z_index.unwrap_or(0))
     } else if positioned {
         Stacking::Positioned
@@ -435,11 +437,11 @@ fn flatten<'a, S>(mut groups: Vec<Layers<'a, S>>) -> Vec<Step<'a, S>> {
         sequence.extend(group.own.into_iter().map(item));
         sequence.extend(by_z(group.negative));
         sequence.extend(group.blocks.into_iter().map(item));
+        sequence.extend(group.outlines.into_iter().map(item));
         sequence.extend(group.floats.into_iter().map(item));
         sequence.extend(group.inline.into_iter().map(item));
         sequence.extend(group.positioned.into_iter().map(item));
         sequence.extend(by_z(group.positive));
-        sequence.extend(group.outlines.into_iter().map(item));
         if is_context {
             sequence.push(Emit::Step(Step::Leave));
         }
