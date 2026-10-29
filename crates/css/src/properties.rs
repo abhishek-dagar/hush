@@ -3153,8 +3153,9 @@ fn parse_grid_area(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Value)>
     ])
 }
 
-/// `grid-template`: `none`, or `<rows> / <columns>?`. Named areas in the
-/// shorthand's string form are not supported yet.
+/// `grid-template`: `none`, `<track-list> / <track-list>?`, or the
+/// named-areas form `[ <string> <track-size>? ]+ [ / <track-list> ]?`
+/// (spec 0010, AC-1).
 fn parse_grid_template(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Value)>> {
     if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
         return Ok(vec![
@@ -3169,6 +3170,14 @@ fn parse_grid_template(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Val
             (Longhand::GridTemplateAreas, Value::GridAreas(Vec::new())),
         ]);
     }
+    // The named-areas form starts with a quoted string. Peek at the first
+    // token, then always restore so the areas parser re-reads it.
+    let saved = input.state();
+    let starts_with_string = matches!(input.next(), Ok(Token::QuotedString(_)));
+    input.reset(&saved);
+    if starts_with_string {
+        return parse_grid_template_areas_form(input);
+    }
     let rows = parse_track_list(input)?;
     let columns = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
         parse_track_list(input)?
@@ -3179,6 +3188,95 @@ fn parse_grid_template(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Val
         (Longhand::GridTemplateRows, Value::GridTracks(rows)),
         (Longhand::GridTemplateColumns, Value::GridTracks(columns)),
         (Longhand::GridTemplateAreas, Value::GridAreas(Vec::new())),
+    ])
+}
+
+/// `grid-template` named-areas form:
+/// `[ <string> <track-size>? ]+ [ / <track-list> ]?`
+fn parse_grid_template_areas_form(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Value)>> {
+    let mut rows: Vec<Vec<Atom>> = Vec::new();
+    let mut row_sizes: Vec<SpecifiedTrackSize> = Vec::new();
+    loop {
+        let saved = input.state();
+        let row = match input.next() {
+            Ok(Token::QuotedString(s)) => s.split_whitespace().map(Atom::from).collect::<Vec<_>>(),
+            _ => {
+                input.reset(&saved);
+                break;
+            }
+        };
+        if row.is_empty() {
+            return invalid();
+        }
+        if let Some(first) = rows.first()
+            && first.len() != row.len()
+        {
+            return invalid();
+        }
+        rows.push(row);
+        let size = input
+            .try_parse(parse_track_size)
+            .unwrap_or(SpecifiedTrackSize::Breadth(SpecifiedBreadth::Auto));
+        row_sizes.push(size);
+    }
+    if rows.is_empty() {
+        return invalid();
+    }
+    // Build and validate the named areas, mirroring grid-template-areas.
+    let mut areas: Vec<GridArea> = Vec::new();
+    for (row_index, cells) in rows.iter().enumerate() {
+        for (column_index, cell) in cells.iter().enumerate() {
+            if cell.chars().all(|c| c == '.') {
+                continue;
+            }
+            if let Some(area) = areas.iter_mut().find(|area| area.name == *cell) {
+                area.row_start = area.row_start.min(row_index);
+                area.row_end = area.row_end.max(row_index + 1);
+                area.col_start = area.col_start.min(column_index);
+                area.col_end = area.col_end.max(column_index + 1);
+            } else {
+                areas.push(GridArea {
+                    name: cell.clone(),
+                    row_start: row_index,
+                    row_end: row_index + 1,
+                    col_start: column_index,
+                    col_end: column_index + 1,
+                });
+            }
+        }
+    }
+    for area in &areas {
+        for row in rows
+            .iter()
+            .skip(area.row_start)
+            .take(area.row_end.saturating_sub(area.row_start))
+        {
+            for cell in row
+                .iter()
+                .skip(area.col_start)
+                .take(area.col_end.saturating_sub(area.col_start))
+            {
+                if *cell != area.name {
+                    return invalid();
+                }
+            }
+        }
+    }
+    let rows_tracks = SpecifiedTrackList {
+        entries: row_sizes
+            .into_iter()
+            .map(SpecifiedTrackEntry::Size)
+            .collect(),
+    };
+    let columns = if input.try_parse(|i| i.expect_delim('/')).is_ok() {
+        parse_track_list(input)?
+    } else {
+        Default::default()
+    };
+    Ok(vec![
+        (Longhand::GridTemplateRows, Value::GridTracks(rows_tracks)),
+        (Longhand::GridTemplateColumns, Value::GridTracks(columns)),
+        (Longhand::GridTemplateAreas, Value::GridAreas(areas)),
     ])
 }
 
@@ -3220,9 +3318,9 @@ fn parse_grid(input: &mut Parser<'_>) -> ParseResult<Vec<(Longhand, Value)>> {
                 .is_ok(),
         })
     };
-    // `auto-flow` first: rows are implicit, columns are a template.
-    if let Ok(mut flow) = input.try_parse(auto_flow) {
-        flow.column = true;
+    // `auto-flow` first: `[ auto-flow && grid-auto-rows? ] / grid-template-columns`.
+    // Bare `auto-flow` defaults to row flow; only `column auto-flow` means column.
+    if let Ok(flow) = input.try_parse(auto_flow) {
         let auto_rows = input.try_parse(parse_track_size_list).unwrap_or_default();
         input.expect_delim('/')?;
         let columns = parse_track_list(input)?;

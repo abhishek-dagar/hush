@@ -54,21 +54,38 @@ fn fr_tracks_share_the_free_space() {
 }
 
 #[test]
-fn auto_tracks_take_their_content_then_stretch() {
-    // AC-3 and AC-4: `auto` tracks grow from content and `normal`
-    // alignment stretches the rest.
+fn auto_tracks_stretch_to_free_space() {
+    // AC-3: `auto` tracks stretch (Grid 11.8): on a 500px grid with
+    // `auto 100px`, an item with no width fills the auto track (400).
+    check(
+        "
+        g display:grid; width:500px; grid-template-columns:auto 100px
+          a height:10px
+          b height:10px
+        ",
+        &[
+            ("g", 0.0, 0.0, 500.0, 10.0),
+            ("a", 0.0, 0.0, 400.0, 10.0),
+            ("b", 400.0, 0.0, 100.0, 10.0),
+        ],
+    );
+}
+
+#[test]
+fn auto_tracks_take_content_then_stretch() {
+    // Auto tracks grow from content, then `justify-content: normal`
+    // stretches them to fill the container when items have no definite
+    // width. `auto auto` on a 200px grid gives 100 each.
     check(
         "
         g display:grid; width:200px; grid-template-columns:auto auto
-          a width:30px; height:10px
-          b width:50px; height:20px
+          a height:10px
+          b height:10px
         ",
         &[
-            ("g", 0.0, 0.0, 200.0, 20.0),
-            // Auto columns stay at their content widths (justify-content
-            // initial packs at the start, no stretching).
-            ("a", 0.0, 0.0, 30.0, 10.0),
-            ("b", 30.0, 0.0, 50.0, 20.0),
+            ("g", 0.0, 0.0, 200.0, 10.0),
+            ("a", 0.0, 0.0, 100.0, 10.0),
+            ("b", 100.0, 0.0, 100.0, 10.0),
         ],
     );
 }
@@ -110,6 +127,24 @@ fn empty_auto_fit_tracks_collapse_before_alignment() {
 }
 
 #[test]
+fn auto_fit_minmax_fr_shares_free_space() {
+    // AC-1: repeat(auto-fit, minmax(100px, 1fr)) in a 500px grid: the
+    // empty auto-fit tracks collapse and the two items share 250 each.
+    check(
+        "
+        g display:grid; width:500px; grid-template-columns:repeat(auto-fit, minmax(100px, 1fr))
+          a height:10px
+          b height:10px
+        ",
+        &[
+            ("g", 0.0, 0.0, 500.0, 10.0),
+            ("a", 0.0, 0.0, 250.0, 10.0),
+            ("b", 250.0, 0.0, 250.0, 10.0),
+        ],
+    );
+}
+
+#[test]
 fn named_lines_and_areas_resolve_to_track_edges() {
     // AC-2: a named line picks a track edge.
     check(
@@ -143,6 +178,19 @@ fn named_areas_give_both_edges() {
 }
 
 #[test]
+fn grid_template_with_areas_sizes_the_grid() {
+    // AC-1: grid-template with named areas creates rows and columns from the
+    // string form, and the item in area c lands at 50x30, y=20.
+    check(
+        "
+        g display:grid; width:200px; grid-template:\"a b\" 20px \"c d\" 30px / 50px 1fr
+          c grid-area:c
+        ",
+        &[("g", 0.0, 0.0, 200.0, 50.0), ("c", 0.0, 20.0, 50.0, 30.0)],
+    );
+}
+
+#[test]
 fn negative_lines_count_from_the_end_and_spans_fill_tracks() {
     // AC-2: line -1 is the last line; a span reaches back two tracks.
     check(
@@ -168,6 +216,26 @@ fn column_flow_and_gaps() {
             ("a", 0.0, 0.0, 20.0, 20.0),
             ("b", 0.0, 25.0, 20.0, 20.0),
             ("c", 30.0, 0.0, 20.0, 20.0),
+        ],
+    );
+}
+
+#[test]
+fn grid_auto_flow_short_hand_makes_new_rows() {
+    // AC-1: `grid:auto-flow 25px / 100px 200px` puts the third item on a
+    // new row at x=0, y=25, not a new column at x=300.
+    check(
+        "
+        g display:grid; width:400px; grid:auto-flow 25px / 100px 200px
+          a height:10px
+          b height:10px
+          c height:10px
+        ",
+        &[
+            ("g", 0.0, 0.0, 400.0, 50.0),
+            ("a", 0.0, 0.0, 100.0, 10.0),
+            ("b", 100.0, 0.0, 200.0, 10.0),
+            ("c", 0.0, 25.0, 100.0, 10.0),
         ],
     );
 }
@@ -340,5 +408,39 @@ fn minmax_track_grows_to_its_maximum_from_free_space() {
             ("a", 0.0, 0.0, 150.0, 10.0),
             ("b", 150.0, 0.0, 50.0, 10.0),
         ],
+    );
+}
+
+#[test]
+fn grid_item_in_auto_column_reports_its_content_width() {
+    // AC-3: an inner grid in an auto column contributes its min/max content
+    // width (80 from its two fixed 40px columns) instead of 0 when the outer
+    // width is indefinite.
+    check(
+        "
+        g display:inline-grid; grid-template-columns:auto 100px
+          i display:grid; grid-template-columns:40px 40px
+            a height:10px
+            b height:10px
+        ",
+        &[
+            ("g", 0.0, 0.0, 180.0, 10.0),
+            ("i", 0.0, 0.0, 80.0, 10.0),
+            ("a", 0.0, 0.0, 40.0, 10.0),
+            ("b", 40.0, 0.0, 40.0, 10.0),
+        ],
+    );
+}
+
+#[test]
+fn aspect_ratio_item_gets_a_height_in_a_column() {
+    // AC-7: a grid item with aspect-ratio:3/1 in a 150px column gets
+    // height 50, not 0, when alignment does not stretch it.
+    check(
+        "
+        g display:grid; width:300px; grid-template-columns:150px 150px; align-items:start
+          a aspect-ratio:3 / 1
+        ",
+        &[("g", 0.0, 0.0, 300.0, 50.0), ("a", 0.0, 0.0, 150.0, 50.0)],
     );
 }

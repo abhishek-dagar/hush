@@ -19,7 +19,10 @@
 use std::rc::Rc;
 
 use base::{Au, BoxId, Point, SideOffsets};
-use css::{AlignItems, BoxSizing, ComputedStyle, FlexBasis, FlexDirection, FlexWrap, Length};
+use css::{
+    AlignItems, BoxSizing, ComputedStyle, FlexBasis, FlexDirection, FlexWrap, JustifyContent,
+    Length,
+};
 
 use crate::block::{FlexFrame, FlexItems, InProgress, clamp, resolve};
 use crate::box_tree::{BoxTree, LayoutBox};
@@ -240,7 +243,17 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
     let container_cross =
         definite_cross.unwrap_or_else(|| clamp(lines_cross, frame.min_height, frame.max_height));
     let extra = container_cross - lines_cross;
-    if !single_line && extra > Au::ZERO && !lines.is_empty() {
+    // `normal`/`stretch` grows the lines to fill the container; every other
+    // `align-content` value positions the lines with an offset, handled in
+    // `place()` so the first line is not left at the start edge (AC-6).
+    if !single_line
+        && extra > Au::ZERO
+        && !lines.is_empty()
+        && matches!(
+            style.alignment.align_content,
+            JustifyContent::Normal | JustifyContent::Stretch
+        )
+    {
         let count = lines.len() as i32;
         for (i, line) in lines.iter_mut().enumerate() {
             line.cross += share(extra, count, i as i32);
@@ -265,7 +278,14 @@ pub(crate) fn lay_out(tree: &mut BoxTree, container: &mut InProgress, cx: &mut L
     }
 
     let mut placed = place(
-        &mut items, &lines, inner_main, gap_main, gap_cross, row, &style,
+        &mut items,
+        &lines,
+        inner_main,
+        gap_main,
+        gap_cross,
+        row,
+        &style,
+        container_cross,
     );
     placed
         .absolutes
@@ -565,7 +585,10 @@ fn resolve_flexible_lengths(items: &mut [Item], available: Au) {
 
 /// Places every line's items along both axes (section 9.5, step 12, and
 /// section 9.6, steps 13 and 14): `auto` margins, `justify-content`, then
-/// the cross axis `auto` margins and `align-self`.
+/// the cross axis `auto` margins and `align-self`. `container_cross` is the
+/// container's cross size; `align-content` distributes any leftover space as
+/// an offset before the first line and/or as extra space between lines.
+#[allow(clippy::too_many_arguments, reason = "the flex axes are explicit")]
 fn place(
     items: &mut [Item],
     lines: &[Line],
@@ -574,9 +597,34 @@ fn place(
     gap_cross: Au,
     row: bool,
     style: &ComputedStyle,
+    container_cross: Au,
 ) -> FlexItems {
     let mut out = FlexItems::default();
-    let mut line_offset = Au::ZERO;
+    let n = lines.len() as i32;
+    // The size the lines occupy before alignment: their cross sizes plus the
+    // fixed gaps between them.
+    let lines_cross = lines.iter().map(|line| line.cross).sum::<Au>()
+        + gap_cross * lines.len().saturating_sub(1) as i32;
+    let free = (container_cross - lines_cross).max(Au::ZERO);
+    // Where the first line starts and how much extra space goes between
+    // lines, per `align-content` (CSS Box Alignment §5).
+    let (align_offset, between_extra) = match style.alignment.align_content {
+        JustifyContent::Center => (Au(free.0 / 2), Au::ZERO),
+        JustifyContent::FlexEnd | JustifyContent::End => (free, Au::ZERO),
+        JustifyContent::SpaceBetween if free > Au::ZERO && n > 1 => {
+            (Au::ZERO, Au(free.0 / (n - 1)))
+        }
+        JustifyContent::SpaceAround if free > Au::ZERO => {
+            let each = Au(free.0 / n.max(1));
+            (Au(each.0 / 2), each)
+        }
+        JustifyContent::SpaceEvenly if free > Au::ZERO => {
+            let each = Au(free.0 / (n + 1));
+            (each, each)
+        }
+        _ => (Au::ZERO, Au::ZERO),
+    };
+    let mut line_offset = align_offset;
     for line in lines {
         let line_items = &mut items[line.start..line.end];
         let mut free = inner_main - line_outer_main(line_items, gap_main, true);
@@ -623,7 +671,7 @@ fn place(
             }
             out.children.push((at, fragment));
         }
-        line_offset += line.cross + gap_cross;
+        line_offset += line.cross + gap_cross + between_extra;
     }
     out
 }

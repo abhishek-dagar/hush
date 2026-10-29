@@ -721,3 +721,40 @@ fn shrink_with_wrap_and_max_content() {
         ],
     );
 }
+
+#[test]
+fn gap_shorthand_with_two_calc_values() {
+    // AC-4: `gap:calc(10px + 5px) calc(2 * 10px)` keeps both gaps, 15 row
+    // and 20 column, instead of dropping them to zero.
+    check(
+        "
+        c display:flex; width:300px; gap:calc(10px + 5px) calc(2 * 10px)
+          a width:50px; height:10px
+          b width:50px; height:10px
+        ",
+        &[
+            ("c", 0.0, 0.0, 300.0, 10.0),
+            ("a", 0.0, 0.0, 50.0, 10.0),
+            ("b", 70.0, 0.0, 50.0, 10.0),
+        ],
+    );
+}
+
+#[test]
+fn align_content_center_offsets_the_first_line() {
+    // AC-6: `flex-wrap` with `align-content:center` offsets every line,
+    // including the first. Two 150x20 items in a 200x100 container land at
+    // y=30 and y=50.
+    check(
+        "
+        c display:flex; flex-wrap:wrap; width:200px; height:100px; align-content:center
+          a width:150px; height:20px
+          b width:150px; height:20px
+        ",
+        &[
+            ("c", 0.0, 0.0, 200.0, 100.0),
+            ("a", 0.0, 30.0, 150.0, 20.0),
+            ("b", 0.0, 50.0, 150.0, 20.0),
+        ],
+    );
+}

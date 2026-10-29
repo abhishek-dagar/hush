@@ -870,7 +870,7 @@ impl Default for Alignment {
         Self {
             row_gap: Length::ZERO,
             column_gap: Length::ZERO,
-            justify_content: JustifyContent::default(),
+            justify_content: JustifyContent::Normal,
             // `align-content` initial is `normal`, which stretches `auto`
             // tracks in grid layout (columns use `justify-content` instead).
             align_content: JustifyContent::Normal,

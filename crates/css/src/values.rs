@@ -253,7 +253,26 @@ fn parse_calc_sum(input: &mut Parser<'_>, depth: u32) -> ParseResult<SpecifiedCa
 }
 
 /// A product: a value optionally multiplied or divided by a number.
+/// Handles both `value * number` (e.g. `10px * 2`) and `number * value`
+/// (e.g. `2 * 10px`). A leading bare number is a scalar multiplier.
 fn parse_calc_product(input: &mut Parser<'_>, depth: u32) -> ParseResult<SpecifiedCalcExpr> {
+    // A leading number is a scalar: `2 * 10px`. Try `number * value` first,
+    // restoring the position when it is not followed by `*`.
+    let saved = input.state();
+    let scalar = input
+        .next_including_whitespace()
+        .ok()
+        .and_then(|token| match token {
+            Token::Number { value, .. } => Some(*value),
+            _ => None,
+        });
+    if let Some(value) = scalar
+        && input.try_parse(|i| i.expect_delim('*')).is_ok()
+    {
+        let rhs = parse_calc_value(input, depth)?;
+        return Ok(SpecifiedCalcExpr::Product(Box::new(rhs), value));
+    }
+    input.reset(&saved);
     let base = parse_calc_value(input, depth)?;
     if input.try_parse(|i| i.expect_delim('*')).is_ok() {
         let factor: f32 = input.expect_number()?;

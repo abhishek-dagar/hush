@@ -15,10 +15,10 @@ use base::atoms::Atom;
 use base::{Au, BoxId, Point, Rect, Size};
 use css::{
     AlignItems, Breadth, ComputedStyle, Display, GridArea, GridAutoFlow, GridLine, JustifyContent,
-    Length, RepeatCount, TrackEntry, TrackList, TrackSize,
+    Length, RepeatCount, Sizes, TrackEntry, TrackList, TrackSize,
 };
 
-use crate::block::{GridItems, InProgress};
+use crate::block::{GridItems, InProgress, resolve};
 use crate::box_tree::{BoxTree, LayoutBox};
 use crate::fragment::{Fragment, PendingAbsolute};
 use crate::{AvailableSize, ConstraintSpace, LayoutContext, intrinsic, lay_out_box};
@@ -1020,16 +1020,21 @@ fn maximize(tracks: &mut [Track], available: Au, gap: Au, align: JustifyContent)
         return;
     }
     let free = grow_to_limits(tracks, available - used);
-    let factors: f32 = tracks.iter().map(|track| track.flex).sum();
+    let factors: f32 = tracks
+        .iter()
+        .filter(|track| !track.collapsed)
+        .map(|track| track.flex)
+        .sum();
     if factors > 0.0 {
         let non_flex = grid_length_without_flex(tracks, gap);
         let space = (available - non_flex).0;
         let unit = f64::from(space) / f64::from(factors);
         for track in tracks.iter_mut() {
-            if track.is_flexible() {
-                let size = Au((unit * f64::from(track.flex)).round() as i32);
-                track.base = track.base.max(size);
+            if track.collapsed || !track.is_flexible() {
+                continue;
             }
+            let size = Au((unit * f64::from(track.flex)).round() as i32);
+            track.base = track.base.max(size);
         }
         return;
     }
@@ -1275,7 +1280,14 @@ fn place_item(
     } else {
         None
     };
-    let stretch_block = stretch_y.then_some((area.size.height - margin_y).max(Au::ZERO));
+    let width_definite = !width_auto || stretch_x;
+    let stretch_block = if height_auto && !stretch_y && width_definite {
+        // The width is definite (the column) but the height is automatic:
+        // derive it from `aspect-ratio` (spec 0010, AC-7).
+        apply_aspect_ratio(&style.size, content_width, true, Some(area.size.height))
+    } else {
+        stretch_y.then_some((area.size.height - margin_y).max(Au::ZERO))
+    };
     let item_space = ConstraintSpace {
         available_inline: AvailableSize::Definite(content_width.max(Au::ZERO)),
         available_block: AvailableSize::MaxContent,
@@ -1322,6 +1334,40 @@ fn item_offset(
         }
 }
 
+/// Derives the dependent axis size from `aspect-ratio` when the other axis is
+/// definite (spec 0010, AC-7). `known` is the definite content-box size on the
+/// known axis and `width_known` says whether `known` is the width. Returns the
+/// derived content-box size on the other axis, clamped by that axis's min/max.
+fn apply_aspect_ratio(
+    style: &Sizes,
+    known: Au,
+    width_known: bool,
+    basis: Option<Au>,
+) -> Option<Au> {
+    let (rw, rh) = style
+        .aspect_ratio
+        .ratio
+        .filter(|&(w, h)| w > 0.0 && h > 0.0)?;
+    let scale = rw / rh;
+    let mut derived = if width_known {
+        // Height is automatic: height = width / ratio.
+        Au::from_px(known.to_f32_px() / scale)
+    } else {
+        // Width is automatic: width = height * ratio.
+        Au::from_px(known.to_f32_px() * scale)
+    };
+    if width_known {
+        let min = resolve(style.min_height.clone(), basis).unwrap_or(Au::ZERO);
+        let max = resolve(style.max_height.clone(), basis);
+        derived = derived.clamp(min, max.unwrap_or(Au::MAX));
+    } else {
+        let min = resolve(style.min_width.clone(), basis).unwrap_or(Au::ZERO);
+        let max = resolve(style.max_width.clone(), basis);
+        derived = derived.clamp(min, max.unwrap_or(Au::MAX));
+    }
+    Some(derived.max(Au::ZERO))
+}
+
 /// Lays out an item at its column span to find its row contribution: its
 /// border box height plus its vertical margins.
 fn measure_height(
@@ -1340,12 +1386,21 @@ fn measure_height(
     };
     let margin_x = margin(&style.margin.left) + margin(&style.margin.right);
     let margin_y = margin(&style.margin.top) + margin(&style.margin.bottom);
+    // The width is definite (the column). If the height is automatic and an
+    // `aspect-ratio` is set, derive the height from the ratio (spec 0010,
+    // AC-7), so row tracks grow to fit instead of collapsing to zero.
+    let height_auto = style.size.height.is_none();
+    let stretch_block = if height_auto {
+        apply_aspect_ratio(&style.size, width, true, None)
+    } else {
+        None
+    };
     let item_space = ConstraintSpace {
         available_inline: AvailableSize::Definite(width),
         available_block: AvailableSize::MaxContent,
         percentage_basis: Size::new(Some(width), None),
         stretch_inline: Some((width - margin_x).max(Au::ZERO)),
-        stretch_block: None,
+        stretch_block,
         ..space.clone()
     };
     lay_out_box(tree, item.id, item_space, cx)
